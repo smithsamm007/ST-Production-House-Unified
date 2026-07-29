@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EvidenceLedger } from "../src/evidence/evidenceLedger.js";
 import { PublishingService } from "../src/publishing/publishingService.js";
-import { resolvePublicAttribution } from "../src/catalog/agentDigitalIdentity.js";
 
 const hash = "b".repeat(64);
 
@@ -27,11 +26,11 @@ test("dry-run publishing produces no fake platform identity", async () => {
     publicDisplayName: "Brand Display",
     status: "active"
   };
-  const validatedAttribution = resolvePublicAttribution({ agentId, agent, profile });
 
   const request = service.request({
     agentId,
-    validatedAttribution,
+    agent,
+    profile,
     artifactSha256: hash,
     destination: "youtube:channel-1",
     captionSnapshot: "Owner-reviewed caption",
@@ -60,11 +59,11 @@ test("live publishing requires a real provider receipt", async () => {
     publicDisplayName: "Brand Display",
     status: "active"
   };
-  const validatedAttribution = resolvePublicAttribution({ agentId, agent, profile });
 
   const request = service.request({
     agentId,
-    validatedAttribution,
+    agent,
+    profile,
     artifactSha256: hash,
     destination: "instagram:account-1",
     captionSnapshot: "Approved caption"

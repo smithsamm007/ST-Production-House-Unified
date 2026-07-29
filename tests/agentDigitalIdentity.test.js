@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { AgentRegistry, PRELOADED_AGENTS } from "../src/catalog/agents.js";
 import {
   SUPPORTED_PLATFORMS,
@@ -11,10 +12,9 @@ import {
   checkReauthenticationRequired,
   resolvePublicAttribution,
   serializeForDashboard,
-  isInternalAgentName,
-  normalizeForPunctuation
+  isInternalAgentName
 } from "../src/catalog/agentDigitalIdentity.js";
-import { PublishingService } from "../src/publishing/publishingService.js";
+import { PublishingService, verifyAttributionSnapshot } from "../src/publishing/publishingService.js";
 
 const dummyHash = "c".repeat(64);
 
@@ -74,24 +74,32 @@ test("3 & 4. Public attribution does not expose internal names and uses public b
 test("5. Publishing is blocked when no public identity is configured", () => {
   const service = new PublishingService();
 
-  // Creation throws without valid attribution object
+  // Creation throws without valid attribution inputs
   assert.throws(() => {
     service.request({
       agentId: "agent-01",
+      agent: { id: "agent-01", name: "JARVIS", namespace: "st.agent.jarvis" },
       artifactSha256: dummyHash,
       destination: "youtube:channel-123",
       captionSnapshot: "Sample video caption"
+      // Missing profile and social account
     });
   }, /PUBLIC_PUBLISHING_IDENTITY_REQUIRED/);
 
-  // Creation throws when publicAttribution is a direct string bypass
+  // Creation throws when a caller-supplied fabricated validatedAttribution object is passed directly
   assert.throws(() => {
     service.request({
       agentId: "agent-01",
+      validatedAttribution: {
+        sourceAgentId: "agent-01",
+        publicAttribution: "Arbitrary Bypass String",
+        sourceType: "public_profile",
+        sourceId: "agent-01",
+        isValid: true
+      },
       artifactSha256: dummyHash,
       destination: "youtube:channel-123",
-      captionSnapshot: "Sample video caption",
-      publicAttribution: "Arbitrary Bypass String"
+      captionSnapshot: "Sample video caption"
     });
   }, /PUBLIC_PUBLISHING_IDENTITY_REQUIRED/);
 });
@@ -205,7 +213,7 @@ test("13. No real secret values are present in fixtures", () => {
   assert.ok(secretLoc.startsWith("vault://"));
 });
 
-test("14. Final Review Blockers Integration Tests", async () => {
+test("14. Final Review Blockers Integration Tests", () => {
   const service = new PublishingService();
 
   const agentId = "agent-01";
@@ -216,96 +224,118 @@ test("14. Final Review Blockers Integration Tests", async () => {
     publicDisplayName: "Cool Display",
     status: "active"
   };
-  const validatedAttribution = resolvePublicAttribution({ agentId, agent, profile });
-
-  // - arbitrary attribution-string bypass must reject
-  assert.throws(() => {
-    service.request({
-      agentId,
-      artifactSha256: dummyHash,
-      destination: "youtube:channel-123",
-      captionSnapshot: "Sample video caption",
-      publicAttribution: "Arbitrary String"
-    });
-  }, /PUBLIC_PUBLISHING_IDENTITY_REQUIRED/);
 
   // - missing agentId must reject
   assert.throws(() => {
     service.request({
-      validatedAttribution,
+      agent,
+      profile,
       artifactSha256: dummyHash,
       destination: "youtube:channel-123",
       captionSnapshot: "Sample video caption"
     });
   }, /PUBLIC_PUBLISHING_IDENTITY_REQUIRED/);
 
-  // - attribution belonging to another agent (sourceAgentId mismatch) must reject
+  // - profile from another agent resolves to PUBLIC_PUBLISHING_IDENTITY_REQUIRED
   const profileOther = {
     agentId: "agent-02",
-    publicBrandName: "Other Agent Brand",
-    publicDisplayName: "Other",
+    publicBrandName: "Another Agent Brand",
+    publicDisplayName: "Display",
     status: "active"
   };
-  const agentOther = { id: "agent-02", name: "SHERLOCK", namespace: "st.agent.sherlock" };
-  const validatedOther = resolvePublicAttribution({ agentId: "agent-02", agent: agentOther, profile: profileOther });
-
   assert.throws(() => {
-    service.request({
-      agentId: "agent-01", // selected agentId mismatch with validatedOther.sourceAgentId (agent-02)
-      validatedAttribution: validatedOther,
-      artifactSha256: dummyHash,
-      destination: "youtube:channel-123",
-      captionSnapshot: "Sample caption"
-    });
+    resolvePublicAttribution({ agentId: "agent-01", agent, profile: profileOther });
   }, /PUBLIC_PUBLISHING_IDENTITY_REQUIRED/);
 
-  // - attribution snapshot-hash mismatch & mutation after approval
-  const req = service.request({
-    agentId,
-    validatedAttribution,
-    artifactSha256: dummyHash,
-    destination: "youtube:channel-123",
-    captionSnapshot: "Sample video caption"
-  });
+  // - social account from another agent resolves to PUBLIC_PUBLISHING_IDENTITY_REQUIRED
+  const socialOther = {
+    agentId: "agent-02",
+    platform: "youtube",
+    isPrimary: true,
+    connectionStatus: "connected",
+    publicAccountName: "My Brand Channel"
+  };
+  assert.throws(() => {
+    resolvePublicAttribution({ agentId: "agent-01", agent, primarySocialAccount: socialOther });
+  }, /PUBLIC_PUBLISHING_IDENTITY_REQUIRED/);
 
-  service.approve(req.id, {
-    ownerId: "owner-1",
-    expiresAt: new Date(Date.now() + 60_000).toISOString()
-  });
+  // - non-primary social account resolves to PUBLIC_PUBLISHING_IDENTITY_REQUIRED
+  const socialNonPrimary = {
+    agentId: "agent-01",
+    platform: "youtube",
+    isPrimary: false,
+    connectionStatus: "connected",
+    publicAccountName: "My Brand Channel"
+  };
+  assert.throws(() => {
+    resolvePublicAttribution({ agentId: "agent-01", agent, primarySocialAccount: socialNonPrimary });
+  }, /PUBLIC_PUBLISHING_IDENTITY_REQUIRED/);
 
-  // Mutating attribution snapshot after approval blocks dispatch
-  service.mutateRequestForTesting(req.id, {
-    attributionSnapshot: {
-      ...validatedAttribution,
-      publicAttribution: "Tampered Brand Name" // Mutated!
-    }
-  });
+  // - unsupported platform resolves to PUBLIC_PUBLISHING_IDENTITY_REQUIRED
+  const socialUnsupportedPlatform = {
+    agentId: "agent-01",
+    platform: "twitter",
+    isPrimary: true,
+    connectionStatus: "connected",
+    publicAccountName: "My Brand Channel"
+  };
+  assert.throws(() => {
+    resolvePublicAttribution({ agentId: "agent-01", agent, primarySocialAccount: socialUnsupportedPlatform });
+  }, /PUBLIC_PUBLISHING_IDENTITY_REQUIRED/);
 
-  await assert.rejects(
-    () => service.dispatch(req.id, null, { dryRun: true }),
-    /ATTRIBUTION_SNAPSHOT_HASH_MISMATCH/
-  );
+  // - expired token (reauthentication required or expired status) resolves to PUBLIC_PUBLISHING_IDENTITY_REQUIRED
+  const socialExpiredStatus = {
+    agentId: "agent-01",
+    platform: "youtube",
+    isPrimary: true,
+    connectionStatus: "expired",
+    publicAccountName: "My Brand Channel"
+  };
+  assert.throws(() => {
+    resolvePublicAttribution({ agentId: "agent-01", agent, primarySocialAccount: socialExpiredStatus });
+  }, /PUBLIC_PUBLISHING_IDENTITY_REQUIRED/);
 
-  // - future-agent punctuation variants checking
-  // Setup future agent dynamically (agent 35)
+  const socialExpiredTimestamp = {
+    agentId: "agent-01",
+    platform: "youtube",
+    isPrimary: true,
+    connectionStatus: "connected",
+    publicAccountName: "My Brand Channel",
+    tokenExpiresAt: new Date(Date.now() - 3600_000).toISOString()
+  };
+  assert.throws(() => {
+    resolvePublicAttribution({ agentId: "agent-01", agent, primarySocialAccount: socialExpiredTimestamp });
+  }, /PUBLIC_PUBLISHING_IDENTITY_REQUIRED/);
+
+  // - future agents 21–50 checks work dynamically and punctuation variants are caught
   const futureAgent = {
     id: "agent-35",
     name: "AGENT_NAME_35",
     namespace: "st.agent.agent_name_35"
   };
 
-  // Names containing underscores, hyphens or punctuation are detected inside longer public names:
-  // AGENT_NAME_35
   assert.equal(isInternalAgentName("AGENT_NAME_35", futureAgent), true);
-  // Brand AGENT_NAME_35
   assert.equal(isInternalAgentName("Brand AGENT_NAME_35", futureAgent), true);
-  // agent-name-35 channel
   assert.equal(isInternalAgentName("agent-name-35 channel", futureAgent), true);
-  // st.agent.agent_name_35
   assert.equal(isInternalAgentName("st.agent.agent_name_35", futureAgent), true);
 
+  // - pure function verification check verifyAttributionSnapshot
+  const sampleSnapshot = {
+    sourceAgentId: "agent-01",
+    publicAttribution: "Some Brand",
+    sourceType: "public_profile",
+    sourceId: "agent-01",
+    isValid: true
+  };
+  const correctHash = createHash("sha256")
+    .update(JSON.stringify(sampleSnapshot))
+    .digest("hex");
+  assert.ok(verifyAttributionSnapshot(sampleSnapshot, correctHash));
+  assert.ok(!verifyAttributionSnapshot(sampleSnapshot, "wronghash"));
+  // Mutated snapshot is detected!
+  assert.ok(!verifyAttributionSnapshot({ ...sampleSnapshot, publicAttribution: "Mutated Value" }, correctHash));
+
   // - case-insensitive duplicate email design validation
-  // Email connections list simulated check: once normalized lower(), same address cannot belong to multiple agents once configured
   const emailConnections = [
     { agentId: "agent-01", emailAddress: "TestEmail@Example.com", connectionStatus: "connected" }
   ];
@@ -336,25 +366,31 @@ test("14. Final Review Blockers Integration Tests", async () => {
     }, emailConnections);
   }, /EMAIL_ADDRESS_MUST_BE_UNIQUE/);
 
-  // - connected accounts requiring identifiers and secret references
-  function validateConnectionProperties(conn) {
-    if (conn.connectionStatus === "connected") {
-      if (!conn.publicAccountName || !conn.secretLocator) {
-        throw new Error("CONNECTED_ACCOUNTS_REQUIRE_IDENTIFIERS_AND_SECRETS");
-      }
-    }
-    return true;
-  }
-  assert.ok(validateConnectionProperties({
-    connectionStatus: "connected",
-    publicAccountName: "Real brand",
-    secretLocator: "vault://secret"
-  }));
-  assert.throws(() => {
-    validateConnectionProperties({
-      connectionStatus: "connected",
-      publicAccountName: null,
-      secretLocator: null
-    });
-  }, /CONNECTED_ACCOUNTS_REQUIRE_IDENTIFIERS_AND_SECRETS/);
+  // - nested unexpected secret-reference fields serialization check
+  const complexObj = {
+    id: "connection-id-123",
+    agentId: "agent-01",
+    oauth_scopes: ["scope1"],
+    api_key: "real-secret-key-material",
+    credentials: {
+      password: "password-val",
+      token: "secret-token"
+    },
+    someUnknownPayload: {
+      innerData: "should-not-serialize"
+    },
+    // Allowlisted nested container
+    socialAccounts: [
+      { platform: "youtube", publicAccountName: "YT Real Channel" }
+    ]
+  };
+  const serialized = serializeForDashboard(complexObj);
+  assert.equal(serialized.id, "connection-id-123");
+  assert.equal(serialized.agentId, "agent-01");
+  assert.deepEqual(serialized.oauth_scopes, ["scope1"]);
+  assert.equal(serialized.api_key, undefined);
+  assert.equal(serialized.credentials, undefined);
+  assert.equal(serialized.someUnknownPayload, undefined); // Completely stripped because it is not in explicit allowlist!
+  assert.equal(serialized.socialAccounts[0].platform, "youtube");
+  assert.equal(serialized.socialAccounts[0].publicAccountName, "YT Real Channel");
 });

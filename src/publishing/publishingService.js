@@ -1,17 +1,19 @@
 import { createHash, randomUUID } from "node:crypto";
+import { resolvePublicAttribution } from "../catalog/agentDigitalIdentity.js";
 
-function getAttributionHash(validatedAttribution) {
-  if (!validatedAttribution) return "";
+export function verifyAttributionSnapshot(snapshot, expectedHash) {
+  if (!snapshot) return false;
   const stable = {
-    sourceAgentId: validatedAttribution.sourceAgentId,
-    publicAttribution: validatedAttribution.publicAttribution,
-    sourceType: validatedAttribution.sourceType,
-    sourceId: validatedAttribution.sourceId,
-    isValid: validatedAttribution.isValid
+    sourceAgentId: snapshot.sourceAgentId,
+    publicAttribution: snapshot.publicAttribution,
+    sourceType: snapshot.sourceType,
+    sourceId: snapshot.sourceId,
+    isValid: snapshot.isValid
   };
-  return createHash("sha256")
+  const computed = createHash("sha256")
     .update(JSON.stringify(stable))
     .digest("hex");
+  return computed === expectedHash;
 }
 
 export class PublishingService {
@@ -25,26 +27,25 @@ export class PublishingService {
       throw new Error("PUBLISHING_SNAPSHOT_REQUIRED");
     }
 
-    const agentId = input?.agentId;
-    const valAtt = input?.validatedAttribution;
+    const { agentId, agent, profile, primarySocialAccount } = input;
 
-    if (!agentId || !valAtt || valAtt.isValid !== true) {
-      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
-    }
-    if (valAtt.sourceAgentId !== agentId) {
-      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
-    }
-    if (!valAtt.publicAttribution || !valAtt.publicAttribution.trim()) {
-      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
-    }
-    if (!["public_profile", "social_account"].includes(valAtt.sourceType)) {
-      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
-    }
-    if (!valAtt.sourceId) {
-      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
-    }
+    // Call resolvePublicAttribution internally. We do not trust any pre-packaged object.
+    const validatedAttribution = resolvePublicAttribution({
+      agentId,
+      agent,
+      profile,
+      primarySocialAccount
+    });
 
-    const attributionHash = getAttributionHash(valAtt);
+    const attributionHash = createHash("sha256")
+      .update(JSON.stringify({
+        sourceAgentId: validatedAttribution.sourceAgentId,
+        publicAttribution: validatedAttribution.publicAttribution,
+        sourceType: validatedAttribution.sourceType,
+        sourceId: validatedAttribution.sourceId,
+        isValid: validatedAttribution.isValid
+      }))
+      .digest("hex");
 
     const request = Object.freeze({
       id: randomUUID(),
@@ -55,27 +56,11 @@ export class PublishingService {
       affiliateLinkIds: Object.freeze([...(input.affiliateLinkIds ?? [])]),
       mode: input.mode ?? "draft",
       status: "awaiting_owner_approval",
-      attributionSnapshot: Object.freeze({ ...valAtt }),
+      attributionSnapshot: Object.freeze({ ...validatedAttribution }),
       attributionHash
     });
     this.#requests.set(request.id, request);
     return request;
-  }
-
-  mutateRequestForTesting(requestId, mutatedFields) {
-    const request = this.#requests.get(requestId);
-    if (request) {
-      // Create a mutable copy of attributionSnapshot if passed
-      let newAtt = request.attributionSnapshot;
-      if (mutatedFields.attributionSnapshot) {
-        newAtt = { ...request.attributionSnapshot, ...mutatedFields.attributionSnapshot };
-      }
-      this.#requests.set(requestId, Object.freeze({
-        ...request,
-        ...mutatedFields,
-        attributionSnapshot: newAtt ? Object.freeze(newAtt) : null
-      }));
-    }
   }
 
   approve(requestId, approval) {
@@ -105,9 +90,8 @@ export class PublishingService {
       throw new Error("APPROVAL_EXPIRED");
     }
 
-    // Recompute and verify the attribution snapshot hash before publishing
-    const recomputedHash = getAttributionHash(request.attributionSnapshot);
-    if (recomputedHash !== request.attributionHash) {
+    // Verify snapshot integrity
+    if (!verifyAttributionSnapshot(request.attributionSnapshot, request.attributionHash)) {
       throw new Error("ATTRIBUTION_SNAPSHOT_HASH_MISMATCH");
     }
 
