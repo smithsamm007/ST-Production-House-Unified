@@ -13,12 +13,13 @@ CREATE TABLE creative_universes (
 -- 2. creative_charters
 CREATE TABLE creative_charters (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  owner_id uuid REFERENCES owners(id) ON DELETE SET NULL,
+  owner_id uuid NOT NULL REFERENCES owners(id) ON DELETE CASCADE, -- owner_id NOT NULL
   name text NOT NULL,
   vision text NOT NULL,
   default_language text NOT NULL DEFAULT 'en',
   secondary_language text,
   status text NOT NULL DEFAULT 'draft',
+  revision integer NOT NULL DEFAULT 1 CHECK (revision > 0), -- positive revision check
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT valid_charter_status CHECK (status IN ('draft', 'approved', 'active', 'inactive'))
@@ -30,11 +31,12 @@ CREATE TABLE creative_charter_versions (
   charter_id uuid NOT NULL REFERENCES creative_charters(id) ON DELETE CASCADE,
   version_no integer NOT NULL CHECK (version_no > 0),
   snapshot jsonb NOT NULL,
-  snapshot_hash char(64) NOT NULL UNIQUE,
+  snapshot_hash char(64) NOT NULL,
   is_active boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (charter_id, version_no)
+  UNIQUE (charter_id, version_no),
+  CONSTRAINT valid_snapshot_hash CHECK (snapshot_hash ~ '^[a-f0-9]{64}$') -- lowercase SHA-256 format CHECK
 );
 
 CREATE UNIQUE INDEX creative_charter_versions_active_idx
@@ -48,6 +50,7 @@ CREATE TABLE agent_charter_assignments (
   charter_id uuid NOT NULL REFERENCES creative_charters(id) ON DELETE CASCADE,
   universe_id uuid REFERENCES creative_universes(id) ON DELETE SET NULL,
   is_active boolean NOT NULL DEFAULT false,
+  revision integer NOT NULL DEFAULT 1 CHECK (revision > 0), -- positive revision check
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -143,8 +146,65 @@ CREATE TABLE owner_charter_approvals (
   owner_id uuid NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
   approved_at timestamptz NOT NULL DEFAULT now(),
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT valid_approval_snapshot_hash CHECK (snapshot_hash ~ '^[a-f0-9]{64}$') -- lowercase SHA-256 format CHECK
 );
+
+-- Triggers for approved charter-version snapshot/hash immutability
+CREATE OR REPLACE FUNCTION check_charter_version_immutability() RETURNS trigger AS $$
+BEGIN
+  IF OLD.is_active = true AND (NEW.snapshot <> OLD.snapshot OR NEW.snapshot_hash <> OLD.snapshot_hash) THEN
+    RAISE EXCEPTION 'APPROVED_CHARTERS_ARE_IMMUTABLE';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER charter_version_immutability
+  BEFORE UPDATE ON creative_charter_versions
+  FOR EACH ROW
+  EXECUTE FUNCTION check_charter_version_immutability();
+
+-- Triggers for owner_charter_approvals immutability (denying update/delete)
+CREATE OR REPLACE FUNCTION deny_charter_approval_mutation() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'CHARTER_APPROVAL_RECORDS_ARE_IMMUTABLE';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER charter_approval_no_mutation
+  BEFORE UPDATE OR DELETE ON owner_charter_approvals
+  FOR EACH ROW
+  EXECUTE FUNCTION deny_charter_approval_mutation();
+
+-- Approval binding validation trigger before inserting owner_charter_approvals
+CREATE OR REPLACE FUNCTION verify_charter_approval_binding() RETURNS trigger AS $$
+DECLARE
+  v_charter_id uuid;
+  v_owner_id uuid;
+  v_stored_hash char(64);
+BEGIN
+  SELECT charter_id, snapshot_hash INTO v_charter_id, v_stored_hash
+    FROM creative_charter_versions WHERE id = NEW.charter_version_id;
+
+  SELECT owner_id INTO v_owner_id FROM creative_charters WHERE id = v_charter_id;
+
+  IF v_owner_id <> NEW.owner_id THEN
+    RAISE EXCEPTION 'APPROVAL_OWNER_MISMATCH';
+  END IF;
+
+  IF v_stored_hash <> NEW.snapshot_hash THEN
+    RAISE EXCEPTION 'APPROVAL_SNAPSHOT_HASH_MISMATCH';
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER check_charter_approval_binding
+  BEFORE INSERT ON owner_charter_approvals
+  FOR EACH ROW
+  EXECUTE FUNCTION verify_charter_approval_binding();
 
 -- Triggers for updated_at column automatic updating
 CREATE TRIGGER update_creative_universes_updated_at BEFORE UPDATE ON creative_universes FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

@@ -6,9 +6,6 @@ const profiles = new Map();
 const scopes = new Map();
 const approvals = new Map();
 
-// Mock registered universes for scope checking
-const registeredUniverses = new Set(["universe-horror-jarvis-uuid", "universe-mythology-lakme-uuid", "universe-horror-123", "universe-mythology-123", "universe-1", "universe-2"]);
-
 export function resetCreativeReferenceRegistry() {
   references.clear();
   profiles.clear();
@@ -449,7 +446,7 @@ export function deactivateReference(ownerId, referenceId) {
   return reference;
 }
 
-export function assignReferenceScope(ownerId, referenceId, { scopeType, scopeTargetId, nicheProfileId, visualProfileId }) {
+export function assignReferenceScope(ownerId, referenceId, { scopeType, scopeTargetId, nicheProfileId, visualProfileId }, scopeTargetRepo) {
   const reference = references.get(referenceId);
   if (!reference) throw new Error("REFERENCE_NOT_FOUND");
   if (reference.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
@@ -459,14 +456,26 @@ export function assignReferenceScope(ownerId, referenceId, { scopeType, scopeTar
     throw new Error("INVALID_SCOPE_TYPE");
   }
 
-  if (scopeType === "universe") {
-    if (!registeredUniverses.has(scopeTargetId)) {
-      throw new Error("SCOPE_TARGET_NOT_FOUND_OR_CROSS_OWNER");
-    }
-  } else {
+  // Real Scope Validation through injected ScopeTargetRepository
+  if (!scopeTargetRepo || scopeType !== "universe") {
     throw new Error("SCOPE_TARGET_REPOSITORY_NOT_AVAILABLE");
   }
 
+  const target = scopeTargetRepo.find(scopeTargetId);
+  if (!target) {
+    throw new Error("SCOPE_TARGET_NOT_FOUND");
+  }
+  if (target.ownerId !== ownerId) {
+    throw new Error("SCOPE_TARGET_CROSS_OWNER_REJECTED");
+  }
+  if (target.universeId !== reference.universeId) {
+    throw new Error("SCOPE_TARGET_CROSS_UNIVERSE_REJECTED");
+  }
+  if (target.type !== scopeType) {
+    throw new Error("SCOPE_TARGET_TYPE_MISMATCH");
+  }
+
+  // Profile-reference binding checks
   if (nicheProfileId) {
     const prof = profiles.get(nicheProfileId);
     if (!prof) throw new Error("PROFILE_NOT_FOUND");

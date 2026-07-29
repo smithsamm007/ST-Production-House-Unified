@@ -22,6 +22,19 @@ import {
   updateReference
 } from "../src/catalog/creativeReferenceLibrary.js";
 
+// Injected Repository Fake contract
+class FakeScopeTargetRepository {
+  #targets = new Map();
+
+  register(target) {
+    this.#targets.set(target.id, target);
+  }
+
+  find(id) {
+    return this.#targets.get(id) || null;
+  }
+}
+
 test("1. Niche and visual references can use different YouTube links", () => {
   resetCreativeReferenceRegistry();
   const ownerId = "owner-123";
@@ -194,7 +207,7 @@ test("10. Immutable profiles are protected from changes", () => {
   }, /CANNOT_MODIFY_APPROVED_PROFILE/);
 });
 
-test("11. Polymorphic scope validation targets and crossovers are blocked", () => {
+test("11. Polymorphic scope validation targets and crossovers are blocked via injected repository", () => {
   resetCreativeReferenceRegistry();
   const ownerId = "owner-123";
   const universeId = "universe-horror-123";
@@ -202,19 +215,60 @@ test("11. Polymorphic scope validation targets and crossovers are blocked", () =
   const ref = createNicheReference(ownerId, universeId, { url: "https://youtu.be/video123456" });
   const nicheProfile = createManualDraftProfile(ownerId, ref.id, { data: 1 });
 
-  // Reject unsupported live scope target
+  const scopeTargetRepo = new FakeScopeTargetRepository();
+
+  // Register valid target
+  scopeTargetRepo.register({
+    id: "universe-horror-123",
+    ownerId: ownerId,
+    universeId: universeId,
+    type: "universe"
+  });
+
+  // Reject unsupported live scope type (like 'series') which returns repo not available
   assert.throws(() => {
     assignReferenceScope(ownerId, ref.id, {
       scopeType: "series",
-      scopeTargetId: "unsupported-live-uuid"
-    });
+      scopeTargetId: "some-series-uuid"
+    }, scopeTargetRepo);
   }, /SCOPE_TARGET_REPOSITORY_NOT_AVAILABLE/);
+
+  // Reject cross-universe target assignment
+  scopeTargetRepo.register({
+    id: "universe-mythology-123",
+    ownerId: ownerId,
+    universeId: "universe-mythology-123",
+    type: "universe"
+  });
+
+  assert.throws(() => {
+    assignReferenceScope(ownerId, ref.id, {
+      scopeType: "universe",
+      scopeTargetId: "universe-mythology-123"
+    }, scopeTargetRepo);
+  }, /SCOPE_TARGET_CROSS_UNIVERSE_REJECTED/);
+
+  // Reject cross-owner target assignment
+  scopeTargetRepo.register({
+    id: "cross-owner-universe",
+    ownerId: "owner-other",
+    universeId: universeId,
+    type: "universe"
+  });
+
+  assert.throws(() => {
+    assignReferenceScope(ownerId, ref.id, {
+      scopeType: "universe",
+      scopeTargetId: "cross-owner-universe"
+    }, scopeTargetRepo);
+  }, /SCOPE_TARGET_CROSS_OWNER_REJECTED/);
 
   // Validates universe scope correctly
   const assignResult = assignReferenceScope(ownerId, ref.id, {
     scopeType: "universe",
-    scopeTargetId: universeId
-  });
+    scopeTargetId: "universe-horror-123"
+  }, scopeTargetRepo);
+
   assert.ok(assignResult);
   assert.equal(assignResult.scopeType, "universe");
 });
