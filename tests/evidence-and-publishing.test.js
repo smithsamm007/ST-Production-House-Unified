@@ -21,7 +21,8 @@ test("dry-run publishing produces no fake platform identity", async () => {
     artifactSha256: hash,
     destination: "youtube:channel-1",
     captionSnapshot: "Owner-reviewed caption",
-    mode: "draft"
+    mode: "draft",
+    publicAttribution: "Some Brand Channel"
   });
   service.approve(request.id, {
     ownerId: "owner-1",
@@ -40,7 +41,8 @@ test("live publishing requires a real provider receipt", async () => {
   const request = service.request({
     artifactSha256: hash,
     destination: "instagram:account-1",
-    captionSnapshot: "Approved caption"
+    captionSnapshot: "Approved caption",
+    publicAttribution: "Some Brand Channel"
   });
   service.approve(request.id, {
     ownerId: "owner-1",

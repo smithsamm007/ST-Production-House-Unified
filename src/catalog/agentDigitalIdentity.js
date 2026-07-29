@@ -2,6 +2,20 @@ export const SUPPORTED_PLATFORMS = Object.freeze(["youtube", "instagram", "faceb
 export const CONNECTION_STATUSES = Object.freeze(["unconfigured", "connected", "expired", "disconnected"]);
 export const PROFILE_STATUSES = Object.freeze(["draft", "active", "suspended"]);
 
+const DASHBOARD_ALLOWLIST = new Set([
+  "id", "agent_id", "agentId", "name", "namespace", "enabled",
+  "public_brand_name", "publicBrandName", "public_display_name", "publicDisplayName",
+  "public_description", "publicDescription", "default_language", "defaultLanguage", "status",
+  "email_address", "emailAddress", "provider", "connection_status", "connectionStatus",
+  "token_expires_at", "tokenExpiresAt", "reauthentication_required", "reauthenticationRequired",
+  "is_primary", "isPrimary", "last_verified_at", "lastVerifiedAt", "created_at", "createdAt",
+  "updated_at", "updatedAt", "platform", "public_account_name", "publicAccountName",
+  "external_account_id", "externalAccountId", "public_profile_url", "publicProfileUrl",
+  "oauth_scopes", "oauthScopes",
+  // Container keys for nested representation
+  "social_accounts", "socialAccounts", "email_connections", "emailConnections", "public_profile", "publicProfile"
+]);
+
 export function validatePublicProfile(profile) {
   if (!profile?.agentId) throw new Error("AGENT_ID_REQUIRED");
   if (!profile.publicBrandName?.trim()) throw new Error("PUBLIC_BRAND_NAME_REQUIRED");
@@ -37,22 +51,69 @@ export function checkReauthenticationRequired(connection) {
   return false;
 }
 
-export function resolvePublicAttribution({ profile, primarySocialAccount }) {
-  const brand = (profile && profile.status === "active") ? profile.publicBrandName?.trim() : null;
-  const social = (primarySocialAccount &&
-                  primarySocialAccount.connectionStatus === "connected" &&
-                  !checkReauthenticationRequired(primarySocialAccount))
-    ? primarySocialAccount.publicAccountName?.trim()
-    : null;
+export function isInternalAgentName(name, agent) {
+  if (!name || !agent) return false;
+  const cleanName = String(name).trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  const cleanAgentName = String(agent.name || "").trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  const cleanAgentId = String(agent.id || "").trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  const cleanNamespace = String(agent.namespace || "").trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 
-  const resolved = social || brand;
-  if (!resolved) {
+  if (cleanName === cleanAgentName || cleanName === cleanAgentId || cleanName === cleanNamespace) {
+    return true;
+  }
+
+  const regexAgentName = new RegExp(`\\b${cleanAgentName}\\b`, "i");
+  const regexAgentId = new RegExp(`\\b${cleanAgentId}\\b`, "i");
+  if (regexAgentName.test(name) || regexAgentId.test(name)) {
+    return true;
+  }
+
+  return false;
+}
+
+export function resolvePublicAttribution({ agentId, agent, profile, primarySocialAccount }) {
+  if (!agentId) {
     return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
   }
 
-  // Explicitly ensure we never output internal agent names like JARVIS, PANCHI, etc.
-  const internalNames = ["JARVIS", "SHERLOCK", "LAKME", "PANCHI", "VEDA", "BYTE", "CHANAKYA", "KABIR", "SHAKTI", "ROHAN", "MAYA", "AAROHI", "VIKRAM", "TARA", "ANANYA", "KARAN", "DEV", "AANYA", "ARJUN", "NISHA"];
-  if (internalNames.includes(resolved.toUpperCase())) {
+  // Verify Profile belongs to agentId if profile is provided
+  if (profile) {
+    if (profile.agentId !== agentId) {
+      return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+    }
+  }
+
+  // Verify Primary Social Account belongs to agentId and meets constraints
+  if (primarySocialAccount) {
+    if (primarySocialAccount.agentId !== agentId) {
+      return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+    }
+    if (primarySocialAccount.isPrimary !== true) {
+      return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+    }
+    if (!SUPPORTED_PLATFORMS.includes(primarySocialAccount.platform)) {
+      return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+    }
+    if (primarySocialAccount.connectionStatus !== "connected") {
+      return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+    }
+    if (checkReauthenticationRequired(primarySocialAccount)) {
+      return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+    }
+    if (primarySocialAccount.tokenExpiresAt && isTokenExpired(primarySocialAccount.tokenExpiresAt)) {
+      return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+    }
+  }
+
+  const brand = (profile && profile.status === "active") ? profile.publicBrandName?.trim() : null;
+  const social = (primarySocialAccount) ? primarySocialAccount.publicAccountName?.trim() : null;
+
+  const resolved = social || brand;
+  if (!resolved || resolved.trim() === "") {
+    return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+  }
+
+  if (agent && isInternalAgentName(resolved, agent)) {
     return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
   }
 
@@ -65,13 +126,10 @@ export function serializeForDashboard(data) {
   }
   if (data && typeof data === "object" && !(data instanceof Date)) {
     const result = {};
-    const sensitiveKeys = [/secret/i, /token/i, /password/i, /key/i, /credential/i, /private/i];
     for (const [key, value] of Object.entries(data)) {
-      const isSensitive = sensitiveKeys.some((regex) => regex.test(key));
-      if (isSensitive) {
-        continue; // Strip entirely
+      if (DASHBOARD_ALLOWLIST.has(key)) {
+        result[key] = serializeForDashboard(value);
       }
-      result[key] = serializeForDashboard(value);
     }
     return result;
   }

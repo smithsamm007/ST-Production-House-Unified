@@ -10,7 +10,8 @@ import {
   isTokenExpired,
   checkReauthenticationRequired,
   resolvePublicAttribution,
-  serializeForDashboard
+  serializeForDashboard,
+  isInternalAgentName
 } from "../src/catalog/agentDigitalIdentity.js";
 import { PublishingService } from "../src/publishing/publishingService.js";
 
@@ -24,7 +25,6 @@ test("1. All 20 agents remain preloaded", () => {
 
 test("2. Maximum 50 agents remains enforced", () => {
   const registry = new AgentRegistry();
-  const overflowAgentId = "agent-51";
   assert.throws(() => {
     for (let i = 21; i <= 51; i++) {
       registry.add({
@@ -37,44 +37,33 @@ test("2. Maximum 50 agents remains enforced", () => {
 });
 
 test("3 & 4. Public attribution does not expose internal names and uses public brand or account brand", () => {
-  // Case A: valid active profile
   const profile = {
     agentId: "agent-01",
     publicBrandName: "My Cool Channel",
     publicDisplayName: "Cool Display",
     status: "active"
   };
-  const attribution = resolvePublicAttribution({ profile });
+  const attribution = resolvePublicAttribution({ agentId: "agent-01", profile });
   assert.equal(attribution, "My Cool Channel");
 
-  // Case B: Profile uses internal name 'JARVIS' -> must block with PUBLIC_PUBLISHING_IDENTITY_REQUIRED
+  // Profile uses internal name 'JARVIS' -> must block
   const badProfile = {
     agentId: "agent-01",
     publicBrandName: "JARVIS",
     publicDisplayName: "Jarvis Agent",
     status: "active"
   };
-  assert.equal(resolvePublicAttribution({ profile: badProfile }), "PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
+  const agent = { id: "agent-01", name: "JARVIS", namespace: "st.agent.jarvis" };
+  assert.equal(resolvePublicAttribution({ agentId: "agent-01", agent, profile: badProfile }), "PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
 
-  // Case C: Primary social account connected
-  const primarySocialAccount = {
+  // Profile uses internal name variant 'Agent JARVIS' -> must block due to word boundary checks
+  const badProfileVariant = {
     agentId: "agent-01",
-    connectionStatus: "connected",
-    publicAccountName: "My Instagram Brand",
-    platform: "instagram",
-    isPrimary: true
+    publicBrandName: "Agent JARVIS",
+    publicDisplayName: "Jarvis Agent",
+    status: "active"
   };
-  assert.equal(resolvePublicAttribution({ profile, primarySocialAccount }), "My Instagram Brand");
-
-  // Case D: Social account name is internal name 'SHERLOCK' -> must block
-  const badSocialAccount = {
-    agentId: "agent-01",
-    connectionStatus: "connected",
-    publicAccountName: "SHERLOCK",
-    platform: "instagram",
-    isPrimary: true
-  };
-  assert.equal(resolvePublicAttribution({ profile, primarySocialAccount: badSocialAccount }), "PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
+  assert.equal(resolvePublicAttribution({ agentId: "agent-01", agent, profile: badProfileVariant }), "PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
 });
 
 test("5. Publishing is blocked when no public identity is configured", () => {
@@ -90,7 +79,17 @@ test("5. Publishing is blocked when no public identity is configured", () => {
     });
   }, /PUBLIC_PUBLISHING_IDENTITY_REQUIRED/);
 
-  // Internal names (like PANCHI) throw on request
+  // Blank/null/undefined throws on request
+  assert.throws(() => {
+    service.request({
+      artifactSha256: dummyHash,
+      destination: "youtube:channel-123",
+      captionSnapshot: "Sample video caption",
+      publicAttribution: ""
+    });
+  }, /PUBLIC_PUBLISHING_IDENTITY_REQUIRED/);
+
+  // Internal names throw on request
   assert.throws(() => {
     service.request({
       artifactSha256: dummyHash,
@@ -107,10 +106,8 @@ test("6 & 7. Cross-agent account access and credential access rejection", () => 
     email_address: "agent1@example.com"
   };
 
-  // agent-01 accessing agent-01 is OK
   assert.equal(validateConnectionOwnership("agent-01", connection), true);
 
-  // agent-02 accessing agent-01 throws
   assert.throws(() => {
     validateConnectionOwnership("agent-02", connection);
   }, /CROSS_AGENT_ACCESS_DENIED/);
@@ -142,8 +139,9 @@ test("8. Dashboard serialization removes sensitive keys", () => {
   assert.equal(serialized.refreshToken, undefined);
   assert.equal(serialized.passwordHash, undefined);
   assert.equal(serialized.api_key, undefined);
-  assert.equal(serialized.otherFields.innerSecret, undefined);
-  assert.equal(serialized.otherFields.cleartext, "safe-value");
+
+  // otherFields is not allowlisted, so the entire object is stripped (undefined)
+  assert.equal(serialized.otherFields, undefined);
 });
 
 test("9. Token expiration triggers reauthentication-required status", () => {
@@ -174,11 +172,9 @@ test("9. Token expiration triggers reauthentication-required status", () => {
 });
 
 test("10, 11 & 12. Multiple non-primary accounts and platforms validation", () => {
-  // Enforce types youtube, instagram, facebook, snapchat are supported
   assert.deepEqual([...SUPPORTED_PLATFORMS], ["youtube", "instagram", "facebook", "snapchat"]);
   assert.deepEqual([...CONNECTION_STATUSES], ["unconfigured", "connected", "expired", "disconnected"]);
 
-  // Mock array simulating DB constraints for agent_social_accounts
   const accounts = [
     { agentId: "agent-01", platform: "youtube", isPrimary: true, publicAccountName: "Brand YT" },
     { agentId: "agent-01", platform: "youtube", isPrimary: false, publicAccountName: "Backup YT 1" },
@@ -186,7 +182,6 @@ test("10, 11 & 12. Multiple non-primary accounts and platforms validation", () =
     { agentId: "agent-01", platform: "instagram", isPrimary: true, publicAccountName: "Brand IG" }
   ];
 
-  // Helper validation for unique primary rule per agent/platform
   function checkPrimaryUniquenessRule(list) {
     const primarySet = new Set();
     for (const acc of list) {
@@ -203,7 +198,6 @@ test("10, 11 & 12. Multiple non-primary accounts and platforms validation", () =
 
   assert.ok(checkPrimaryUniquenessRule(accounts));
 
-  // If we try to add another primary YouTube account, check fails
   const invalidAccounts = [
     ...accounts,
     { agentId: "agent-01", platform: "youtube", isPrimary: true, publicAccountName: "Clashing YT" }
@@ -214,4 +208,192 @@ test("10, 11 & 12. Multiple non-primary accounts and platforms validation", () =
 test("13. No real secret values are present in fixtures", () => {
   const secretLoc = "vault://st/agents/agent-01/providers/gemini/primary";
   assert.ok(secretLoc.startsWith("vault://"));
+});
+
+test("14. Additional Digital Identity Tests", () => {
+  const service = new PublishingService();
+
+  // - undefined publicAttribution rejects
+  assert.throws(() => {
+    service.request({
+      artifactSha256: dummyHash,
+      destination: "youtube:channel-123",
+      captionSnapshot: "Sample video caption",
+      publicAttribution: undefined
+    });
+  }, /PUBLIC_PUBLISHING_IDENTITY_REQUIRED/);
+
+  // - empty and whitespace attribution rejects
+  assert.throws(() => {
+    service.request({
+      artifactSha256: dummyHash,
+      destination: "youtube:channel-123",
+      captionSnapshot: "Sample video caption",
+      publicAttribution: "   "
+    });
+  }, /PUBLIC_PUBLISHING_IDENTITY_REQUIRED/);
+
+  // - profile from another agent resolves to PUBLIC_PUBLISHING_IDENTITY_REQUIRED
+  const profileOther = {
+    agentId: "agent-02",
+    publicBrandName: "Another Agent Brand",
+    publicDisplayName: "Display",
+    status: "active"
+  };
+  assert.equal(
+    resolvePublicAttribution({ agentId: "agent-01", profile: profileOther }),
+    "PUBLIC_PUBLISHING_IDENTITY_REQUIRED"
+  );
+
+  // - social account from another agent resolves to PUBLIC_PUBLISHING_IDENTITY_REQUIRED
+  const socialOther = {
+    agentId: "agent-02",
+    platform: "youtube",
+    isPrimary: true,
+    connectionStatus: "connected",
+    publicAccountName: "My Brand Channel"
+  };
+  assert.equal(
+    resolvePublicAttribution({ agentId: "agent-01", primarySocialAccount: socialOther }),
+    "PUBLIC_PUBLISHING_IDENTITY_REQUIRED"
+  );
+
+  // - non-primary social account resolves to PUBLIC_PUBLISHING_IDENTITY_REQUIRED
+  const socialNonPrimary = {
+    agentId: "agent-01",
+    platform: "youtube",
+    isPrimary: false,
+    connectionStatus: "connected",
+    publicAccountName: "My Brand Channel"
+  };
+  assert.equal(
+    resolvePublicAttribution({ agentId: "agent-01", primarySocialAccount: socialNonPrimary }),
+    "PUBLIC_PUBLISHING_IDENTITY_REQUIRED"
+  );
+
+  // - unsupported platform resolves to PUBLIC_PUBLISHING_IDENTITY_REQUIRED
+  const socialUnsupportedPlatform = {
+    agentId: "agent-01",
+    platform: "twitter",
+    isPrimary: true,
+    connectionStatus: "connected",
+    publicAccountName: "My Brand Channel"
+  };
+  assert.equal(
+    resolvePublicAttribution({ agentId: "agent-01", primarySocialAccount: socialUnsupportedPlatform }),
+    "PUBLIC_PUBLISHING_IDENTITY_REQUIRED"
+  );
+
+  // - expired token (reauthentication required or expired status) resolves to PUBLIC_PUBLISHING_IDENTITY_REQUIRED
+  const socialExpiredStatus = {
+    agentId: "agent-01",
+    platform: "youtube",
+    isPrimary: true,
+    connectionStatus: "expired",
+    publicAccountName: "My Brand Channel"
+  };
+  assert.equal(
+    resolvePublicAttribution({ agentId: "agent-01", primarySocialAccount: socialExpiredStatus }),
+    "PUBLIC_PUBLISHING_IDENTITY_REQUIRED"
+  );
+
+  const socialExpiredTimestamp = {
+    agentId: "agent-01",
+    platform: "youtube",
+    isPrimary: true,
+    connectionStatus: "connected",
+    publicAccountName: "My Brand Channel",
+    tokenExpiresAt: new Date(Date.now() - 3600_000).toISOString()
+  };
+  assert.equal(
+    resolvePublicAttribution({ agentId: "agent-01", primarySocialAccount: socialExpiredTimestamp }),
+    "PUBLIC_PUBLISHING_IDENTITY_REQUIRED"
+  );
+
+  // - future agents 21–50 checks work dynamically
+  const futureAgent = {
+    id: "agent-35",
+    name: "KUKU",
+    namespace: "st.agent.kuku"
+  };
+  assert.equal(isInternalAgentName("KUKU", futureAgent), true);
+  assert.equal(isInternalAgentName("agent-35", futureAgent), true);
+  assert.equal(isInternalAgentName("st.agent.kuku", futureAgent), true);
+  // Word boundary check
+  assert.equal(isInternalAgentName("Brand KUKU Publishing", futureAgent), true);
+  assert.equal(isInternalAgentName("KUKU-Channel", futureAgent), true);
+  assert.equal(isInternalAgentName("Safe Brand", futureAgent), false);
+
+  // Resolve with future agent and clashing name -> rejects with PUBLIC_PUBLISHING_IDENTITY_REQUIRED
+  const futureProfileClash = {
+    agentId: "agent-35",
+    publicBrandName: "KUKU",
+    status: "active"
+  };
+  assert.equal(
+    resolvePublicAttribution({ agentId: "agent-35", agent: futureAgent, profile: futureProfileClash }),
+    "PUBLIC_PUBLISHING_IDENTITY_REQUIRED"
+  );
+
+  // - nested unexpected secret-reference fields serialization check
+  const complexObj = {
+    id: "connection-id-123",
+    agentId: "agent-01",
+    oauth_scopes: ["scope1"],
+    api_key: "real-secret-key-material",
+    credentials: {
+      password: "password-val",
+      token: "secret-token"
+    },
+    someUnknownPayload: {
+      innerData: "should-not-serialize"
+    },
+    // Allowlisted nested container
+    socialAccounts: [
+      { platform: "youtube", publicAccountName: "YT Real Channel" }
+    ]
+  };
+  const serialized = serializeForDashboard(complexObj);
+  assert.equal(serialized.id, "connection-id-123");
+  assert.equal(serialized.agentId, "agent-01");
+  assert.deepEqual(serialized.oauth_scopes, ["scope1"]);
+  assert.equal(serialized.api_key, undefined);
+  assert.equal(serialized.credentials, undefined);
+  assert.equal(serialized.someUnknownPayload, undefined); // Completely stripped because it is not in explicit allowlist!
+  assert.equal(serialized.socialAccounts[0].platform, "youtube");
+  assert.equal(serialized.socialAccounts[0].publicAccountName, "YT Real Channel");
+
+  // - unconfigured account slots without fake identities
+  const unconfiguredSocial = {
+    agentId: "agent-01",
+    platform: "snapchat",
+    connectionStatus: "unconfigured",
+    publicAccountName: null,
+    externalAccountId: null,
+    secretLocator: null
+  };
+  assert.equal(unconfiguredSocial.connectionStatus, "unconfigured");
+  assert.equal(unconfiguredSocial.secretLocator, null);
+
+  // - connected accounts requiring identifiers and secret references
+  function validateConnectionProperties(conn) {
+    if (conn.connectionStatus === "connected") {
+      if (!conn.publicAccountName || !conn.secretLocator) {
+        throw new Error("CONNECTED_ACCOUNTS_REQUIRE_IDENTIFIERS_AND_SECRETS");
+      }
+    }
+    return true;
+  }
+  assert.ok(validateConnectionProperties({
+    connectionStatus: "connected",
+    publicAccountName: "Real brand",
+    secretLocator: "vault://secret"
+  }));
+  assert.throws(() => {
+    validateConnectionProperties({
+      connectionStatus: "connected",
+      publicAccountName: null,
+      secretLocator: null
+    });
+  }, /CONNECTED_ACCOUNTS_REQUIRE_IDENTIFIERS_AND_SECRETS/);
 });

@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isInternalAgentName } from "../catalog/agentDigitalIdentity.js";
+import { PRELOADED_AGENTS } from "../catalog/agents.js";
 
 export class PublishingService {
   #requests = new Map();
@@ -10,12 +12,20 @@ export class PublishingService {
     if (!input.destination || !input.captionSnapshot) {
       throw new Error("PUBLISHING_SNAPSHOT_REQUIRED");
     }
-    const attribution = input.publicAttribution;
-    const internalNames = ["JARVIS", "SHERLOCK", "LAKME", "PANCHI", "VEDA", "BYTE", "CHANAKYA", "KABIR", "SHAKTI", "ROHAN", "MAYA", "AAROHI", "VIKRAM", "TARA", "ANANYA", "KARAN", "DEV", "AANYA", "ARJUN", "NISHA"];
-    if (attribution === "PUBLIC_PUBLISHING_IDENTITY_REQUIRED" ||
-        (attribution && internalNames.includes(attribution.toUpperCase()))) {
+    const attribution = input?.publicAttribution;
+    if (typeof attribution !== "string" || !attribution.trim() || attribution === "PUBLIC_PUBLISHING_IDENTITY_REQUIRED") {
       throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
     }
+
+    // Dynamic internal agent name check dynamically using the preloaded agents,
+    // plus any dynamically supplied agent object (for agents 21-50)
+    const matchesAnyPreloaded = PRELOADED_AGENTS.some((a) => isInternalAgentName(attribution, a));
+    const matchesSelectedAgent = input.agent ? isInternalAgentName(attribution, input.agent) : false;
+
+    if (matchesAnyPreloaded || matchesSelectedAgent) {
+      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
+    }
+
     const request = Object.freeze({
       id: randomUUID(),
       artifactSha256: input.artifactSha256,
@@ -64,11 +74,15 @@ export class PublishingService {
       });
     }
     const attribution = request.publicAttribution;
-    const internalNames = ["JARVIS", "SHERLOCK", "LAKME", "PANCHI", "VEDA", "BYTE", "CHANAKYA", "KABIR", "SHAKTI", "ROHAN", "MAYA", "AAROHI", "VIKRAM", "TARA", "ANANYA", "KARAN", "DEV", "AANYA", "ARJUN", "NISHA"];
-    if (attribution === "PUBLIC_PUBLISHING_IDENTITY_REQUIRED" ||
-        (attribution && internalNames.includes(attribution.toUpperCase()))) {
+    if (typeof attribution !== "string" || !attribution.trim() || attribution === "PUBLIC_PUBLISHING_IDENTITY_REQUIRED") {
       throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
     }
+
+    const matchesAnyPreloaded = PRELOADED_AGENTS.some((a) => isInternalAgentName(attribution, a));
+    if (matchesAnyPreloaded) {
+      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
+    }
+
     const response = await publisher.publish(request);
     if (!response?.platformPostId || !response?.platformUrl || !response?.rawResponse) {
       throw new Error("PLATFORM_RECEIPT_REQUIRED");
