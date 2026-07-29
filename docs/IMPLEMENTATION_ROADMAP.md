@@ -1,13 +1,19 @@
 # Implementation Roadmap
 
-This repository is the verified secure foundation, not a claim that every live
-provider and platform is already connected.
+This repository is the verified secure foundation, not a claim that every live provider and platform is already connected.
 
 ## Phase 1 — Foundation (included)
 
 - Canonical 20-agent registry with 50-agent cap.
 - Three private remote providers plus local emergency policy.
 - One-Reel product identity policy and independent main-video placement.
+- **Agent Digital Identity and Connection Isolation**:
+  - `agent_public_profiles`, `agent_email_connections`, and `agent_social_accounts` schema definitions.
+  - Seeds 5 unconfigured slots (1 email, 4 social) for all 20 preloaded agents without fake credentials or addresses.
+  - **Important Notice**: No real email addresses, live OAuth connections, or live social accounts are active yet. Live OAuth, SMTP, and social publishing remain pending.
+  - Internal agent names are kept internal and strictly excluded from public posts/uploads (including dynamic protection checks for agents 21–50 and variant naming check rules).
+  - Safe dashboard serialization using an explicit safe-output allowlist (DTO).
+  - Supported platforms: YouTube, Instagram, Facebook, and Snapchat (Snapchat live publishing remains pending).
 - Affiliate URL/disclosure policy.
 - Owner-approval and non-fabricated publishing receipt policy.
 - PostgreSQL schema for durable jobs, leases, evidence, and receipts.
@@ -16,8 +22,8 @@ provider and platform is already connected.
 ## Phase 2 — Runnable control plane (estimated 3–5 weeks)
 
 - API, owner dashboard, Argon2id/passkey authentication, CSRF, RBAC.
-- PostgreSQL repositories and migrations wired to domain policies.
-- Redis or PostgreSQL workers with leases, concurrency and observability.
+- PostgreSQL repositories and migrations wired to domain policies, including concrete repository implementations for digital identities, public profiles, and email/social connections.
+- Redis or PostgreSQL workers with leases, concurrency, and observability.
 - Vault/KMS credential broker and per-agent task-provider configuration.
 
 ## Phase 3 — Real media workers (estimated 5–9 weeks)
@@ -25,15 +31,14 @@ provider and platform is already connected.
 - ViMax motion adapter with real provider contract tests.
 - Story/continuity worker based on validated JARVIS concepts.
 - Voice adapters for real Sarvam/Edge/local TTS with pronunciation review.
-- MoneyPrinterTurbo-derived assembly, subtitles, music-rights registry,
-  FFmpeg sandboxing, artifact storage and FFprobe verification.
+- MoneyPrinterTurbo-derived assembly, subtitles, music-rights registry, FFmpeg sandboxing, artifact storage, and FFprobe verification.
 
 ## Phase 4 — Promotion and publishing (estimated 3–5 weeks)
 
-- Campaign intake, affiliate link security scanner and disclosure templates.
-- YouTube/Instagram/Facebook/Telegram destination configuration.
+- Campaign intake, affiliate link security scanner, and disclosure templates.
+- YouTube/Instagram/Facebook/Telegram/Snapchat destination configuration.
 - Separate Postiz deployment and verified receipt reconciliation.
-- Signed partner/catalog gateways, approval snapshots and scheduling.
+- Signed partner/catalog gateways, approval snapshots, and scheduling.
 
 ## Phase 5 — Hardening and release (estimated 3–5 weeks)
 
@@ -42,7 +47,4 @@ provider and platform is already connected.
 - Security review, dependency/SBOM scan, license and asset-rights review.
 - Staging burn-in before controlled live publishing.
 
-With two experienced engineers plus focused AI assistance, a credible
-production release is approximately 14–24 weeks. AI can reduce drafting and
-test-writing time, but provider approvals, security review, platform behavior,
-media quality evaluation, and staging cannot be safely compressed away.
+With two experienced engineers plus focused AI assistance, a credible production release is approximately 14–24 weeks. AI can reduce drafting and test-writing time, but provider approvals, security review, platform behavior, media quality evaluation, and staging cannot be safely compressed away.

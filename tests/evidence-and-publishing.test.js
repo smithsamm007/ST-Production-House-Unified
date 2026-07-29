@@ -17,7 +17,20 @@ test("rejects fabricated upload receipts", () => {
 
 test("dry-run publishing produces no fake platform identity", async () => {
   const service = new PublishingService();
+
+  const agentId = "agent-01";
+  const agent = { id: "agent-01", name: "JARVIS", namespace: "st.agent.jarvis" };
+  const profile = {
+    agentId: "agent-01",
+    publicBrandName: "My Real Brand",
+    publicDisplayName: "Brand Display",
+    status: "active"
+  };
+
   const request = service.request({
+    agentId,
+    agent,
+    profile,
     artifactSha256: hash,
     destination: "youtube:channel-1",
     captionSnapshot: "Owner-reviewed caption",
@@ -37,7 +50,20 @@ test("dry-run publishing produces no fake platform identity", async () => {
 
 test("live publishing requires a real provider receipt", async () => {
   const service = new PublishingService();
+
+  const agentId = "agent-01";
+  const agent = { id: "agent-01", name: "JARVIS", namespace: "st.agent.jarvis" };
+  const profile = {
+    agentId: "agent-01",
+    publicBrandName: "My Real Brand",
+    publicDisplayName: "Brand Display",
+    status: "active"
+  };
+
   const request = service.request({
+    agentId,
+    agent,
+    profile,
     artifactSha256: hash,
     destination: "instagram:account-1",
     captionSnapshot: "Approved caption"
