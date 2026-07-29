@@ -31,5 +31,5 @@ These rules apply to every human or AI contributor.
     dead-letter handling, and concurrency controls.
 14. A change is complete only when its tests and verification commands pass.
 15. **Agent Name Internal-Only Rule**: Agent names (e.g. JARVIS, SHERLOCK, PANCHI, VEDA) are strictly internal identifiers. They must never automatically leak into public videos, captions, descriptions, or social posts.
-16. **Account and Connection Isolation**: Every agent must have its own isolated email and social connections (YouTube, Instagram, Facebook, Snapchat). No cross-agent token sharing or connection hijacking is permitted.
-17. **Opaque Secrets & Safe Serialization**: Real API keys, tokens, or passwords must never be stored in plain text or in the database (use secret-manager URLs like `vault://...`). Dashboard serializations must recursively purge all locator and secret strings.
+16. **Account and Connection Isolation**: Every agent possesses unconfigured connection slots for email and social accounts (YouTube, Instagram, Facebook, Snapchat). No cross-agent token sharing is permitted. Real email addresses, active OAuth connections, and live social accounts are not connected or configured yet; live OAuth and social publishing remain pending.
+17. **Opaque Secrets & Safe Serialization**: Real API keys, tokens, or passwords must never be stored in plain text or in the database (use secret-manager URLs like `vault://...`). Dashboard serializations use an explicit safe-output allowlist (DTO) and block unknown fields.

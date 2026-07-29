@@ -4,12 +4,18 @@ This is a clean, ST-owned secure foundation for consolidating the strongest idea
 
 ## What is implemented
 
-- **Agent Digital Identity and Account Isolation (Upgrade Added)**:
+- **Agent Digital Identity and Account Isolation (Upgraded Foundation)**:
   - Every agent (including JARVIS, SHERLOCK, PANCHI, VEDA, etc.) uses its name as an **internal identifier only**. Internal agent names are strictly blocked from automatically appearing in public videos, watermarks, captions, descriptions, promotional Reels, or social posts.
   - Public publishing strictly uses the connected channel/account brand.
-  - Every agent possesses its own isolated operational email connection, YouTube channel connection, Instagram account connection, Facebook Page connection, Snapchat account connection (supported but live integration is pending), provider credential references, OAuth status, token expiry, and reauthentication state.
+  - Every agent possesses unconfigured account slots for:
+    - Operational email connection
+    - YouTube channel connection
+    - Instagram account connection
+    - Facebook Page connection
+    - Snapchat account connection (supported but live integration is pending)
+  - **Important Notice**: Real email addresses, active OAuth connections, and live social accounts are NOT connected or configured yet in this Phase-1 foundation. Live OAuth, external network connections, and publishing remain completely pending.
   - Access controls prevent any agent from accessing another agent's connections, OAuth tokens, or provider credentials.
-  - Safe dashboard serialization recursively strips all secret locators, passwords, access/refresh tokens, API keys, and private provider data.
+  - Safe dashboard serialization uses an explicit safe DTO/allowlist to ensure unknown or private fields are never serialized automatically.
 - Owner-controlled canonical 20-agent catalog, with a hard maximum of 50.
 - Strict per-agent provider policy: three private remote providers and one keyless local open-source emergency provider.
 - Evidence-bearing failover that rejects unverified "success".
@@ -17,7 +23,7 @@ This is a clean, ST-owned secure foundation for consolidating the strongest idea
 - One standalone promotional Reel per normalized product/service identity.
 - Explicit duplicate-campaign authorization and independent main-video choice.
 - Affiliate HTTPS/domain/disclosure policy.
-- Owner-approved publishing snapshots and truthful dry-run behavior.
+- Owner-approved publishing snapshots with cryptographically hashed snapshots to prevent post-approval mutations.
 - Isolated worker contracts for story, motion, assembly, and Postiz publishing.
 - Automated policy tests requiring no package installation.
 
@@ -26,6 +32,8 @@ This is a clean, ST-owned secure foundation for consolidating the strongest idea
 Live Gemini, Claude, Sarvam, Veo, social-network, Snapchat, or Postiz calls are not enabled in this foundation. Those require the owner's accounts, secret-manager references, provider sandbox verification, and platform approval. No uploads or provider calls were made while building this repository.
 
 Snapchat is supported as an account configuration type, but live Snapchat publishing remains pending.
+
+All email and social connection slots are currently unconfigured and seeded with null identifiers in the database.
 
 ## Verify
 

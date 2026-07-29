@@ -12,7 +12,6 @@ const DASHBOARD_ALLOWLIST = new Set([
   "updated_at", "updatedAt", "platform", "public_account_name", "publicAccountName",
   "external_account_id", "externalAccountId", "public_profile_url", "publicProfileUrl",
   "oauth_scopes", "oauthScopes",
-  // Container keys for nested representation
   "social_accounts", "socialAccounts", "email_connections", "emailConnections", "public_profile", "publicProfile"
 ]);
 
@@ -51,20 +50,28 @@ export function checkReauthenticationRequired(connection) {
   return false;
 }
 
-export function isInternalAgentName(name, agent) {
-  if (!name || !agent) return false;
-  const cleanName = String(name).trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-  const cleanAgentName = String(agent.name || "").trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-  const cleanAgentId = String(agent.id || "").trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-  const cleanNamespace = String(agent.namespace || "").trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+export function normalizeForPunctuation(str) {
+  if (!str) return "";
+  return String(str)
+    .toLowerCase()
+    .replace(/[_\-\.\s\p{P}]+/gu, "");
+}
 
-  if (cleanName === cleanAgentName || cleanName === cleanAgentId || cleanName === cleanNamespace) {
+export function isInternalAgentName(publicName, agent) {
+  if (!publicName || !agent) return false;
+
+  const normPublic = normalizeForPunctuation(publicName);
+  const normAgentName = normalizeForPunctuation(agent.name);
+  const normAgentId = normalizeForPunctuation(agent.id);
+  const normAgentNamespace = normalizeForPunctuation(agent.namespace);
+
+  if (normAgentName && normPublic.includes(normAgentName)) {
     return true;
   }
-
-  const regexAgentName = new RegExp(`\\b${cleanAgentName}\\b`, "i");
-  const regexAgentId = new RegExp(`\\b${cleanAgentId}\\b`, "i");
-  if (regexAgentName.test(name) || regexAgentId.test(name)) {
+  if (normAgentId && normPublic.includes(normAgentId)) {
+    return true;
+  }
+  if (normAgentNamespace && normPublic.includes(normAgentNamespace)) {
     return true;
   }
 
@@ -72,52 +79,67 @@ export function isInternalAgentName(name, agent) {
 }
 
 export function resolvePublicAttribution({ agentId, agent, profile, primarySocialAccount }) {
-  if (!agentId) {
-    return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+  if (!agentId || !agent) {
+    throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
   }
 
-  // Verify Profile belongs to agentId if profile is provided
+  let resolved = null;
+  let sourceType = null;
+  let sourceId = null;
+
   if (profile) {
     if (profile.agentId !== agentId) {
-      return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
     }
+    if (profile.status !== "active") {
+      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
+    }
+    resolved = profile.publicBrandName?.trim();
+    sourceType = "public_profile";
+    sourceId = profile.agent_id || profile.agentId;
   }
 
-  // Verify Primary Social Account belongs to agentId and meets constraints
   if (primarySocialAccount) {
     if (primarySocialAccount.agentId !== agentId) {
-      return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
     }
     if (primarySocialAccount.isPrimary !== true) {
-      return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
     }
     if (!SUPPORTED_PLATFORMS.includes(primarySocialAccount.platform)) {
-      return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
     }
     if (primarySocialAccount.connectionStatus !== "connected") {
-      return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
     }
     if (checkReauthenticationRequired(primarySocialAccount)) {
-      return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
     }
     if (primarySocialAccount.tokenExpiresAt && isTokenExpired(primarySocialAccount.tokenExpiresAt)) {
-      return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
     }
+
+    // Social account connection takes precedence if both exist
+    resolved = primarySocialAccount.publicAccountName?.trim();
+    sourceType = "social_account";
+    sourceId = primarySocialAccount.id;
   }
 
-  const brand = (profile && profile.status === "active") ? profile.publicBrandName?.trim() : null;
-  const social = (primarySocialAccount) ? primarySocialAccount.publicAccountName?.trim() : null;
-
-  const resolved = social || brand;
   if (!resolved || resolved.trim() === "") {
-    return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+    throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
   }
 
-  if (agent && isInternalAgentName(resolved, agent)) {
-    return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
+  if (isInternalAgentName(resolved, agent)) {
+    throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
   }
 
-  return resolved;
+  return {
+    sourceAgentId: agentId,
+    publicAttribution: resolved,
+    sourceType,
+    sourceId,
+    isValid: true
+  };
 }
 
 export function serializeForDashboard(data) {

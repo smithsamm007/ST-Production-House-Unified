@@ -9,8 +9,10 @@ This repository is the verified secure foundation, not a claim that every live p
 - One-Reel product identity policy and independent main-video placement.
 - **Agent Digital Identity and Connection Isolation**:
   - `agent_public_profiles`, `agent_email_connections`, and `agent_social_accounts` schema definitions.
-  - Internal agent names are kept internal and strictly excluded from public posts/uploads.
-  - Safe dashboard serialization to prevent API key, password, or token leakages.
+  - Seeds 5 unconfigured slots (1 email, 4 social) for all 20 preloaded agents without fake credentials or addresses.
+  - **Important Notice**: No real email addresses, live OAuth connections, or live social accounts are active yet. Live OAuth, SMTP, and social publishing remain pending.
+  - Internal agent names are kept internal and strictly excluded from public posts/uploads (including dynamic protection checks for agents 21–50 and variant naming check rules).
+  - Safe dashboard serialization using an explicit safe-output allowlist (DTO).
   - Supported platforms: YouTube, Instagram, Facebook, and Snapchat (Snapchat live publishing remains pending).
 - Affiliate URL/disclosure policy.
 - Owner-approval and non-fabricated publishing receipt policy.

@@ -20,14 +20,15 @@ flowchart TD
 To protect client privacy and ensure enterprise-grade security, agent names are strictly internal identifiers. No internal agent name (e.g., JARVIS, SHERLOCK, PANCHI, VEDA) may ever automatically appear in public-facing channels, captions, metadata, or media watermarks.
 
 ### Isolated Agent Connections
-Each agent manages its own completely isolated workspace connections:
-- **Operational Email Connections**: Scoped per-agent to process inbound and outbound correspondence.
-- **Social Media Connections**: Every agent can connect a separate account on YouTube, Instagram, Facebook, and Snapchat. While Snapchat is a supported configuration type, live Snapchat publishing is a pending integration.
+Each agent manages its own completely isolated, unconfigured workspace connections in the database:
+- **Operational Email Connections**: Seeding one unconfigured slot per agent to handle future correspondence. Once configured, email addresses must be unique in a case-insensitive manner across agents.
+- **Social Media Connections**: Seeding unconfigured slots for YouTube, Instagram, Facebook, and Snapchat.
+- **Important Notice**: Real email addresses, live OAuth connections, and social accounts are NOT connected or active yet in this foundation. Live OAuth and social publishing remain pending.
 - **Primary-Account Constraints**: An agent can have multiple non-primary accounts per platform, but only one primary account per platform. This rule is database-enforced using a partial unique index.
 
 ### Access Restrictions
 - No agent can access or borrow another agent's credentials, OAuth tokens, email connections, or social channels. This prevents horizontal privilege escalation.
-- Dashboard views recursively strip all sensitive credentials, locator paths, passwords, and access tokens before serializing JSON data for browser consumption.
+- Dashboard views use an explicit safe-output DTO/allowlist to ensure secret keys, locators, and unallowlisted fields are never serialized.
 
 ## Runtime rules
 

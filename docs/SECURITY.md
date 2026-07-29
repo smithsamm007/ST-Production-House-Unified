@@ -10,9 +10,10 @@
 ## Agent Digital Identity and Account Isolation
 
 To achieve true zero-trust compartmentalization within multi-agent environments:
-- **Internal Agent Anonymity**: Agent names are strictly mapped to UUIDs or internal primary keys. No internal name (e.g. VEDA) is exposed in public caption payloads, platform descriptions, or media renderings.
+- **Internal Agent Anonymity**: Agent names are strictly mapped to UUIDs or internal primary keys. No internal name (e.g. VEDA) is exposed in public caption payloads, platform descriptions, or media renderings. This includes strict normalization checks against names containing underscores, hyphens, and periods (such as `AGENT_NAME_35`).
 - **Account Isolation**: YouTube channel connections, Facebook Pages, Instagram accounts, Snapchat accounts, and operational email pipelines are isolated. Tokens, credentials, and connection descriptors belonging to Agent A are strictly protected against lookup or modification by Agent B.
-- **Strict Data Sanitization**: To prevent leakage of cloud references or authentication material, the control plane sanitizes all serialized JSON payloads before sending them to browser code. This process strips `secretLocator`, API keys, access and refresh tokens, credentials, and passwords.
+- **Important Notice**: No real email addresses, active OAuth credentials, or live social accounts are configured in this Phase-1 foundation. All slots remain unconfigured and live social publishing/OAuth integration is pending.
+- **Strict Data Sanitization**: To prevent leakage of cloud references or authentication material, the control plane sanitizes all serialized JSON payloads before sending them to browser code using an explicit safe-output allowlist (DTO), blocking any unallowlisted or unexpected fields from being serialized automatically.
 
 ## Credentials and Reference Architecture
 

@@ -1,6 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
-import { isInternalAgentName } from "../catalog/agentDigitalIdentity.js";
-import { PRELOADED_AGENTS } from "../catalog/agents.js";
+
+function getAttributionHash(validatedAttribution) {
+  if (!validatedAttribution) return "";
+  const stable = {
+    sourceAgentId: validatedAttribution.sourceAgentId,
+    publicAttribution: validatedAttribution.publicAttribution,
+    sourceType: validatedAttribution.sourceType,
+    sourceId: validatedAttribution.sourceId,
+    isValid: validatedAttribution.isValid
+  };
+  return createHash("sha256")
+    .update(JSON.stringify(stable))
+    .digest("hex");
+}
 
 export class PublishingService {
   #requests = new Map();
@@ -12,32 +24,58 @@ export class PublishingService {
     if (!input.destination || !input.captionSnapshot) {
       throw new Error("PUBLISHING_SNAPSHOT_REQUIRED");
     }
-    const attribution = input?.publicAttribution;
-    if (typeof attribution !== "string" || !attribution.trim() || attribution === "PUBLIC_PUBLISHING_IDENTITY_REQUIRED") {
+
+    const agentId = input?.agentId;
+    const valAtt = input?.validatedAttribution;
+
+    if (!agentId || !valAtt || valAtt.isValid !== true) {
+      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
+    }
+    if (valAtt.sourceAgentId !== agentId) {
+      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
+    }
+    if (!valAtt.publicAttribution || !valAtt.publicAttribution.trim()) {
+      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
+    }
+    if (!["public_profile", "social_account"].includes(valAtt.sourceType)) {
+      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
+    }
+    if (!valAtt.sourceId) {
       throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
     }
 
-    // Dynamic internal agent name check dynamically using the preloaded agents,
-    // plus any dynamically supplied agent object (for agents 21-50)
-    const matchesAnyPreloaded = PRELOADED_AGENTS.some((a) => isInternalAgentName(attribution, a));
-    const matchesSelectedAgent = input.agent ? isInternalAgentName(attribution, input.agent) : false;
-
-    if (matchesAnyPreloaded || matchesSelectedAgent) {
-      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
-    }
+    const attributionHash = getAttributionHash(valAtt);
 
     const request = Object.freeze({
       id: randomUUID(),
+      agentId,
       artifactSha256: input.artifactSha256,
       destination: input.destination,
       captionSnapshot: input.captionSnapshot,
       affiliateLinkIds: Object.freeze([...(input.affiliateLinkIds ?? [])]),
       mode: input.mode ?? "draft",
       status: "awaiting_owner_approval",
-      publicAttribution: attribution
+      attributionSnapshot: Object.freeze({ ...valAtt }),
+      attributionHash
     });
     this.#requests.set(request.id, request);
     return request;
+  }
+
+  mutateRequestForTesting(requestId, mutatedFields) {
+    const request = this.#requests.get(requestId);
+    if (request) {
+      // Create a mutable copy of attributionSnapshot if passed
+      let newAtt = request.attributionSnapshot;
+      if (mutatedFields.attributionSnapshot) {
+        newAtt = { ...request.attributionSnapshot, ...mutatedFields.attributionSnapshot };
+      }
+      this.#requests.set(requestId, Object.freeze({
+        ...request,
+        ...mutatedFields,
+        attributionSnapshot: newAtt ? Object.freeze(newAtt) : null
+      }));
+    }
   }
 
   approve(requestId, approval) {
@@ -66,21 +104,19 @@ export class PublishingService {
     if (new Date(request.approval.expiresAt) <= new Date()) {
       throw new Error("APPROVAL_EXPIRED");
     }
+
+    // Recompute and verify the attribution snapshot hash before publishing
+    const recomputedHash = getAttributionHash(request.attributionSnapshot);
+    if (recomputedHash !== request.attributionHash) {
+      throw new Error("ATTRIBUTION_SNAPSHOT_HASH_MISMATCH");
+    }
+
     if (dryRun) {
       return Object.freeze({
         requestId,
         status: "dry_run_completed",
         published: false
       });
-    }
-    const attribution = request.publicAttribution;
-    if (typeof attribution !== "string" || !attribution.trim() || attribution === "PUBLIC_PUBLISHING_IDENTITY_REQUIRED") {
-      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
-    }
-
-    const matchesAnyPreloaded = PRELOADED_AGENTS.some((a) => isInternalAgentName(attribution, a));
-    if (matchesAnyPreloaded) {
-      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
     }
 
     const response = await publisher.publish(request);

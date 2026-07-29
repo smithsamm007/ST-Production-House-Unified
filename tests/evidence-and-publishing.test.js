@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EvidenceLedger } from "../src/evidence/evidenceLedger.js";
 import { PublishingService } from "../src/publishing/publishingService.js";
+import { resolvePublicAttribution } from "../src/catalog/agentDigitalIdentity.js";
 
 const hash = "b".repeat(64);
 
@@ -17,12 +18,24 @@ test("rejects fabricated upload receipts", () => {
 
 test("dry-run publishing produces no fake platform identity", async () => {
   const service = new PublishingService();
+
+  const agentId = "agent-01";
+  const agent = { id: "agent-01", name: "JARVIS", namespace: "st.agent.jarvis" };
+  const profile = {
+    agentId: "agent-01",
+    publicBrandName: "My Real Brand",
+    publicDisplayName: "Brand Display",
+    status: "active"
+  };
+  const validatedAttribution = resolvePublicAttribution({ agentId, agent, profile });
+
   const request = service.request({
+    agentId,
+    validatedAttribution,
     artifactSha256: hash,
     destination: "youtube:channel-1",
     captionSnapshot: "Owner-reviewed caption",
-    mode: "draft",
-    publicAttribution: "Some Brand Channel"
+    mode: "draft"
   });
   service.approve(request.id, {
     ownerId: "owner-1",
@@ -38,11 +51,23 @@ test("dry-run publishing produces no fake platform identity", async () => {
 
 test("live publishing requires a real provider receipt", async () => {
   const service = new PublishingService();
+
+  const agentId = "agent-01";
+  const agent = { id: "agent-01", name: "JARVIS", namespace: "st.agent.jarvis" };
+  const profile = {
+    agentId: "agent-01",
+    publicBrandName: "My Real Brand",
+    publicDisplayName: "Brand Display",
+    status: "active"
+  };
+  const validatedAttribution = resolvePublicAttribution({ agentId, agent, profile });
+
   const request = service.request({
+    agentId,
+    validatedAttribution,
     artifactSha256: hash,
     destination: "instagram:account-1",
-    captionSnapshot: "Approved caption",
-    publicAttribution: "Some Brand Channel"
+    captionSnapshot: "Approved caption"
   });
   service.approve(request.id, {
     ownerId: "owner-1",

@@ -48,9 +48,9 @@ CREATE UNIQUE INDEX agent_email_connections_primary_idx
   ON agent_email_connections (agent_id)
   WHERE (is_primary = true);
 
--- Prevent same normalized email address from belonging to multiple agents once configured
+-- Prevent same normalized email address from belonging to multiple agents once configured (case-insensitive)
 CREATE UNIQUE INDEX agent_email_unique_address_idx
-  ON agent_email_connections (email_address)
+  ON agent_email_connections (lower(email_address))
   WHERE (email_address IS NOT NULL);
 
 -- 3. Create agent_social_accounts
