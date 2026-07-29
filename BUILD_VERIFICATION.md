@@ -17,10 +17,12 @@ npm run verify
 - JavaScript syntax checks: passed
 - Test files: 6
 - Tests: 46 passed, 0 failed, 0 skipped
-- Duration reported by Node test runner: 287.11541 ms
-- Current HEAD commit: f82e7234088af2df2920b270b52aa2a71804b743
-- Included main commit: 46cbcbb6205dc94c94d44955fcad32c6ed95f7e7
-- PostgreSQL actually executed: no (Sandbox runtime environment missing running service; POSTGRESQL_RUNTIME_NOT_AVAILABLE reported)
+- Duration reported by Node test runner: 315.856921 ms
+- Verified source commit: 1b8b24104a978d6f4d4bfa07cb1c3597e4a54219
+- Included main commit: a7ddae3bccb24e9db9552bd6ab08e08d8874ad27
+- Final report commit: recorded externally in the Jules completion response
+- PostgreSQL actually executed: no
+- GitHub Actions status: recorded after the final push
 - Database source-inspected only features:
   - 001_core.sql schema definitions
   - 002_seed_agents.sql agent seed data
