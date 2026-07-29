@@ -681,8 +681,8 @@ function sanitizeObjectWithWorkerAllowlist(obj) {
   return safeObj;
 }
 
-// Correction 3: Preserving the Complete Blueprint Snapshot
-export function createBlueprintVersion(ownerId, blueprintId) {
+// Correction 3: Preserving the Complete Blueprint Snapshot (Correction 2 - Scope-binding check)
+export function createBlueprintVersion(ownerId, blueprintId, scopeOverrides = null) {
   const draft = getDraftInternal(blueprintId);
   if (draft.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
   if (!draft.isActive) throw new Error("BLUEPRINT_DRAFT_IS_INACTIVE");
@@ -705,6 +705,21 @@ export function createBlueprintVersion(ownerId, blueprintId) {
   const existing = [...versions.values()].filter(v => v.blueprintId === blueprintId);
   const versionNo = existing.length + 1;
 
+  // Enforce version scope values must match parent draft exactly (Correction 2)
+  const finalOwnerId = scopeOverrides ? scopeOverrides.ownerId : draft.ownerId;
+  const finalAgentId = scopeOverrides ? scopeOverrides.agentId : draft.agentId;
+  const finalUniverseId = scopeOverrides ? scopeOverrides.universeId : draft.universeId;
+
+  if (finalOwnerId !== draft.ownerId) {
+    throw new Error("VERSION_OWNER_ID_MUST_MATCH_DRAFT");
+  }
+  if (finalAgentId !== draft.agentId) {
+    throw new Error("VERSION_AGENT_ID_MUST_MATCH_DRAFT");
+  }
+  if (finalUniverseId !== draft.universeId) {
+    throw new Error("VERSION_UNIVERSE_ID_MUST_MATCH_DRAFT");
+  }
+
   // 5. Store the complete snapshot (Correction 3)
   const v = {
     id: randomUUID(),
@@ -713,9 +728,9 @@ export function createBlueprintVersion(ownerId, blueprintId) {
     snapshot: deepFreeze(rawSnapshot), // Stored completely unchanged
     snapshotHash,
     status: "unapproved",
-    ownerId: draft.ownerId, // scope fields (Correction 2)
-    agentId: draft.agentId,
-    universeId: draft.universeId,
+    ownerId: finalOwnerId,
+    agentId: finalAgentId,
+    universeId: finalUniverseId,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };

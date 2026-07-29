@@ -226,6 +226,51 @@ CREATE TRIGGER blueprint_version_no_delete
   FOR EACH ROW
   EXECUTE FUNCTION check_blueprint_version_deletion();
 
+-- Enforce parent-draft scope binding on blueprint_versions (Correction 2)
+CREATE OR REPLACE FUNCTION verify_blueprint_version_scope_binding() RETURNS trigger AS $$
+DECLARE
+  v_draft_owner_id uuid;
+  v_draft_agent_id text;
+  v_draft_universe_id uuid;
+BEGIN
+  SELECT owner_id, agent_id, universe_id INTO v_draft_owner_id, v_draft_agent_id, v_draft_universe_id
+    FROM blueprint_drafts WHERE id = NEW.blueprint_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'PARENT_BLUEPRINT_DRAFT_NOT_FOUND';
+  END IF;
+
+  -- Version owner_id must match draft owner_id
+  IF NEW.owner_id <> v_draft_owner_id THEN
+    RAISE EXCEPTION 'VERSION_OWNER_ID_MUST_MATCH_DRAFT';
+  END IF;
+
+  -- Version agent_id must match draft agent_id
+  IF NEW.agent_id <> v_draft_agent_id THEN
+    RAISE EXCEPTION 'VERSION_AGENT_ID_MUST_MATCH_DRAFT';
+  END IF;
+
+  -- Version universe_id must match draft universe_id, including NULL handling
+  IF (NEW.universe_id IS DISTINCT FROM v_draft_universe_id) THEN
+    RAISE EXCEPTION 'VERSION_UNIVERSE_ID_MUST_MATCH_DRAFT';
+  END IF;
+
+  -- Blueprint scope is immutable after creation
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD.owner_id <> NEW.owner_id OR OLD.agent_id <> NEW.agent_id OR OLD.universe_id IS DISTINCT FROM NEW.universe_id THEN
+      RAISE EXCEPTION 'VERSION_SCOPE_IS_IMMUTABLE';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER blueprint_version_scope_verify_trigger
+  BEFORE INSERT OR UPDATE ON blueprint_versions
+  FOR EACH ROW
+  EXECUTE FUNCTION verify_blueprint_version_scope_binding();
+
 -- Verification of Blueprint Approval Constraints (Correction 2, 7)
 CREATE OR REPLACE FUNCTION verify_blueprint_approval_constraints() RETURNS trigger AS $$
 DECLARE
@@ -285,7 +330,7 @@ BEGIN
     RAISE EXCEPTION 'BLUEPRINT_HAS_ACTIVE_BLOCKING_QUESTIONS';
   END IF;
 
-  -- 7. transaction-safe lock (Correction 2) (Cast to bigint to prevent integer overflow sum aborts)
+  -- 7. transaction-safe lock (Correction 2)
   PERFORM pg_advisory_xact_lock((hashtext(v_owner_id::text)::bigint + hashtext(v_agent_id)::bigint + COALESCE(hashtext(v_universe_id::text), 0)::bigint)::bigint);
 
   RETURN NEW;

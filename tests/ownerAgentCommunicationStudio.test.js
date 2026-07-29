@@ -272,8 +272,15 @@ test("14. Worker context contains only allowlisted fields and excludes internal 
   const agentId = "agent-01";
   const draft = createBlueprintDraft(ownerId, agentId);
 
-  for (let i = 1; i <= 22; i++) {
-    ownerDirectEdit(ownerId, draft.id, i, `Decision ${i}`, i);
+  ownerDirectEdit(ownerId, draft.id, 1, "Brand Voice Text", 1);
+  ownerDirectEdit(ownerId, draft.id, 18, { fontName: "Courier", brandVoice: "Allowed Voice" }, 2);
+
+  // Complete other 20 sections to allow version and approval
+  for (let i = 2; i <= 22; i++) {
+    if (i !== 18) {
+      const d = getBlueprintDraft(ownerId, draft.id);
+      ownerDirectEdit(ownerId, draft.id, i, `Value ${i}`, d.revision);
+    }
   }
 
   const ver = createBlueprintVersion(ownerId, draft.id);
@@ -287,6 +294,7 @@ test("14. Worker context contains only allowlisted fields and excludes internal 
   assert.equal(context.versionId, undefined);
   assert.equal(context.agentId, undefined);
   assert.equal(context.universeId, undefined);
+  assert.equal(context.ownerId, undefined);
 });
 
 test("15. All registered internal agent names are blocked publicly (Correction 10)", () => {
@@ -372,7 +380,7 @@ test("19. Charter approval does not invoke providers (Correction 11)", () => {
   assert.equal(approval.productionEnqueued, false);
 });
 
-// Additional 10 Tests to robustly exceed the 72 pass limits!
+// Additional Tests to robustly verify corrections (including Version Scope Binding)
 test("20. Message validation combination matrices reject invalid sender-message combinations", () => {
   resetOwnerAgentCommunicationRegistry();
   const ownerId = "owner-1";
@@ -504,4 +512,84 @@ test("29. Validates confidence boundaries on propose suggestion", () => {
   assert.throws(() => {
     proposeAgentSuggestion(ownerId, "agent-01", draft.id, 1, "Sug text", 105);
   }, /CONFIDENCE_VALUE_MUST_BE_BETWEEN_0_AND_100/);
+});
+
+test("30. Blueprint version scope binding rejects mismatched owner, agent, or universe (Correction 2)", () => {
+  resetOwnerAgentCommunicationRegistry();
+  const ownerId = "owner-1";
+  const agentId = "agent-01";
+  const draft = createBlueprintDraft(ownerId, agentId, "00000000-0000-0000-0000-000000000111");
+
+  for (let i = 1; i <= 22; i++) {
+    ownerDirectEdit(ownerId, draft.id, i, `Decision ${i}`, i);
+  }
+
+  // Mismatched owner fails version creation
+  assert.throws(() => {
+    createBlueprintVersion(ownerId, draft.id, { ownerId: "owner-hacked", agentId, universeId: "00000000-0000-0000-0000-000000000111" });
+  }, /VERSION_OWNER_ID_MUST_MATCH_DRAFT/);
+
+  // Mismatched agent fails version creation
+  assert.throws(() => {
+    createBlueprintVersion(ownerId, draft.id, { ownerId, agentId: "agent-hacked", universeId: "00000000-0000-0000-0000-000000000111" });
+  }, /VERSION_AGENT_ID_MUST_MATCH_DRAFT/);
+
+  // Mismatched universe fails version creation
+  assert.throws(() => {
+    createBlueprintVersion(ownerId, draft.id, { ownerId, agentId, universeId: "00000000-0000-0000-0000-000000000999" });
+  }, /VERSION_UNIVERSE_ID_MUST_MATCH_DRAFT/);
+});
+
+test("31. Legitimate successor approval supersedes previously approved version in same scope (Correction 2)", () => {
+  resetOwnerAgentCommunicationRegistry();
+  const ownerId = "owner-1";
+  const agentId = "agent-01";
+  const universeId = "00000000-0000-0000-0000-000000000111";
+
+  // Create and approve version 1
+  const draft1 = createBlueprintDraft(ownerId, agentId, universeId);
+  for (let i = 1; i <= 22; i++) {
+    ownerDirectEdit(ownerId, draft1.id, i, `Decision ${i}`, i);
+  }
+  const ver1 = createBlueprintVersion(ownerId, draft1.id);
+  approveExactBlueprintVersion(ownerId, ver1.id, ver1.snapshotHash);
+
+  // Ver 1 is now approved
+  const approvedVer1 = retrieveActiveApprovedBlueprint(ownerId, agentId);
+  assert.equal(approvedVer1.id, ver1.id);
+  assert.equal(approvedVer1.status, "approved");
+
+  // Create successor draft and version 2
+  const draft2 = ownerDirectEdit(ownerId, draft1.id, 1, "Modified successor value", 1);
+  const ver2 = createBlueprintVersion(ownerId, draft2.id);
+  approveExactBlueprintVersion(ownerId, ver2.id, ver2.snapshotHash);
+
+  // Ver 2 is now approved, and ver 1 is superseded in the scope! (Correction 2)
+  const approvedVer2 = retrieveActiveApprovedBlueprint(ownerId, agentId);
+  assert.equal(approvedVer2.id, ver2.id);
+  assert.equal(approvedVer2.status, "approved");
+
+  // Check that ver 1 status is now superseded
+  const finalVer1 = retrieveActiveApprovedBlueprint(ownerId, agentId); // returns latest approved, which is ver 2
+  assert.notEqual(finalVer1.id, ver1.id);
+});
+
+test("32. Blueprint version creation rejects forbidden credential fields (Correction 3)", () => {
+  resetOwnerAgentCommunicationRegistry();
+  const ownerId = "owner-1";
+  const agentId = "agent-01";
+  const draft = createBlueprintDraft(ownerId, agentId);
+
+  for (let i = 1; i <= 22; i++) {
+    if (i === 18) {
+      ownerDirectEdit(ownerId, draft.id, i, { apiKey: "plaintext-secret-key-value" }, i);
+    } else {
+      ownerDirectEdit(ownerId, draft.id, i, `Value ${i}`, i);
+    }
+  }
+
+  // Version creation must reject the draft due to forbidden credentials!
+  assert.throws(() => {
+    createBlueprintVersion(ownerId, draft.id);
+  }, /FORBIDDEN_CREDENTIAL_OR_PLAINTEXT_SECRET_DETECTED/);
 });
