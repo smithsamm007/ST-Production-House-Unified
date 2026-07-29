@@ -15,9 +15,21 @@ npm run verify
 ## Result
 
 - JavaScript syntax checks: passed
-- Test files: 4
-- Tests: 11 passed, 0 failed, 0 skipped
-- Duration reported by Node test runner: 126.817522 ms
+- Test files: 6
+- Tests: 46 passed, 0 failed, 0 skipped
+- Duration reported by Node test runner: 315.856921 ms
+- Verified source commit: 1b8b24104a978d6f4d4bfa07cb1c3597e4a54219
+- Included main commit: a7ddae3bccb24e9db9552bd6ab08e08d8874ad27
+- Final report commit: recorded externally in the Jules completion response
+- PostgreSQL actually executed: no
+- GitHub Actions status: recorded after the final push
+- Database source-inspected only features:
+  - 001_core.sql schema definitions
+  - 002_seed_agents.sql agent seed data
+  - 003_agent_digital_identity.sql digital identity isolation indices
+  - 004_creative_charter.sql trigger validation bounds & approvals immutability trigger constraints
+  - 005_creative_reference.sql check lifecycles, revisions, timestamps ordering, and type boundary verification trigger checks
+  - 006_seed_initial_creative_charters.sql valid UUID idempotent procedures seeding LAKME and JARVIS active charters
 
 ## Verified policies
 
@@ -32,7 +44,20 @@ npm run verify
 - Affiliate HTTPS, disclosure, and domain allowlist requirements.
 - Rejection of fabricated publishing receipts.
 - Dry-run publishing without fake platform IDs or URLs.
-
-This verifies the secure policy foundation only. It is not evidence that live
-provider adapters, media rendering, platform uploads, the dashboard, or the
-production deployment are complete.
+- **Agent Digital Identity and Account Isolation (Task 6)**:
+  - Supported platforms: youtube, instagram, facebook, snapchat.
+  - Safe dashboard DTO/allowlist serialization (zero credentials or secret locator leakages).
+  - Public attribution strictly rejects internal agent names (JARVIS, LAKME, VEDA).
+- **Agent Creative Charter and Channel Universe System (Task 7)**:
+  - Additive migrations for creative universes, charters, assignments, entities, claim classifications, and approvals.
+  - JARVIS initial active Hindi/Hinglish connected horror cinematic universe charter vision.
+  - LAKME initial active Hindu Mythology universe charter vision (Samay as narrator, claim safety classifications).
+  - LAKME lazy hierarchy resolving node paths dynamically without database row explosion.
+  - Immutable version snapshots, dynamic approval SHA-256 hash checks, and duplicate activation block rules.
+- **Niche Reference and Visual Reference Library (Correction Upgrade)**:
+  - Additive migrations for creative_references, niche/visual profiles, scope assignments, and approval references.
+  - YouTube allowlist verification and unsafe URL parsing blocks (rejections of non-standard ports, credentials, localhost, private IPs, unapproved domains).
+  - Canonicalization of equivalent YouTube URLs to detect and prevent duplicates.
+  - Manual profiles requiring owner approval bound to SHA-256 hashes.
+  - Verification that niche characteristics do not alter visuals, and visual characteristics do not alter story or narration.
+  - Verification of recursive secret/credential removal.
