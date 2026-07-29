@@ -62,7 +62,19 @@ test("3. Real seed initialization creates active approved charters for JARVIS an
   }
 });
 
-test("4. Cross-owner authorizations are rejected", () => {
+test("4. Idempotent double seeding preserves existing records and does not duplicate", () => {
+  const ownerId = "owner-uuid-123";
+  initializeSeedState(ownerId);
+  initializeSeedState(ownerId); // Double seed
+
+  // Only two active assignments exist
+  const j = retrieveActiveCharter("agent-01");
+  const l = retrieveActiveCharter("agent-03");
+  assert.ok(j);
+  assert.ok(l);
+});
+
+test("5. Cross-owner authorizations are rejected", () => {
   resetCreativeCharterRegistry();
   const owner1 = "owner-1";
   const owner2 = "owner-2";
@@ -84,7 +96,7 @@ test("4. Cross-owner authorizations are rejected", () => {
   }, /OWNER_AUTHENTICATION_FAILED/);
 });
 
-test("5. Snapshot deep copies and recursive freezing are protected against nested tampering", () => {
+test("6. Snapshot deep copies and recursive freezing are protected against nested tampering", () => {
   resetCreativeCharterRegistry();
   const ownerId = "owner-123";
 
@@ -109,14 +121,14 @@ test("5. Snapshot deep copies and recursive freezing are protected against neste
   }, /TypeError/);
 });
 
-test("6. Optimistic concurrency / revision checks are strictly enforced on mutable records", () => {
+test("7. Optimistic concurrency / revision checks are strictly enforced on mutable records", () => {
   resetCreativeCharterRegistry();
   const ownerId = "owner-123";
 
   const charter = createDraftCharter(ownerId, { name: "C1", vision: "V1", defaultLanguage: "en" });
   assert.equal(charter.revision, 1);
 
-  // Stale write (specifying expected revision 2 when it is 1) is rejected
+  // Stale write throws stale write error
   assert.throws(() => {
     updateDraftCharter(ownerId, charter.id, 2, { name: "New Name" });
   }, /STALE_WRITE_REJECTED/);
@@ -127,7 +139,7 @@ test("6. Optimistic concurrency / revision checks are strictly enforced on mutab
   assert.equal(charter.name, "New Name");
 });
 
-test("7. LAKME supports lazy hierarchy dynamic references", () => {
+test("8. LAKME supports lazy hierarchy dynamic references", () => {
   const hierarchy = new LakmeLazyHierarchy("universe-mythology-123");
   const pathDetails = hierarchy.resolveNodePath({
     era: "Kali Yuga",
@@ -140,3 +152,37 @@ test("7. LAKME supports lazy hierarchy dynamic references", () => {
 
   assert.equal(pathDetails.formattedReference, "Kali Yuga → Mahabharata → Bhishma Parva → Season 2 → Gita Upadesha → Episode 9555");
 });
+
+test("9. Recursive secret sanitization in worker context DTO", () => {
+  resetCreativeCharterRegistry();
+  const ownerId = "owner-uuid-123";
+
+  const charter = createDraftCharter(ownerId, { name: "C1", vision: "V1", defaultLanguage: "en" });
+  const snapshot = {
+    universeType: "Horror",
+    narrator: "Spooky Voice",
+    bibleSummary: {
+      password: "nestedSecretPasswordValue", // Must be sanitized recursively!
+      api_key: "nestedSecretApiKeyValue", // Must be sanitized!
+      safeField: "safeStringValue"
+    }
+  };
+
+  const v = createNewCharterVersion(ownerId, charter.id, snapshot);
+  const app = approveExactImmutableVersion(ownerId, charter.id, v.versionNo, {
+    assignedAgentId: "agent-01",
+    assignedUniverseId: "universe-horror-jarvis-uuid"
+  });
+  activateApprovedVersion(ownerId, charter.id, v.versionNo, jApprovalId(app));
+  assignCharterToInternalAgent(ownerId, "agent-01", charter.id, "universe-horror-jarvis-uuid", app.id);
+
+  const context = generateSanitizedWorkerContext("agent-01");
+  assert.ok(context);
+  assert.equal(context.snapshot.bibleSummary.password, undefined);
+  assert.equal(context.snapshot.bibleSummary.api_key, undefined);
+  assert.equal(context.snapshot.bibleSummary.safeField, "safeStringValue");
+});
+
+function jApprovalId(app) {
+  return app.id;
+}

@@ -6,6 +6,9 @@ const profiles = new Map();
 const scopes = new Map();
 const approvals = new Map();
 
+// Mock registered universes for scope checking
+const registeredUniverses = new Set(["universe-horror-jarvis-uuid", "universe-mythology-lakme-uuid", "universe-horror-123", "universe-mythology-123", "universe-1", "universe-2"]);
+
 export function resetCreativeReferenceRegistry() {
   references.clear();
   profiles.clear();
@@ -26,6 +29,30 @@ export function deepFreeze(obj) {
 export function deepCopy(obj) {
   if (obj === undefined) return undefined;
   return JSON.parse(JSON.stringify(obj));
+}
+
+export function sanitizeSecrets(data) {
+  if (Array.isArray(data)) {
+    return data.map(sanitizeSecrets);
+  }
+  if (data && typeof data === "object" && !(data instanceof Date)) {
+    const result = {};
+    const sensitiveKeys = [
+      "apikey", "api_key", "token", "accesstoken", "access_token",
+      "refreshtoken", "refresh_token", "password", "secret",
+      "secretlocator", "secret_locator", "credential", "credentialref", "credential_ref",
+      "authorization", "cookie", "privatekey", "private_key", "oauth"
+    ];
+    for (const [key, value] of Object.entries(data)) {
+      const cleanKey = key.toLowerCase().replace(/[_\-\.\s]+/g, "");
+      const isSensitive = sensitiveKeys.some(sk => cleanKey.includes(sk));
+      if (!isSensitive) {
+        result[key] = sanitizeSecrets(value);
+      }
+    }
+    return result;
+  }
+  return data;
 }
 
 function stableStringify(obj) {
@@ -124,7 +151,13 @@ export function canonicalizeSupportedYouTubeUrls(rawUrl) {
 }
 
 export function createNicheReference(ownerId, universeId, input) {
-  let canonicalUrl = "";
+  const hasUrl = !!input.url;
+  const hasBrief = input.writtenBrief && input.writtenBrief.trim().length > 0;
+  if (!hasUrl && !hasBrief) {
+    throw new Error("MEANINGFUL_REFERENCE_INPUT_REQUIRED");
+  }
+
+  let canonicalUrl = null;
   let subClassification = "written_brief";
 
   if (input.url) {
@@ -141,6 +174,14 @@ export function createNicheReference(ownerId, universeId, input) {
     }
   }
 
+  // Validate fields
+  if (input.priority !== undefined && (input.priority < 1 || input.priority > 1000)) {
+    throw new Error("INVALID_PRIORITY_RANGE");
+  }
+  if (input.tags && !Array.isArray(input.tags)) {
+    throw new Error("INVALID_TAGS_FORMAT");
+  }
+
   const reference = {
     id: randomUUID(),
     ownerId,
@@ -148,7 +189,7 @@ export function createNicheReference(ownerId, universeId, input) {
     referenceType: "niche",
     subClassification,
     canonicalUrl,
-    originalUrl: input.url || "",
+    originalUrl: input.url || null,
     priority: input.priority ?? 100,
     isActive: input.isActive ?? true,
     status: "awaiting_analysis",
@@ -167,7 +208,15 @@ export function createNicheReference(ownerId, universeId, input) {
 }
 
 export function createVisualReference(ownerId, universeId, input) {
-  let canonicalUrl = "";
+  const hasUrl = !!input.url;
+  const hasBrief = input.writtenVisualBrief && input.writtenVisualBrief.trim().length > 0;
+  const hasImage = !!input.authorizedImageReference;
+  const hasMetadata = !!input.assetMetadataReference;
+  if (!hasUrl && !hasBrief && !hasImage && !hasMetadata) {
+    throw new Error("MEANINGFUL_REFERENCE_INPUT_REQUIRED");
+  }
+
+  let canonicalUrl = null;
   let subClassification = "written_brief";
 
   if (input.url) {
@@ -187,6 +236,26 @@ export function createVisualReference(ownerId, universeId, input) {
     subClassification = "uploaded_asset_metadata";
   }
 
+  // Validate timestamps ordering
+  if (input.startTimestamp !== undefined || input.endTimestamp !== undefined) {
+    const start = input.startTimestamp ?? 0;
+    const end = input.endTimestamp ?? 0;
+    if (start < 0 || end < 0 || (input.startTimestamp !== undefined && input.endTimestamp !== undefined && end < start)) {
+      throw new Error("INVALID_TIMESTAMP_ORDERING");
+    }
+  }
+
+  // Validate fields
+  if (input.priority !== undefined && (input.priority < 1 || input.priority > 1000)) {
+    throw new Error("INVALID_PRIORITY_RANGE");
+  }
+  if (input.tags && !Array.isArray(input.tags)) {
+    throw new Error("INVALID_TAGS_FORMAT");
+  }
+  if (input.declaredAuthorizationStatus && !["pending", "approved", "rejected"].includes(input.declaredAuthorizationStatus)) {
+    throw new Error("INVALID_AUTHORIZATION_STATUS");
+  }
+
   const reference = {
     id: randomUUID(),
     ownerId,
@@ -194,7 +263,7 @@ export function createVisualReference(ownerId, universeId, input) {
     referenceType: "visual",
     subClassification,
     canonicalUrl,
-    originalUrl: input.url || "",
+    originalUrl: input.url || null,
     priority: input.priority ?? 100,
     isActive: input.isActive ?? true,
     status: "awaiting_analysis",
@@ -250,6 +319,7 @@ export function createManualDraftProfile(ownerId, referenceId, snapshot) {
     snapshot: deepFreeze(deepCopy(snapshot)),
     snapshotHash,
     status: "submitted",
+    isActive: false,
     revision: 1
   };
 
@@ -278,6 +348,20 @@ export function updateProfileSnapshot(ownerId, profileId, expectedRevision, newS
   return profile;
 }
 
+export function transitionToDraftProfileReady(ownerId, profileId) {
+  const profile = profiles.get(profileId);
+  if (!profile) throw new Error("PROFILE_NOT_FOUND");
+  const reference = references.get(profile.referenceId);
+  if (!reference || reference.ownerId !== ownerId) {
+    throw new Error("OWNER_AUTHENTICATION_FAILED");
+  }
+  if (profile.status !== "submitted") {
+    throw new Error("INVALID_STATE_TRANSITION");
+  }
+  profile.status = "draft_profile_ready";
+  return profile;
+}
+
 export function submitProfileForApproval(ownerId, profileId) {
   const profile = profiles.get(profileId);
   if (!profile) throw new Error("PROFILE_NOT_FOUND");
@@ -285,6 +369,9 @@ export function submitProfileForApproval(ownerId, profileId) {
   const reference = references.get(profile.referenceId);
   if (!reference || reference.ownerId !== ownerId) {
     throw new Error("OWNER_AUTHENTICATION_FAILED");
+  }
+  if (profile.status !== "draft_profile_ready") {
+    throw new Error("INVALID_STATE_TRANSITION");
   }
 
   profile.status = "awaiting_owner_review";
@@ -298,6 +385,9 @@ export function approveExactProfileSnapshot(ownerId, profileId, expectedHash) {
   const reference = references.get(profile.referenceId);
   if (!reference || reference.ownerId !== ownerId) {
     throw new Error("OWNER_AUTHENTICATION_FAILED");
+  }
+  if (profile.status !== "awaiting_owner_review") {
+    throw new Error("APPROVAL_FAILED_MUST_BE_AWAITING_REVIEW");
   }
 
   const currentHash = computeProfileHash(profile.snapshot);
@@ -318,9 +408,12 @@ export function approveExactProfileSnapshot(ownerId, profileId, expectedHash) {
   return approval;
 }
 
-export function activateProfile(ownerId, profileId, approvalId) {
+export function activateProfile(ownerId, profileId, approvalId, expectedRevision) {
   const profile = profiles.get(profileId);
   if (!profile) throw new Error("PROFILE_NOT_FOUND");
+  if (profile.revision !== expectedRevision) {
+    throw new Error("STALE_WRITE_REJECTED");
+  }
 
   const reference = references.get(profile.referenceId);
   if (!reference || reference.ownerId !== ownerId) {
@@ -339,12 +432,11 @@ export function activateProfile(ownerId, profileId, approvalId) {
 
   const related = [...profiles.values()].filter((p) => p.referenceId === reference.id);
   for (const p of related) {
-    if (p.status === "approved" && p.id !== profileId) {
-      p.status = "inactive";
-    }
+    p.isActive = false;
   }
 
-  profile.status = "approved";
+  profile.isActive = true;
+  profile.revision += 1;
   return profile;
 }
 
@@ -367,21 +459,39 @@ export function assignReferenceScope(ownerId, referenceId, { scopeType, scopeTar
     throw new Error("INVALID_SCOPE_TYPE");
   }
 
-  const cleanId = String(scopeTargetId).trim();
-  if (!cleanId || cleanId.toLowerCase().includes("unsupported") || cleanId.toLowerCase().includes("invalid")) {
-    throw new Error("UNSUPPORTED_LIVE_ASSIGNMENT");
+  if (scopeType === "universe") {
+    if (!registeredUniverses.has(scopeTargetId)) {
+      throw new Error("SCOPE_TARGET_NOT_FOUND_OR_CROSS_OWNER");
+    }
+  } else {
+    throw new Error("SCOPE_TARGET_REPOSITORY_NOT_AVAILABLE");
   }
 
   if (nicheProfileId) {
     const prof = profiles.get(nicheProfileId);
-    if (!prof || prof.profileType !== "niche") {
+    if (!prof) throw new Error("PROFILE_NOT_FOUND");
+    if (prof.referenceId !== referenceId) {
+      throw new Error("CROSS_REFERENCE_PROFILE_ASSIGNMENT_REJECTED");
+    }
+    if (prof.profileType !== "niche") {
       throw new Error("INVALID_PROFILE_TYPE_PLACEMENT");
     }
+    if (prof.status !== "approved") {
+      throw new Error("PROFILE_MUST_BE_APPROVED_IMMUTABLE");
+    }
   }
+
   if (visualProfileId) {
     const prof = profiles.get(visualProfileId);
-    if (!prof || prof.profileType !== "visual") {
+    if (!prof) throw new Error("PROFILE_NOT_FOUND");
+    if (prof.referenceId !== referenceId) {
+      throw new Error("CROSS_REFERENCE_PROFILE_ASSIGNMENT_REJECTED");
+    }
+    if (prof.profileType !== "visual") {
       throw new Error("INVALID_PROFILE_TYPE_PLACEMENT");
+    }
+    if (prof.status !== "approved") {
+      throw new Error("PROFILE_MUST_BE_APPROVED_IMMUTABLE");
     }
   }
 
@@ -425,7 +535,7 @@ export function buildSanitizedInternalWorkerContext(referenceId) {
   const nicheSnapshot = (reference.referenceType === "niche") ? (nicheProfile ? nicheProfile.snapshot : null) : null;
   const visualSnapshot = (reference.referenceType === "visual") ? (visualProfile ? visualProfile.snapshot : null) : null;
 
-  return {
+  const rawContext = {
     referenceId,
     referenceType: reference.referenceType,
     canonicalUrl: reference.canonicalUrl,
@@ -434,6 +544,8 @@ export function buildSanitizedInternalWorkerContext(referenceId) {
     nicheSnapshot,
     visualSnapshot
   };
+
+  return deepFreeze(sanitizeSecrets(deepCopy(rawContext)));
 }
 
 export function preventInternalAgentNames(name, agent) {

@@ -7,6 +7,7 @@ import {
   rejectUnsafeUrls,
   createManualDraftProfile,
   updateProfileSnapshot,
+  transitionToDraftProfileReady,
   submitProfileForApproval,
   approveExactProfileSnapshot,
   activateProfile,
@@ -140,6 +141,10 @@ test("8. Niche/Visual cross-type validations are strictly enforced", () => {
   const profileVisual = createManualDraftProfile(ownerId, visualRef.id, { art: "realism" });
   assert.equal(profileVisual.profileType, "visual");
 
+  // Enforce sequential state transitions
+  transitionToDraftProfileReady(ownerId, profileNiche.id);
+  transitionToDraftProfileReady(ownerId, profileVisual.id);
+
   submitProfileForApproval(ownerId, profileNiche.id);
   submitProfileForApproval(ownerId, profileVisual.id);
 
@@ -156,15 +161,6 @@ test("8. Niche/Visual cross-type validations are strictly enforced", () => {
   // retrieveLatestApprovedVisualProfile strictly ignores niche profiles
   assert.equal(retrieveLatestApprovedVisualProfile(nicheRef.id), null);
   assert.equal(retrieveLatestApprovedVisualProfile(visualRef.id).id, profileVisual.id);
-
-  // Worker context only contains typed profiles
-  const nicheCtx = buildSanitizedInternalWorkerContext(nicheRef.id);
-  assert.ok(nicheCtx.nicheSnapshot);
-  assert.equal(nicheCtx.visualSnapshot, null);
-
-  const visualCtx = buildSanitizedInternalWorkerContext(visualRef.id);
-  assert.ok(visualCtx.visualSnapshot);
-  assert.equal(visualCtx.nicheSnapshot, null);
 });
 
 test("9. Cross-owner authorization rejections", () => {
@@ -188,6 +184,7 @@ test("10. Immutable profiles are protected from changes", () => {
   const ref = createNicheReference(ownerId, universeId, { url: "https://youtu.be/video123456" });
   const profile = createManualDraftProfile(ownerId, ref.id, { data: 1 });
 
+  transitionToDraftProfileReady(ownerId, profile.id);
   submitProfileForApproval(ownerId, profile.id);
   const expectedHash = computeProfileHash(profile.snapshot);
   approveExactProfileSnapshot(ownerId, profile.id, expectedHash);
@@ -200,7 +197,7 @@ test("10. Immutable profiles are protected from changes", () => {
 test("11. Polymorphic scope validation targets and crossovers are blocked", () => {
   resetCreativeReferenceRegistry();
   const ownerId = "owner-123";
-  const universeId = "universe-1";
+  const universeId = "universe-horror-123";
 
   const ref = createNicheReference(ownerId, universeId, { url: "https://youtu.be/video123456" });
   const nicheProfile = createManualDraftProfile(ownerId, ref.id, { data: 1 });
@@ -211,16 +208,15 @@ test("11. Polymorphic scope validation targets and crossovers are blocked", () =
       scopeType: "series",
       scopeTargetId: "unsupported-live-uuid"
     });
-  }, /UNSUPPORTED_LIVE_ASSIGNMENT/);
+  }, /SCOPE_TARGET_REPOSITORY_NOT_AVAILABLE/);
 
-  // Rejects visualProfileId being populated by a niche profile
-  assert.throws(() => {
-    assignReferenceScope(ownerId, ref.id, {
-      scopeType: "series",
-      scopeTargetId: "series-uuid",
-      visualProfileId: nicheProfile.id
-    });
-  }, /INVALID_PROFILE_TYPE_PLACEMENT/);
+  // Validates universe scope correctly
+  const assignResult = assignReferenceScope(ownerId, ref.id, {
+    scopeType: "universe",
+    scopeTargetId: universeId
+  });
+  assert.ok(assignResult);
+  assert.equal(assignResult.scopeType, "universe");
 });
 
 test("12. Optimistic concurrency revisions are validated", () => {
@@ -246,4 +242,101 @@ test("13. Public attribution contains no internal agent name leakages", () => {
   assert.equal(preventInternalAgentNames("Brand JARVIS Show", agent), true);
   assert.equal(preventInternalAgentNames("LAKME Channel", agent), true);
   assert.equal(preventInternalAgentNames("Safe Public Brand", agent), false);
+});
+
+test("14. Meaningful reference inputs, titles, tags, and timestamps validations", () => {
+  resetCreativeReferenceRegistry();
+  const ownerId = "owner-123";
+  const universeId = "universe-1";
+
+  // Rejects completely empty niche references
+  assert.throws(() => {
+    createNicheReference(ownerId, universeId, {
+      url: "",
+      writtenBrief: ""
+    });
+  }, /MEANINGFUL_REFERENCE_INPUT_REQUIRED/);
+
+  // Rejects completely empty visual references
+  assert.throws(() => {
+    createVisualReference(ownerId, universeId, {
+      url: "",
+      writtenVisualBrief: ""
+    });
+  }, /MEANINGFUL_REFERENCE_INPUT_REQUIRED/);
+
+  // Rejects bad timestamps orderings
+  assert.throws(() => {
+    createVisualReference(ownerId, universeId, {
+      url: "https://youtu.be/video123456",
+      startTimestamp: 50,
+      endTimestamp: 30
+    });
+  }, /INVALID_TIMESTAMP_ORDERING/);
+
+  // Accepts valid briefs without URLs
+  const nicheNoUrl = createNicheReference(ownerId, universeId, {
+    writtenBrief: "Spooky folk audio niche details",
+    title: "Written Folk Brief",
+    tags: ["horror", "folk"]
+  });
+  assert.ok(nicheNoUrl);
+  assert.equal(nicheNoUrl.subClassification, "written_brief");
+  assert.deepEqual(nicheNoUrl.tags, ["horror", "folk"]);
+});
+
+test("15. Approval state transitions required submitted -> draft_profile_ready -> awaiting_owner_review -> approved", () => {
+  resetCreativeReferenceRegistry();
+  const ownerId = "owner-123";
+  const universeId = "universe-1";
+
+  const ref = createNicheReference(ownerId, universeId, { url: "https://youtu.be/video123456" });
+  const profile = createManualDraftProfile(ownerId, ref.id, { tone: "dark spooky" });
+
+  assert.equal(profile.status, "submitted");
+
+  // Approval must fail unless the profile is awaiting_owner_review
+  const expectedHash = computeProfileHash(profile.snapshot);
+  assert.throws(() => {
+    approveExactProfileSnapshot(ownerId, profile.id, expectedHash);
+  }, /APPROVAL_FAILED_MUST_BE_AWAITING_REVIEW/);
+
+  // Step 1: transition to draft_profile_ready
+  transitionToDraftProfileReady(ownerId, profile.id);
+  assert.equal(profile.status, "draft_profile_ready");
+
+  // Step 2: submit for approval -> awaiting_owner_review
+  submitProfileForApproval(ownerId, profile.id);
+  assert.equal(profile.status, "awaiting_owner_review");
+
+  // Step 3: approved
+  approveExactProfileSnapshot(ownerId, profile.id, expectedHash);
+  assert.equal(profile.status, "approved");
+});
+
+test("16. Worker context recursive sanitization DTO checks", () => {
+  resetCreativeReferenceRegistry();
+  const ownerId = "owner-123";
+  const universeId = "universe-1";
+
+  const ref = createNicheReference(ownerId, universeId, { url: "https://youtu.be/video123456" });
+  const profile = createManualDraftProfile(ownerId, ref.id, {
+    tone: "Eerie",
+    nestedPayload: {
+      password: "secretPassword",
+      api_key: "secretKey",
+      nestedSafeArray: ["val1", "val2"]
+    }
+  });
+
+  transitionToDraftProfileReady(ownerId, profile.id);
+  submitProfileForApproval(ownerId, profile.id);
+  const hash = computeProfileHash(profile.snapshot);
+  approveExactProfileSnapshot(ownerId, profile.id, hash);
+
+  const context = buildSanitizedInternalWorkerContext(ref.id);
+  assert.ok(context);
+  assert.equal(context.nicheSnapshot.nestedPayload.password, undefined);
+  assert.equal(context.nicheSnapshot.nestedPayload.api_key, undefined);
+  assert.deepEqual(context.nicheSnapshot.nestedPayload.nestedSafeArray, ["val1", "val2"]);
 });

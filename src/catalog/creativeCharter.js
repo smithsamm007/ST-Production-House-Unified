@@ -25,6 +25,30 @@ export function deepCopy(obj) {
   return JSON.parse(JSON.stringify(obj));
 }
 
+export function sanitizeSecrets(data) {
+  if (Array.isArray(data)) {
+    return data.map(sanitizeSecrets);
+  }
+  if (data && typeof data === "object" && !(data instanceof Date)) {
+    const result = {};
+    const sensitiveKeys = [
+      "apikey", "api_key", "token", "accesstoken", "access_token",
+      "refreshtoken", "refresh_token", "password", "secret",
+      "secretlocator", "secret_locator", "credential", "credentialref", "credential_ref",
+      "authorization", "cookie", "privatekey", "private_key", "oauth"
+    ];
+    for (const [key, value] of Object.entries(data)) {
+      const cleanKey = key.toLowerCase().replace(/[_\-\.\s]+/g, "");
+      const isSensitive = sensitiveKeys.some(sk => cleanKey.includes(sk));
+      if (!isSensitive) {
+        result[key] = sanitizeSecrets(value);
+      }
+    }
+    return result;
+  }
+  return data;
+}
+
 function stableStringify(obj) {
   if (Array.isArray(obj)) return `[${obj.map(stableStringify).join(",")}]`;
   if (obj && typeof obj === "object") {
@@ -152,7 +176,6 @@ export function activateApprovedVersion(ownerId, charterId, versionNo, approvalI
     throw new Error("ACTIVATION_REJECTED_WITHOUT_OWNER_APPROVAL");
   }
 
-  // Deep copy and verify hash dynamically to prevent snapshot tampering after approval
   const currentHash = computeSnapshotHash(version.snapshot);
   if (currentHash !== approval.snapshotHash) {
     throw new Error("APPROVAL_INVALID_FOR_MODIFIED_SNAPSHOT");
@@ -200,9 +223,17 @@ export function assignCharterToInternalAgent(ownerId, agentId, charterId, univer
     throw new Error("ACTIVATION_REJECTED_WITHOUT_OWNER_APPROVAL");
   }
 
-  // Safe handling of concurrent activations & multiple active assignments per agent
-  const existingActive = [...assignments.values()].find((a) => a.agentId === agentId && a.isActive);
-  if (existingActive && existingActive.charterId !== charterId) {
+  // Idempotently return existing active assignment when the same agent and charter are already active
+  const existingSame = [...assignments.values()].find(
+    (a) => a.agentId === agentId && a.charterId === charterId && a.isActive
+  );
+  if (existingSame) {
+    return existingSame;
+  }
+
+  // Prevent multiple active assignments for one agent
+  const existingOther = [...assignments.values()].find((a) => a.agentId === agentId && a.isActive);
+  if (existingOther) {
     throw new Error("MULTIPLE_ACTIVE_ASSIGNMENTS_REJECTED");
   }
 
@@ -248,20 +279,23 @@ export function generateSanitizedWorkerContext(agentId) {
   const activeVersion = charter.versions.find((v) => v.isActive);
   const snapshot = activeVersion ? activeVersion.snapshot : {};
 
-  return {
+  // Recursive deep copying and sanitization of prohibited keys
+  const rawContext = {
     agentId,
     charterId: charter.id,
     vision: charter.vision,
     defaultLanguage: charter.defaultLanguage,
     secondaryLanguage: charter.secondaryLanguage,
-    snapshot: Object.freeze({
+    snapshot: {
       universeType: snapshot.universeType,
       narrator: snapshot.narrator,
       sourceCategories: snapshot.sourceCategories,
       lazyHierarchy: snapshot.lazyHierarchy,
       bibleSummary: snapshot.bibleSummary
-    })
+    }
   };
+
+  return deepFreeze(sanitizeSecrets(deepCopy(rawContext)));
 }
 
 export function generateSanitizedPublicAttribution({ profile, primarySocialAccount, agent }) {
@@ -298,76 +332,80 @@ export function generateSanitizedPublicAttribution({ profile, primarySocialAccou
 }
 
 // ----------------------------------------------------
-// Idempotent Seeding Implementation
+// Idempotent Seeding (Preserving user-created data)
 // ----------------------------------------------------
 export function initializeSeedState(ownerId) {
-  resetCreativeCharterRegistry();
+  // Check if JARVIS already possesses an active assignment
+  const jarvisActive = retrieveActiveCharter("agent-01");
+  if (!jarvisActive) {
+    const jarvisCharter = createDraftCharter(ownerId, {
+      name: "JARVIS Show Charter",
+      vision: "A connected, long-running cinematic universe designed to produce stories and episodes for many years.",
+      defaultLanguage: "Hindi",
+      secondaryLanguage: "Hinglish"
+    });
+    const jarvisSnapshot = {
+      universeType: "Hindi/Hinglish Horror Cinematic Universe",
+      genresAndThemes: ["horror", "suspense", "thriller", "supernatural mystery", "curses", "crime", "emotion", "entertainment"],
+      universeBible: {
+        recurringCharacters: [],
+        supernaturalEntities: [],
+        cursedObjects: [],
+        curseRules: [],
+        organizations: [],
+        historicalEvents: [],
+        storyArcs: [],
+        episodeContinuity: [],
+        universeTimeline: [],
+        characterRelationships: [],
+        crossovers: [],
+        callbacks: [],
+        unresolvedMysteries: [],
+        postCreditContinuity: [],
+        canonAndNonCanon: []
+      }
+    };
+    const jVersion = createNewCharterVersion(ownerId, jarvisCharter.id, jarvisSnapshot);
+    const jApproval = approveExactImmutableVersion(ownerId, jarvisCharter.id, jVersion.versionNo, {
+      assignedAgentId: "agent-01",
+      assignedUniverseId: "universe-horror-jarvis-uuid"
+    });
+    activateApprovedVersion(ownerId, jarvisCharter.id, jVersion.versionNo, jApproval.id);
+    assignCharterToInternalAgent(ownerId, "agent-01", jarvisCharter.id, "universe-horror-jarvis-uuid", jApproval.id);
+  }
 
-  // 1. Seed JARVIS
-  const jarvisCharter = createDraftCharter(ownerId, {
-    name: "JARVIS Show Charter",
-    vision: "A connected, long-running cinematic universe designed to produce stories and episodes for many years.",
-    defaultLanguage: "Hindi",
-    secondaryLanguage: "Hinglish"
-  });
-  const jarvisSnapshot = {
-    universeType: "Hindi/Hinglish Horror Cinematic Universe",
-    genresAndThemes: ["horror", "suspense", "thriller", "supernatural mystery", "curses", "crime", "emotion", "entertainment"],
-    universeBible: {
-      recurringCharacters: [],
-      supernaturalEntities: [],
-      cursedObjects: [],
-      curseRules: [],
-      organizations: [],
-      historicalEvents: [],
-      storyArcs: [],
-      episodeContinuity: [],
-      universeTimeline: [],
-      characterRelationships: [],
-      crossovers: [],
-      callbacks: [],
-      unresolvedMysteries: [],
-      postCreditContinuity: [],
-      canonAndNonCanon: []
-    }
-  };
-  const jVersion = createNewCharterVersion(ownerId, jarvisCharter.id, jarvisSnapshot);
-  const jApproval = approveExactImmutableVersion(ownerId, jarvisCharter.id, jVersion.versionNo, {
-    assignedAgentId: "agent-01",
-    assignedUniverseId: "universe-horror-jarvis-uuid"
-  });
-  activateApprovedVersion(ownerId, jarvisCharter.id, jVersion.versionNo, jApproval.id);
-  assignCharterToInternalAgent(ownerId, "agent-01", jarvisCharter.id, "universe-horror-jarvis-uuid", jApproval.id);
-
-  // 2. Seed LAKME
-  const lakmeCharter = createDraftCharter(ownerId, {
-    name: "LAKME Mythology Charter",
-    vision: "Respectful treatment of Hindu traditions presenting timeline of cosmic and historical events.",
-    defaultLanguage: "Hindi"
-  });
-  const lakmeSnapshot = {
-    universeType: "Hindu Mythology Universe",
-    narrator: {
-      identity: "Samay (Time)",
-      concept: "Samay narrates events according to their position in the cosmic and historical timeline."
-    },
-    sacredTerminology: "Sanskrit with Hindi explanations.",
-    sourceCategories: ["Vedas", "Puranas", "Upanishads", "Ramayana", "Mahabharata"],
-    claimSafetyClassifications: {
-      directlySupported: "directly supported by a cited source",
-      traditionalVersion: "traditional or regional version",
-      interpretation: "scholarly or narrative interpretation",
-      dramatizedConnective: "dramatized connective material",
-      ownerApprovedFictional: "owner-approved fictionalization"
-    }
-  };
-  const lVersion = createNewCharterVersion(ownerId, lakmeCharter.id, lakmeSnapshot);
-  const lApproval = approveExactImmutableVersion(ownerId, lakmeCharter.id, lVersion.versionNo, {
-    assignedAgentId: "agent-03",
-    assignedUniverseId: "universe-mythology-lakme-uuid"
-  });
-  activateApprovedVersion(ownerId, lakmeCharter.id, lVersion.versionNo, lApproval.id);
-  assignCharterToInternalAgent(ownerId, "agent-03", lakmeCharter.id, "universe-mythology-lakme-uuid", lApproval.id);
+  // Check if LAKME already possesses an active assignment
+  const lakmeActive = retrieveActiveCharter("agent-03");
+  if (!lakmeActive) {
+    const lakmeCharter = createDraftCharter(ownerId, {
+      name: "LAKME Mythology Charter",
+      vision: "Respectful treatment of Hindu traditions presenting timeline of cosmic and historical events.",
+      defaultLanguage: "Hindi"
+    });
+    const lakmeSnapshot = {
+      universeType: "Hindu Mythology Universe",
+      narrator: {
+        identity: "Samay (Time)",
+        concept: "Samay narrates events according to their position in the cosmic and historical timeline."
+      },
+      sacredTerminology: "Sanskrit with Hindi explanations.",
+      sourceCategories: ["Vedas", "Puranas", "Upanishads", "Ramayana", "Mahabharata"],
+      claimSafetyClassifications: {
+        directlySupported: "directly supported by a cited source",
+        traditionalVersion: "traditional or regional version",
+        interpretation: "scholarly or narrative interpretation",
+        dramatizedConnective: "dramatized connective material",
+        ownerApprovedFictional: "owner-approved fictionalization"
+      }
+    };
+    const lVersion = createNewCharterVersion(ownerId, lakmeCharter.id, lakmeSnapshot);
+    const lApproval = approveExactImmutableVersion(ownerId, lakmeCharter.id, lVersion.versionNo, {
+      assignedAgentId: "agent-03",
+      assignedUniverseId: "universe-mythology-lakme-uuid"
+    });
+    activateApprovedVersion(ownerId, lakmeCharter.id, lVersion.versionNo, lApproval.id);
+    assignCharterToInternalAgent(ownerId, "agent-03", lakmeCharter.id, "universe-mythology-lakme-uuid", lApproval.id);
+  }
 }
 
 // LAKME Cosmic and Timeline Lazy Hierarchy resolution
