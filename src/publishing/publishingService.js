@@ -10,6 +10,12 @@ export class PublishingService {
     if (!input.destination || !input.captionSnapshot) {
       throw new Error("PUBLISHING_SNAPSHOT_REQUIRED");
     }
+    const attribution = input.publicAttribution;
+    const internalNames = ["JARVIS", "SHERLOCK", "LAKME", "PANCHI", "VEDA", "BYTE", "CHANAKYA", "KABIR", "SHAKTI", "ROHAN", "MAYA", "AAROHI", "VIKRAM", "TARA", "ANANYA", "KARAN", "DEV", "AANYA", "ARJUN", "NISHA"];
+    if (attribution === "PUBLIC_PUBLISHING_IDENTITY_REQUIRED" ||
+        (attribution && internalNames.includes(attribution.toUpperCase()))) {
+      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
+    }
     const request = Object.freeze({
       id: randomUUID(),
       artifactSha256: input.artifactSha256,
@@ -17,7 +23,8 @@ export class PublishingService {
       captionSnapshot: input.captionSnapshot,
       affiliateLinkIds: Object.freeze([...(input.affiliateLinkIds ?? [])]),
       mode: input.mode ?? "draft",
-      status: "awaiting_owner_approval"
+      status: "awaiting_owner_approval",
+      publicAttribution: attribution
     });
     this.#requests.set(request.id, request);
     return request;
@@ -55,6 +62,12 @@ export class PublishingService {
         status: "dry_run_completed",
         published: false
       });
+    }
+    const attribution = request.publicAttribution;
+    const internalNames = ["JARVIS", "SHERLOCK", "LAKME", "PANCHI", "VEDA", "BYTE", "CHANAKYA", "KABIR", "SHAKTI", "ROHAN", "MAYA", "AAROHI", "VIKRAM", "TARA", "ANANYA", "KARAN", "DEV", "AANYA", "ARJUN", "NISHA"];
+    if (attribution === "PUBLIC_PUBLISHING_IDENTITY_REQUIRED" ||
+        (attribution && internalNames.includes(attribution.toUpperCase()))) {
+      throw new Error("PUBLIC_PUBLISHING_IDENTITY_REQUIRED");
     }
     const response = await publisher.publish(request);
     if (!response?.platformPostId || !response?.platformUrl || !response?.rawResponse) {

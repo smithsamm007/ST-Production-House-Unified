@@ -30,3 +30,6 @@ These rules apply to every human or AI contributor.
 13. Production queues require durable leases, idempotency keys, retry limits,
     dead-letter handling, and concurrency controls.
 14. A change is complete only when its tests and verification commands pass.
+15. **Agent Name Internal-Only Rule**: Agent names (e.g. JARVIS, SHERLOCK, PANCHI, VEDA) are strictly internal identifiers. They must never automatically leak into public videos, captions, descriptions, or social posts.
+16. **Account and Connection Isolation**: Every agent must have its own isolated email and social connections (YouTube, Instagram, Facebook, Snapchat). No cross-agent token sharing or connection hijacking is permitted.
+17. **Opaque Secrets & Safe Serialization**: Real API keys, tokens, or passwords must never be stored in plain text or in the database (use secret-manager URLs like `vault://...`). Dashboard serializations must recursively purge all locator and secret strings.
