@@ -15,12 +15,13 @@ To achieve true zero-trust compartmentalization within multi-agent environments:
 - **Important Notice**: No real email addresses, active OAuth credentials, or live social accounts are configured in this Phase-1 foundation. All slots remain unconfigured and live social publishing/OAuth integration is pending.
 - **Strict Data Sanitization**: To prevent leakage of cloud references or authentication material, the control plane sanitizes all serialized JSON payloads before sending them to browser code using an explicit safe-output allowlist (DTO), blocking any unallowlisted or unexpected fields from being serialized automatically.
 
-## Agent Creative Charter Security and Version Integrity
+## Agent Creative Charter and Reference Library Security
 
 To safeguard creative vision, long-term brand equity, and prevent snapshot tampering:
 - **Approval Binding**: Owner approvals bind to the exact version snapshot and its SHA-256 hash. Any modification, replacement, or re-assignment to another agent immediately invalidates the approval.
 - **Assignment Uniqueness**: The database schema strictly guarantees at most one active charter assignment per agent (via partial unique index) and at most one active version per charter.
-- **Sanitized Worker Context**: When running isolated worker engines, the context dynamically restricts exposed keys. It can contain the internal `agentId` for authorization tracking, but absolutely prohibits credential references, secrets, or API keys.
+- **Niche vs Visual Isolation**: Strict security separation of niche characteristics and visual characteristics prevents design decisions from silently controlling stories or characters, and prevents story rules from silently hijacking visuals.
+- **URL Sanitization & Allowlist Policy**: Rejects non-standard ports, localhost, embedded credentials, and non-allowlisted domains. Only canonicalized YouTube URL formats are permitted inside the system, with duplicate detection blocking equivalent URL profiles.
 
 ## Credentials and Reference Architecture
 

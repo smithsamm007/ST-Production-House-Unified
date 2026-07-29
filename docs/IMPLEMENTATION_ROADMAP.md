@@ -17,6 +17,9 @@ This repository is the verified secure foundation, not a claim that every live p
   - Only JARVIS and LAKME are initially active. The remaining 18 agents are inactive and unassigned.
   - LAKME mythology lazy hierarchy supporting 8,000+ episodes without database row explosion.
   - Internal names (JARVIS, LAKME, VEDA) strictly stripped from public brand attribution outputs.
+- **Niche Reference and Visual Reference Library**:
+  - Relational schema tables added for `creative_references`, `niche_reference_profiles`, `visual_reference_profiles`, `reference_scope_assignments`, `reference_analysis_attempts`, and approvals.
+  - Separate Niche and Visual properties with dynamic URL verification, canonical duplicate detection, and sanitized context extraction.
 - Affiliate URL/disclosure policy.
 - Owner-approval and non-fabricated publishing receipt policy.
 - PostgreSQL schema for durable jobs, leases, evidence, and receipts.
@@ -25,7 +28,7 @@ This repository is the verified secure foundation, not a claim that every live p
 ## Phase 2 — Runnable control plane (estimated 3–5 weeks)
 
 - API, owner dashboard, Argon2id/passkey authentication, CSRF, RBAC.
-- PostgreSQL repositories and migrations wired to domain policies, including concrete repository implementations for digital identities, public profiles, email/social connections, creative charters, and long-term universe registries.
+- PostgreSQL repositories and migrations wired to domain policies, including concrete repository implementations for digital identities, public profiles, email/social connections, creative charters, and long-term universe/reference registries.
 - Redis or PostgreSQL workers with leases, concurrency, and observability.
 - Vault/KMS credential broker and per-agent task-provider configuration.
 

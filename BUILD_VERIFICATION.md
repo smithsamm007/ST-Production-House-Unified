@@ -15,9 +15,9 @@ npm run verify
 ## Result
 
 - JavaScript syntax checks: passed
-- Test files: 5
-- Tests: 34 passed, 0 failed, 0 skipped
-- Duration reported by Node test runner: 242.895486 ms
+- Test files: 6
+- Tests: 48 passed, 0 failed, 0 skipped
+- Duration reported by Node test runner: 454.707318 ms
 
 ## Verified policies
 
@@ -42,5 +42,11 @@ npm run verify
   - LAKME initial active Hindu Mythology universe charter vision (Samay as narrator, claim safety classifications).
   - LAKME lazy hierarchy resolving node paths dynamically without database row explosion.
   - Immutable version snapshots, dynamic approval SHA-256 hash checks, and duplicate activation block rules.
+- **Niche Reference and Visual Reference Library (Correction Upgrade)**:
+  - Additive migrations for creative_references, niche/visual profiles, scope assignments, and approval references.
+  - YouTube allowlist verification and unsafe URL parsing blocks (rejections of non-standard ports, credentials, localhost, private IPs, unapproved domains).
+  - Canonicalization of equivalent YouTube URLs to detect and prevent duplicates.
+  - Manual profiles requiring owner approval bound to SHA-256 hashes.
+  - Verification that niche characteristics do not alter visuals, and visual characteristics do not alter story or narration.
 
 This verifies the secure policy foundation only. It is not evidence that live provider adapters, media rendering, platform uploads, the dashboard, or the production deployment are complete.

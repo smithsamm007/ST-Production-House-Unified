@@ -4,15 +4,22 @@ This is a clean, ST-owned secure foundation for consolidating the strongest idea
 
 ## What is implemented
 
-- **Agent Creative Charter and Channel Universe System (Added Upgrade)**:
+- **Agent Creative Charter and Channel Universe System**:
   - Supports versioned, owner-controlled Creative Charters and Channel Universe registries.
   - Keeps the internal agent names (e.g. JARVIS, LAKME, PANCHI, VEDA) strictly separated from public channel brands, creative universes, narrator identities, and public attribution.
   - Internal names are strictly blocked from public exposure.
   - Initially, only JARVIS and LAKME possess active owner-approved Creative Charters. The remaining 18 preloaded agents remain unassigned and inactive, ensuring no fake details are generated.
   - LAKME's Hindu Mythology universe implements a highly performant **Lazy Hierarchy** (Universe → Era or Yuga → Source Collection → Series → Season → Story Arc → Episode), allowing more than 8,000 episodes to be resolved on demand without pre-creating millions of empty database rows.
+- **Niche Reference and Visual Reference Library (Added Upgrade)**:
+  - Supports separate owner-controlled Niche and Visual references.
+  - Includes safe HTTPS URL parsing and a YouTube host allowlist.
+  - Detects duplicate submissions of equivalent YouTube URLs.
+  - Profiles are draftable, approved via SHA-256 snapshots, and immune to post-approval mutations.
+  - Scopes can be assigned separately to Creative Universe, series, season, story arc, episode, standalone promotional Reel, or main-video promotion.
 - **Agent Digital Identity and Account Isolation**:
   - Every agent name is used as an internal identifier only. Public publishing strictly uses the connected channel/account brand.
-  - Every agent possesses unconfigured account slots for emails, YouTube, Instagram, Facebook, and Snapchat. Real email addresses, live OAuth connections, and social accounts are not active yet.
+  - Every agent possesses unconfigured account slots for emails, YouTube, Instagram, Facebook, and Snapchat.
+  - **Important Notice**: Real email addresses, live OAuth connections, and active social accounts are NOT connected or configured yet in this Phase-1 foundation. Live OAuth, SMTP, and social publishing remain pending.
   - Safe dashboard serialization uses an explicit safe DTO/allowlist to ensure secret keys and locators are never serialized.
 - Owner-controlled canonical 20-agent catalog, with a hard maximum of 50.
 - Strict per-agent provider policy: three private remote providers and one keyless local open-source emergency provider.
@@ -54,6 +61,6 @@ Read:
 - `docs/IMPLEMENTATION_ROADMAP.md`
 - `AGENTS.md`
 
-Apply `sql/001_core.sql`, `sql/002_seed_agents.sql`, `sql/003_agent_digital_identity.sql`, and `sql/004_creative_charter.sql` to a new PostgreSQL database only after replacing the example credentials and adding backups.
+Apply `sql/001_core.sql`, `sql/002_seed_agents.sql`, `sql/003_agent_digital_identity.sql`, `sql/004_creative_charter.sql`, and `sql/005_creative_reference.sql` to a new PostgreSQL database only after replacing the example credentials and adding backups.
 
 The recommended first implementation increment is the authenticated API, PostgreSQL repositories, durable worker leases, and a secret-manager broker.

@@ -38,6 +38,13 @@ Creative Charters define the long-term vision, concept, narrator parameters, and
 - **Lazy Hierarchy for Mythology (LAKME)**: Supports extremely scalable mythological universes by allowing episodes to be dynamically resolved on-demand using a hierarchy (Universe → Era or Yuga → Source Collection → Series → Season → Story Arc → Episode). This supports more than 8,000 episodes without generating millions of database rows.
 - **Mitigation of Speculative Claims**: Mythology source-classification rules require distinguishing directly supported scriptures from region, narrative interpretation, or owner fictionalization. This represents a future safety standard rather than proof that content has been researched.
 
+## Niche Reference and Visual Reference Library
+
+A structured library separating visual and niche aspects ensures absolute control and prevents leakage across different subsystems:
+- **Separate Niche & Visual Logic**: Niche references control audience, storytelling approach, pacing, structure, and tone. Visual references control art direction, color, shot composition, subtitles, and aspect ratio. Niche characteristics must not silently dictate visuals, and visual characteristics must not silently dictate story or narration.
+- **Strict HTTPS and Host Allowlist**: Rejects non-standard ports, localhost, embedded credentials, and non-allowlisted domains. Includes a strict canonicalization parser to identify equivalent YouTube urls as duplicates.
+- **Flexible Scope Assignments**: References can be assigned separately to Creative Universe, series, season, story arc, episode, standalone promotional Reel, or main-video promotion.
+
 ## Runtime rules
 
 - An authenticated owner creates a task or promotion campaign.
