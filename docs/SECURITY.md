@@ -15,6 +15,13 @@ To achieve true zero-trust compartmentalization within multi-agent environments:
 - **Important Notice**: No real email addresses, active OAuth credentials, or live social accounts are configured in this Phase-1 foundation. All slots remain unconfigured and live social publishing/OAuth integration is pending.
 - **Strict Data Sanitization**: To prevent leakage of cloud references or authentication material, the control plane sanitizes all serialized JSON payloads before sending them to browser code using an explicit safe-output allowlist (DTO), blocking any unallowlisted or unexpected fields from being serialized automatically.
 
+## Agent Creative Charter Security and Version Integrity
+
+To safeguard creative vision, long-term brand equity, and prevent snapshot tampering:
+- **Approval Binding**: Owner approvals bind to the exact version snapshot and its SHA-256 hash. Any modification, replacement, or re-assignment to another agent immediately invalidates the approval.
+- **Assignment Uniqueness**: The database schema strictly guarantees at most one active charter assignment per agent (via partial unique index) and at most one active version per charter.
+- **Sanitized Worker Context**: When running isolated worker engines, the context dynamically restricts exposed keys. It can contain the internal `agentId` for authorization tracking, but absolutely prohibits credential references, secrets, or API keys.
+
 ## Credentials and Reference Architecture
 
 The database stores only opaque secret-manager locators (e.g., `vault://st/agents/agent-01/providers/gemini/primary`). A worker obtains a short-lived, task-scoped credential from a trusted broker. Credential audit logs record the agent, task, slot, provider, and outcome—but never the secret.

@@ -30,6 +30,14 @@ Each agent manages its own completely isolated, unconfigured workspace connectio
 - No agent can access or borrow another agent's credentials, OAuth tokens, email connections, or social channels. This prevents horizontal privilege escalation.
 - Dashboard views use an explicit safe-output DTO/allowlist to ensure secret keys, locators, and unallowlisted fields are never serialized.
 
+## Agent Creative Charter and Channel Universe
+
+Creative Charters define the long-term vision, concept, narrator parameters, and language defaults of an agent's assigned channel/show:
+- **Separation of Names**: The internal agent name (like JARVIS or LAKME) remains separate from public brand, universe, niche, and attribution text.
+- **Auditable & Immutable Versions**: Creative Charters are version-controlled and owner-approved. If a charter snapshot is edited, its previous approval becomes invalid for the new state. At most one active version can exist per charter, and at most one active charter assignment can exist per agent.
+- **Lazy Hierarchy for Mythology (LAKME)**: Supports extremely scalable mythological universes by allowing episodes to be dynamically resolved on-demand using a hierarchy (Universe → Era or Yuga → Source Collection → Series → Season → Story Arc → Episode). This supports more than 8,000 episodes without generating millions of database rows.
+- **Mitigation of Speculative Claims**: Mythology source-classification rules require distinguishing directly supported scriptures from region, narrative interpretation, or owner fictionalization. This represents a future safety standard rather than proof that content has been researched.
+
 ## Runtime rules
 
 - An authenticated owner creates a task or promotion campaign.

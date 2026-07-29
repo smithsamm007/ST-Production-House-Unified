@@ -11,9 +11,12 @@ This repository is the verified secure foundation, not a claim that every live p
   - `agent_public_profiles`, `agent_email_connections`, and `agent_social_accounts` schema definitions.
   - Seeds 5 unconfigured slots (1 email, 4 social) for all 20 preloaded agents without fake credentials or addresses.
   - **Important Notice**: No real email addresses, live OAuth connections, or live social accounts are active yet. Live OAuth, SMTP, and social publishing remain pending.
-  - Internal agent names are kept internal and strictly excluded from public posts/uploads (including dynamic protection checks for agents 21–50 and variant naming check rules).
-  - Safe dashboard serialization using an explicit safe-output allowlist (DTO).
-  - Supported platforms: YouTube, Instagram, Facebook, and Snapchat (Snapchat live publishing remains pending).
+- **Agent Creative Charter and Channel Universe System**:
+  - Relational schema tables added for `creative_universes`, `creative_charters`, `creative_charter_versions`, `agent_charter_assignments`, and hierarchy/entity registries.
+  - Dynamic snapshot validation, immutable version control, and owner-approval state machine.
+  - Only JARVIS and LAKME are initially active. The remaining 18 agents are inactive and unassigned.
+  - LAKME mythology lazy hierarchy supporting 8,000+ episodes without database row explosion.
+  - Internal names (JARVIS, LAKME, VEDA) strictly stripped from public brand attribution outputs.
 - Affiliate URL/disclosure policy.
 - Owner-approval and non-fabricated publishing receipt policy.
 - PostgreSQL schema for durable jobs, leases, evidence, and receipts.
@@ -22,7 +25,7 @@ This repository is the verified secure foundation, not a claim that every live p
 ## Phase 2 — Runnable control plane (estimated 3–5 weeks)
 
 - API, owner dashboard, Argon2id/passkey authentication, CSRF, RBAC.
-- PostgreSQL repositories and migrations wired to domain policies, including concrete repository implementations for digital identities, public profiles, and email/social connections.
+- PostgreSQL repositories and migrations wired to domain policies, including concrete repository implementations for digital identities, public profiles, email/social connections, creative charters, and long-term universe registries.
 - Redis or PostgreSQL workers with leases, concurrency, and observability.
 - Vault/KMS credential broker and per-agent task-provider configuration.
 

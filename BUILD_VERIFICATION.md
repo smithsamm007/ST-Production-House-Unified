@@ -15,9 +15,9 @@ npm run verify
 ## Result
 
 - JavaScript syntax checks: passed
-- Test files: 4
-- Tests: 11 passed, 0 failed, 0 skipped
-- Duration reported by Node test runner: 126.817522 ms
+- Test files: 5
+- Tests: 34 passed, 0 failed, 0 skipped
+- Duration reported by Node test runner: 242.895486 ms
 
 ## Verified policies
 
@@ -32,7 +32,15 @@ npm run verify
 - Affiliate HTTPS, disclosure, and domain allowlist requirements.
 - Rejection of fabricated publishing receipts.
 - Dry-run publishing without fake platform IDs or URLs.
+- **Agent Digital Identity and Account Isolation (Task 6)**:
+  - Supported platforms: youtube, instagram, facebook, snapchat.
+  - Safe dashboard DTO/allowlist serialization (zero credentials or secret locator leakages).
+  - Public attribution strictly rejects internal agent names (JARVIS, LAKME, VEDA).
+- **Agent Creative Charter and Channel Universe System (Task 7)**:
+  - Additive migrations for creative universes, charters, assignments, entities, claim classifications, and approvals.
+  - JARVIS initial active Hindi/Hinglish connected horror cinematic universe charter vision.
+  - LAKME initial active Hindu Mythology universe charter vision (Samay as narrator, claim safety classifications).
+  - LAKME lazy hierarchy resolving node paths dynamically without database row explosion.
+  - Immutable version snapshots, dynamic approval SHA-256 hash checks, and duplicate activation block rules.
 
-This verifies the secure policy foundation only. It is not evidence that live
-provider adapters, media rendering, platform uploads, the dashboard, or the
-production deployment are complete.
+This verifies the secure policy foundation only. It is not evidence that live provider adapters, media rendering, platform uploads, the dashboard, or the production deployment are complete.
