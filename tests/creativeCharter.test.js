@@ -38,7 +38,7 @@ test("2. The maximum remains 50 agents", () => {
   }, /AGENT_CAP_REACHED/);
 });
 
-test("3. Real seed initialization creates active approved charters for JARVIS and LAKME", () => {
+test("3. Idempotent test-only foundation seed creates missing active approved charters for JARVIS and LAKME", () => {
   const ownerId = "owner-uuid-123";
   initializeSeedState(ownerId);
 
@@ -62,7 +62,55 @@ test("3. Real seed initialization creates active approved charters for JARVIS an
   }
 });
 
-test("4. Idempotent double seeding preserves existing records and does not duplicate", () => {
+test("4. Seeding snapshots deterministic hashes match 006 SQL seed migration exactly", () => {
+  // Verifies that seeded snapshots computed via canonical serialization equals 006 migration exactly
+  const jarvisSnapshot = {
+    universeType: "Hindi/Hinglish Horror Cinematic Universe",
+    genresAndThemes: ["horror", "suspense", "thriller", "supernatural mystery", "curses", "crime", "emotion", "entertainment"],
+    universeBible: {
+      recurringCharacters: [],
+      supernaturalEntities: [],
+      cursedObjects: [],
+      curseRules: [],
+      organizations: [],
+      historicalEvents: [],
+      storyArcs: [],
+      episodeContinuity: [],
+      universeTimeline: [],
+      characterRelationships: [],
+      crossovers: [],
+      callbacks: [],
+      unresolvedMysteries: [],
+      postCreditContinuity: [],
+      canonAndNonCanon: []
+    }
+  };
+  const lakmeSnapshot = {
+    universeType: "Hindu Mythology Universe",
+    narrator: {
+      identity: "Samay (Time)",
+      concept: "Samay narrates events according to their position in the cosmic and historical timeline."
+    },
+    sacredTerminology: "Sanskrit with Hindi explanations.",
+    sourceCategories: ["Vedas", "Puranas", "Upanishads", "Ramayana", "Mahabharata"],
+    claimSafetyClassifications: {
+      directlySupported: "directly supported by a cited source",
+      traditionalVersion: "traditional or regional version",
+      interpretation: "scholarly or narrative interpretation",
+      dramatizedConnective: "dramatized connective material",
+      ownerApprovedFictional: "owner-approved fictionalization"
+    }
+  };
+
+  const jarvisHash = computeSnapshotHash(jarvisSnapshot);
+  const lakmeHash = computeSnapshotHash(lakmeSnapshot);
+
+  // Exact hashes registered in sql/006 seed
+  assert.equal(jarvisHash, "de4fe123a0453899e35661debf8f22278be203dc26c500cdb019127f2edc3092");
+  assert.equal(lakmeHash, "cea206577342ac7a633e0f91736d33b68513491556cc5dbb392672e169bd3a46");
+});
+
+test("5. Idempotent double seeding preserves existing records and does not duplicate", () => {
   const ownerId = "owner-uuid-123";
   initializeSeedState(ownerId);
   initializeSeedState(ownerId); // Double seed
@@ -74,7 +122,7 @@ test("4. Idempotent double seeding preserves existing records and does not dupli
   assert.ok(l);
 });
 
-test("5. Cross-owner authorizations are rejected", () => {
+test("6. Cross-owner authorizations are rejected", () => {
   resetCreativeCharterRegistry();
   const owner1 = "owner-1";
   const owner2 = "owner-2";
@@ -96,7 +144,7 @@ test("5. Cross-owner authorizations are rejected", () => {
   }, /OWNER_AUTHENTICATION_FAILED/);
 });
 
-test("6. Snapshot deep copies and recursive freezing are protected against nested tampering", () => {
+test("7. Snapshot deep copies and recursive freezing are protected against nested tampering", () => {
   resetCreativeCharterRegistry();
   const ownerId = "owner-123";
 
@@ -121,7 +169,7 @@ test("6. Snapshot deep copies and recursive freezing are protected against neste
   }, /TypeError/);
 });
 
-test("7. Optimistic concurrency / revision checks are strictly enforced on mutable records", () => {
+test("8. Optimistic concurrency / revision checks are strictly enforced on mutable records", () => {
   resetCreativeCharterRegistry();
   const ownerId = "owner-123";
 
@@ -139,7 +187,7 @@ test("7. Optimistic concurrency / revision checks are strictly enforced on mutab
   assert.equal(charter.name, "New Name");
 });
 
-test("8. LAKME supports lazy hierarchy dynamic references", () => {
+test("9. LAKME supports lazy hierarchy dynamic references", () => {
   const hierarchy = new LakmeLazyHierarchy("universe-mythology-123");
   const pathDetails = hierarchy.resolveNodePath({
     era: "Kali Yuga",
@@ -153,7 +201,7 @@ test("8. LAKME supports lazy hierarchy dynamic references", () => {
   assert.equal(pathDetails.formattedReference, "Kali Yuga → Mahabharata → Bhishma Parva → Season 2 → Gita Upadesha → Episode 9555");
 });
 
-test("9. Recursive secret sanitization in worker context DTO", () => {
+test("10. Recursive secret sanitization in worker context DTO", () => {
   resetCreativeCharterRegistry();
   const ownerId = "owner-uuid-123";
 
@@ -173,7 +221,7 @@ test("9. Recursive secret sanitization in worker context DTO", () => {
     assignedAgentId: "agent-01",
     assignedUniverseId: "universe-horror-jarvis-uuid"
   });
-  activateApprovedVersion(ownerId, charter.id, v.versionNo, jApprovalId(app));
+  activateApprovedVersion(ownerId, charter.id, v.versionNo, app.id);
   assignCharterToInternalAgent(ownerId, "agent-01", charter.id, "universe-horror-jarvis-uuid", app.id);
 
   const context = generateSanitizedWorkerContext("agent-01");
@@ -182,7 +230,3 @@ test("9. Recursive secret sanitization in worker context DTO", () => {
   assert.equal(context.snapshot.bibleSummary.api_key, undefined);
   assert.equal(context.snapshot.bibleSummary.safeField, "safeStringValue");
 });
-
-function jApprovalId(app) {
-  return app.id;
-}

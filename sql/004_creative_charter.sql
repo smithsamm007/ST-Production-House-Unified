@@ -13,13 +13,13 @@ CREATE TABLE creative_universes (
 -- 2. creative_charters
 CREATE TABLE creative_charters (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  owner_id uuid NOT NULL REFERENCES owners(id) ON DELETE CASCADE, -- owner_id NOT NULL
+  owner_id uuid NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
   name text NOT NULL,
   vision text NOT NULL,
   default_language text NOT NULL DEFAULT 'en',
   secondary_language text,
   status text NOT NULL DEFAULT 'draft',
-  revision integer NOT NULL DEFAULT 1 CHECK (revision > 0), -- positive revision check
+  revision integer NOT NULL DEFAULT 1 CHECK (revision > 0),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT valid_charter_status CHECK (status IN ('draft', 'approved', 'active', 'inactive'))
@@ -36,7 +36,7 @@ CREATE TABLE creative_charter_versions (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (charter_id, version_no),
-  CONSTRAINT valid_snapshot_hash CHECK (snapshot_hash ~ '^[a-f0-9]{64}$') -- lowercase SHA-256 format CHECK
+  CONSTRAINT valid_snapshot_hash CHECK (snapshot_hash ~ '^[a-f0-9]{64}$')
 );
 
 CREATE UNIQUE INDEX creative_charter_versions_active_idx
@@ -50,7 +50,7 @@ CREATE TABLE agent_charter_assignments (
   charter_id uuid NOT NULL REFERENCES creative_charters(id) ON DELETE CASCADE,
   universe_id uuid REFERENCES creative_universes(id) ON DELETE SET NULL,
   is_active boolean NOT NULL DEFAULT false,
-  revision integer NOT NULL DEFAULT 1 CHECK (revision > 0), -- positive revision check
+  revision integer NOT NULL DEFAULT 1 CHECK (revision > 0),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -147,14 +147,19 @@ CREATE TABLE owner_charter_approvals (
   approved_at timestamptz NOT NULL DEFAULT now(),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT valid_approval_snapshot_hash CHECK (snapshot_hash ~ '^[a-f0-9]{64}$') -- lowercase SHA-256 format CHECK
+  CONSTRAINT valid_approval_snapshot_hash CHECK (snapshot_hash ~ '^[a-f0-9]{64}$')
 );
 
--- Triggers for approved charter-version snapshot/hash immutability
+-- Triggers for approved charter-version snapshot/hash immutability (based on owner approvals)
 CREATE OR REPLACE FUNCTION check_charter_version_immutability() RETURNS trigger AS $$
+DECLARE
+  v_has_approval boolean;
 BEGIN
-  IF OLD.is_active = true AND (NEW.snapshot <> OLD.snapshot OR NEW.snapshot_hash <> OLD.snapshot_hash) THEN
-    RAISE EXCEPTION 'APPROVED_CHARTERS_ARE_IMMUTABLE';
+  SELECT EXISTS(SELECT 1 FROM owner_charter_approvals WHERE charter_version_id = OLD.id) INTO v_has_approval;
+  IF v_has_approval THEN
+    IF (NEW.snapshot <> OLD.snapshot OR NEW.snapshot_hash <> OLD.snapshot_hash) THEN
+      RAISE EXCEPTION 'APPROVED_CHARTERS_ARE_IMMUTABLE';
+    END IF;
   END IF;
   RETURN NEW;
 END;
@@ -164,6 +169,24 @@ CREATE TRIGGER charter_version_immutability
   BEFORE UPDATE ON creative_charter_versions
   FOR EACH ROW
   EXECUTE FUNCTION check_charter_version_immutability();
+
+-- Trigger preventing deletion of an approved charter version
+CREATE OR REPLACE FUNCTION check_charter_version_deletion() RETURNS trigger AS $$
+DECLARE
+  v_has_approval boolean;
+BEGIN
+  SELECT EXISTS(SELECT 1 FROM owner_charter_approvals WHERE charter_version_id = OLD.id) INTO v_has_approval;
+  IF v_has_approval THEN
+    RAISE EXCEPTION 'CANNOT_DELETE_APPROVED_CHARTER_VERSION';
+  END IF;
+  RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER charter_version_no_delete
+  BEFORE DELETE ON creative_charter_versions
+  FOR EACH ROW
+  EXECUTE FUNCTION check_charter_version_deletion();
 
 -- Triggers for owner_charter_approvals immutability (denying update/delete)
 CREATE OR REPLACE FUNCTION deny_charter_approval_mutation() RETURNS trigger AS $$
@@ -206,7 +229,7 @@ CREATE TRIGGER check_charter_approval_binding
   FOR EACH ROW
   EXECUTE FUNCTION verify_charter_approval_binding();
 
--- Triggers for updated_at column automatic updating
+-- Trigger applications for updated_at column automatic updating
 CREATE TRIGGER update_creative_universes_updated_at BEFORE UPDATE ON creative_universes FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_creative_charters_updated_at BEFORE UPDATE ON creative_charters FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_creative_charter_versions_updated_at BEFORE UPDATE ON creative_charter_versions FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
