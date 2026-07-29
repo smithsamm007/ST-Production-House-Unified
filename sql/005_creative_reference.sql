@@ -82,7 +82,7 @@ CREATE TABLE niche_reference_profiles (
   )),
   CONSTRAINT positive_niche_prof_revision CHECK (revision > 0),
   CONSTRAINT valid_hash_format CHECK (snapshot_hash ~ '^[a-f0-9]{64}$'),
-  CONSTRAINT active_requires_approved CHECK (is_active = false OR status = 'approved') -- consistency constraint
+  CONSTRAINT active_requires_approved CHECK (is_active = false OR status = 'approved')
 );
 
 CREATE UNIQUE INDEX niche_reference_profiles_active_idx
@@ -107,7 +107,7 @@ CREATE TABLE visual_reference_profiles (
   )),
   CONSTRAINT positive_visual_prof_revision CHECK (revision > 0),
   CONSTRAINT valid_visual_hash_format CHECK (snapshot_hash ~ '^[a-f0-9]{64}$'),
-  CONSTRAINT active_requires_approved_visual CHECK (is_active = false OR status = 'approved') -- consistency constraint
+  CONSTRAINT active_requires_approved_visual CHECK (is_active = false OR status = 'approved')
 );
 
 CREATE UNIQUE INDEX visual_reference_profiles_active_idx
@@ -159,7 +159,7 @@ CREATE TABLE reference_owner_approvals (
     OR
     (niche_profile_id IS NULL AND visual_profile_id IS NOT NULL)
   ),
-  CONSTRAINT valid_approval_hash CHECK (snapshot_hash ~ '^[a-f0-9]{64}$') -- snapshot_hash format check
+  CONSTRAINT valid_approval_hash CHECK (snapshot_hash ~ '^[a-f0-9]{64}$')
 );
 
 -- ----------------------------------------------------
@@ -271,11 +271,21 @@ CREATE TRIGGER approvals_no_mutation
   FOR EACH ROW
   EXECUTE FUNCTION deny_approval_mutation();
 
--- Enforce Immutability: Deny modification of approved profile snapshots/hashes
+-- Enforce Immutability: Deny modification of approved profile snapshots/hashes based on approvals
 CREATE OR REPLACE FUNCTION check_profile_immutability() RETURNS trigger AS $$
+DECLARE
+  v_has_approval boolean;
 BEGIN
-  IF OLD.status = 'approved' AND (NEW.snapshot <> OLD.snapshot OR NEW.snapshot_hash <> OLD.snapshot_hash) THEN
-    RAISE EXCEPTION 'APPROVED_PROFILES_ARE_IMMUTABLE';
+  IF TG_TABLE_NAME = 'niche_reference_profiles' THEN
+    SELECT EXISTS(SELECT 1 FROM reference_owner_approvals WHERE niche_profile_id = OLD.id) INTO v_has_approval;
+  ELSE
+    SELECT EXISTS(SELECT 1 FROM reference_owner_approvals WHERE visual_profile_id = OLD.id) INTO v_has_approval;
+  END IF;
+
+  IF v_has_approval THEN
+    IF (NEW.snapshot <> OLD.snapshot OR NEW.snapshot_hash <> OLD.snapshot_hash) THEN
+      RAISE EXCEPTION 'APPROVED_PROFILES_ARE_IMMUTABLE';
+    END IF;
   END IF;
   RETURN NEW;
 END;
@@ -290,6 +300,34 @@ CREATE TRIGGER visual_profile_immutability
   BEFORE UPDATE ON visual_reference_profiles
   FOR EACH ROW
   EXECUTE FUNCTION check_profile_immutability();
+
+-- Trigger preventing deletion of approved profiles
+CREATE OR REPLACE FUNCTION check_profile_deletion() RETURNS trigger AS $$
+DECLARE
+  v_has_approval boolean;
+BEGIN
+  IF TG_TABLE_NAME = 'niche_reference_profiles' THEN
+    SELECT EXISTS(SELECT 1 FROM reference_owner_approvals WHERE niche_profile_id = OLD.id) INTO v_has_approval;
+  ELSE
+    SELECT EXISTS(SELECT 1 FROM reference_owner_approvals WHERE visual_profile_id = OLD.id) INTO v_has_approval;
+  END IF;
+
+  IF v_has_approval THEN
+    RAISE EXCEPTION 'CANNOT_DELETE_APPROVED_PROFILE';
+  END IF;
+  RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER niche_profile_no_delete
+  BEFORE DELETE ON niche_reference_profiles
+  FOR EACH ROW
+  EXECUTE FUNCTION check_profile_deletion();
+
+CREATE TRIGGER visual_profile_no_delete
+  BEFORE DELETE ON visual_reference_profiles
+  FOR EACH ROW
+  EXECUTE FUNCTION check_profile_deletion();
 
 -- Enforce Database Approval Binding rules before insert
 CREATE OR REPLACE FUNCTION verify_reference_approval_binding() RETURNS trigger AS $$
