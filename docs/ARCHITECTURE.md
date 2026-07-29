@@ -42,7 +42,9 @@ Creative Charters define the long-term vision, concept, narrator parameters, and
 
 A structured library separating visual and niche aspects ensures absolute control and prevents leakage across different subsystems:
 - **Separate Niche & Visual Logic**: Niche references control audience, storytelling approach, pacing, structure, and tone. Visual references control art direction, color, shot composition, subtitles, and aspect ratio. Niche characteristics must not silently dictate visuals, and visual characteristics must not silently dictate story or narration.
-- **Strict HTTPS and Host Allowlist**: Rejects non-standard ports, localhost, embedded credentials, and non-allowlisted domains. Includes a strict canonicalization parser to identify equivalent YouTube urls as duplicates.
+- **Strict HTTPS and Host Allowlist**: Rejects non-standard ports, localhost, embedded credentials, and non-allowlisted domains. Only canonicalized YouTube URL formats are permitted inside the system, with duplicate detection blocking equivalent URL profiles.
+- **Strict Classification**: Explicitly classifies references as: `youtube_channel`, `youtube_video`, `youtube_playlist`, `written_brief`, `authorized_image`, `uploaded_asset_metadata`.
+- **Approved Status Lifecycle**: Exactly the 10 approved lifecycle statuses: `submitted`, `validation_failed`, `awaiting_analysis`, `analysis_in_progress`, `analysis_failed`, `draft_profile_ready`, `awaiting_owner_review`, `approved`, `rejected`, `inactive`.
 - **Flexible Scope Assignments**: References can be assigned separately to Creative Universe, series, season, story arc, episode, standalone promotional Reel, or main-video promotion.
 
 ## Runtime rules

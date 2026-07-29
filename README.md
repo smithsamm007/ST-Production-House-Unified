@@ -10,12 +10,13 @@ This is a clean, ST-owned secure foundation for consolidating the strongest idea
   - Internal names are strictly blocked from public exposure.
   - Initially, only JARVIS and LAKME possess active owner-approved Creative Charters. The remaining 18 preloaded agents remain unassigned and inactive, ensuring no fake details are generated.
   - LAKME's Hindu Mythology universe implements a highly performant **Lazy Hierarchy** (Universe → Era or Yuga → Source Collection → Series → Season → Story Arc → Episode), allowing more than 8,000 episodes to be resolved on demand without pre-creating millions of empty database rows.
-- **Niche Reference and Visual Reference Library (Added Upgrade)**:
-  - Supports separate owner-controlled Niche and Visual references.
-  - Includes safe HTTPS URL parsing and a YouTube host allowlist.
-  - Detects duplicate submissions of equivalent YouTube URLs.
-  - Profiles are draftable, approved via SHA-256 snapshots, and immune to post-approval mutations.
-  - Scopes can be assigned separately to Creative Universe, series, season, story arc, episode, standalone promotional Reel, or main-video promotion.
+- **Niche Reference and Visual Reference Library**:
+  - Supports separate, owner-controlled Niche and Visual references.
+  - Controls audience, storytelling, pacing, structure, and tone independently from art direction, lighting, composition, or subtitle styling. Niche settings never silently alter visuals, and visual settings never silently alter story/narration.
+  - Includes safe HTTPS-only URL parsing and a YouTube host allowlist. Rejects unsafe localhost, private IPs, credentials, or non-standard ports.
+  - Classifies references strictly into: `youtube_channel`, `youtube_video`, `youtube_playlist`, `written_brief`, `authorized_image`, `uploaded_asset_metadata`.
+  - Enforces the 10 approved lifecycle statuses exactly: `submitted`, `validation_failed`, `awaiting_analysis`, `analysis_in_progress`, `analysis_failed`, `draft_profile_ready`, `awaiting_owner_review`, `approved`, `rejected`, `inactive`.
+  - Restricts scope assignments cleanly (preventing crossover of niche references into visual profiles).
 - **Agent Digital Identity and Account Isolation**:
   - Every agent name is used as an internal identifier only. Public publishing strictly uses the connected channel/account brand.
   - Every agent possesses unconfigured account slots for emails, YouTube, Instagram, Facebook, and Snapchat.

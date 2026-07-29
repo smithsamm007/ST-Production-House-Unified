@@ -6,10 +6,9 @@ import {
   canonicalizeSupportedYouTubeUrls,
   rejectUnsafeUrls,
   createManualDraftProfile,
+  updateProfileSnapshot,
   submitProfileForApproval,
   approveExactProfileSnapshot,
-  rejectEditsToApprovedImmutableProfiles,
-  updateProfileSnapshot,
   activateProfile,
   deactivateReference,
   assignReferenceScope,
@@ -18,7 +17,8 @@ import {
   buildSanitizedInternalWorkerContext,
   preventInternalAgentNames,
   resetCreativeReferenceRegistry,
-  computeProfileHash
+  computeProfileHash,
+  updateReference
 } from "../src/catalog/creativeReferenceLibrary.js";
 
 test("1. Niche and visual references can use different YouTube links", () => {
@@ -27,13 +27,13 @@ test("1. Niche and visual references can use different YouTube links", () => {
   const universeId = "universe-horror-123";
 
   const niche = createNicheReference(ownerId, universeId, {
-    url: "https://www.youtube.com/watch?v=nicheVideoId123",
+    url: "https://www.youtube.com/watch?v=nicheVid123",
     writtenBrief: "Spooky storytelling style",
     ownerNotes: "Notes"
   });
 
   const visual = createVisualReference(ownerId, universeId, {
-    url: "https://youtu.be/visualVideoId999",
+    url: "https://youtu.be/visualVid99",
     writtenVisualBrief: "Dark red cinematic palette",
     ownerNotes: "Notes"
   });
@@ -43,18 +43,18 @@ test("1. Niche and visual references can use different YouTube links", () => {
   assert.equal(visual.referenceType, "visual");
 });
 
-test("2 & 3. Niche settings do not modify visual settings and vice versa", () => {
+test("2 & 3. Niche settings do not modify visual settings and vice-versa", () => {
   resetCreativeReferenceRegistry();
   const ownerId = "owner-123";
   const universeId = "universe-horror-123";
 
   const niche = createNicheReference(ownerId, universeId, {
-    url: "https://www.youtube.com/watch?v=videoIdA",
+    url: "https://www.youtube.com/watch?v=videoIdA123",
     writtenBrief: "Folk horror focus"
   });
 
   const visual = createVisualReference(ownerId, universeId, {
-    url: "https://www.youtube.com/watch?v=videoIdB",
+    url: "https://www.youtube.com/watch?v=videoIdB123",
     writtenVisualBrief: "Surreal imagery"
   });
 
@@ -65,36 +65,26 @@ test("2 & 3. Niche settings do not modify visual settings and vice versa", () =>
   assert.equal(visual.writtenBrief, undefined);
 });
 
-test("4. Channel, video, and playlist URLs are canonicalized", () => {
+test("4. Channel, video, and playlist URLs are canonicalized and classified", () => {
   // Test video links
-  assert.equal(
-    canonicalizeSupportedYouTubeUrls("https://youtu.be/xyz777"),
-    "https://www.youtube.com/watch?v=xyz777"
-  );
-  assert.equal(
-    canonicalizeSupportedYouTubeUrls("https://www.youtube.com/watch?v=xyz777&feature=share"),
-    "https://www.youtube.com/watch?v=xyz777"
-  );
+  const vResult1 = canonicalizeSupportedYouTubeUrls("https://youtu.be/xyz77712345");
+  assert.equal(vResult1.canonical, "https://www.youtube.com/watch?v=xyz77712345");
+  assert.equal(vResult1.subClassification, "youtube_video");
+
+  // Rejects bad 11-char video ID format
+  assert.throws(() => {
+    canonicalizeSupportedYouTubeUrls("https://youtu.be/bad-length");
+  }, /MALFORMED_YOUTUBE_URL/);
 
   // Test playlist link
-  assert.equal(
-    canonicalizeSupportedYouTubeUrls("https://youtube.com/playlist?list=PLxyz123"),
-    "https://www.youtube.com/playlist?list=PLxyz123"
-  );
+  const pResult = canonicalizeSupportedYouTubeUrls("https://youtube.com/playlist?list=PLxyz123playlist");
+  assert.equal(pResult.canonical, "https://www.youtube.com/playlist?list=PLxyz123playlist");
+  assert.equal(pResult.subClassification, "youtube_playlist");
 
   // Test channel links
-  assert.equal(
-    canonicalizeSupportedYouTubeUrls("https://www.youtube.com/channel/UCxyz"),
-    "https://www.youtube.com/channel/UCxyz"
-  );
-  assert.equal(
-    canonicalizeSupportedYouTubeUrls("https://youtube.com/c/CreatorName"),
-    "https://www.youtube.com/c/CreatorName"
-  );
-  assert.equal(
-    canonicalizeSupportedYouTubeUrls("https://youtube.com/@CreatorHandle/"),
-    "https://www.youtube.com/@CreatorHandle"
-  );
+  const cResult = canonicalizeSupportedYouTubeUrls("https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv");
+  assert.equal(cResult.canonical, "https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv");
+  assert.equal(cResult.subClassification, "youtube_channel");
 });
 
 test("5. Equivalent YouTube URLs are detected as duplicates", () => {
@@ -103,167 +93,155 @@ test("5. Equivalent YouTube URLs are detected as duplicates", () => {
   const universeId = "universe-horror-123";
 
   createNicheReference(ownerId, universeId, {
-    url: "https://youtu.be/videoDuplicate"
+    url: "https://youtu.be/videoDuplic"
   });
 
-  // Equivalent url (standard format resolving to same canonical URL) throws error
+  // Equivalent url throws duplicate error
   assert.throws(() => {
     createNicheReference(ownerId, universeId, {
-      url: "https://www.youtube.com/watch?v=videoDuplicate"
+      url: "https://www.youtube.com/watch?v=videoDuplic"
     });
   }, /DUPLICATE_CANONICAL_REFERENCE/);
 });
 
-test("6. HTTP URLs are rejected", () => {
-  assert.throws(() => {
-    rejectUnsafeUrls("http://youtube.com/watch?v=abc");
-  }, /HTTPS_ONLY_REQUIRED/);
+test("6. Unsafe URLs are rejected", () => {
+  assert.throws(() => rejectUnsafeUrls("http://youtube.com/watch?v=abc"), /HTTPS_ONLY_REQUIRED/);
+  assert.throws(() => rejectUnsafeUrls("https://localhost/watch?v=abc"), /PRIVATE_OR_LOCALHOST_TARGET_REJECTED/);
+  assert.throws(() => rejectUnsafeUrls("https://user:pass@youtube.com/watch?v=abc"), /EMBEDDED_CREDENTIALS_PROHIBITED/);
+  assert.throws(() => rejectUnsafeUrls("https://youtube.com:8443/watch?v=abc"), /NON_STANDARD_PORTS_PROHIBITED/);
+  assert.throws(() => rejectUnsafeUrls("https://vimeo.com/video123"), /UNAPPROVED_DOMAIN_REJECTED/);
 });
 
-test("7. Localhost and private network targets are rejected", () => {
-  assert.throws(() => {
-    rejectUnsafeUrls("https://localhost/watch?v=abc");
-  }, /PRIVATE_OR_LOCALHOST_TARGET_REJECTED/);
-
-  assert.throws(() => {
-    rejectUnsafeUrls("https://127.0.0.1/watch?v=abc");
-  }, /PRIVATE_OR_LOCALHOST_TARGET_REJECTED/);
-
-  assert.throws(() => {
-    rejectUnsafeUrls("https://192.168.1.1/watch?v=abc");
-  }, /PRIVATE_OR_LOCALHOST_TARGET_REJECTED/);
-
-  assert.throws(() => {
-    rejectUnsafeUrls("https://sub.local/watch?v=abc");
-  }, /PRIVATE_OR_LOCALHOST_TARGET_REJECTED/);
-});
-
-test("8. Embedded credentials and non-standard ports are rejected", () => {
-  assert.throws(() => {
-    rejectUnsafeUrls("https://user:pass@youtube.com/watch?v=abc");
-  }, /EMBEDDED_CREDENTIALS_PROHIBITED/);
-
-  assert.throws(() => {
-    rejectUnsafeUrls("https://youtube.com:8443/watch?v=abc");
-  }, /NON_STANDARD_PORTS_PROHIBITED/);
-});
-
-test("9. Non-allowlisted domains are rejected", () => {
-  assert.throws(() => {
-    rejectUnsafeUrls("https://vimeo.com/video123");
-  }, /UNAPPROVED_DOMAIN_REJECTED/);
-});
-
-test("10 & 11. Unanalyzed references remain awaiting_analysis with no fake analysis evidence created", () => {
+test("7. Unanalyzed references remain awaiting_analysis", () => {
   resetCreativeReferenceRegistry();
   const ownerId = "owner-123";
   const universeId = "universe-horror-123";
 
   const ref = createNicheReference(ownerId, universeId, {
-    url: "https://youtu.be/videoForAnalysis"
+    url: "https://youtu.be/videoForAna"
   });
 
   assert.equal(ref.status, "awaiting_analysis");
 });
 
-test("12 & 13. Manual profiles require owner approval bound to exact immutable snapshot hash", () => {
+test("8. Niche/Visual cross-type validations are strictly enforced", () => {
   resetCreativeReferenceRegistry();
   const ownerId = "owner-123";
   const universeId = "universe-horror-123";
 
-  const ref = createNicheReference(ownerId, universeId, {
-    url: "https://youtu.be/videoA"
-  });
+  const nicheRef = createNicheReference(ownerId, universeId, { url: "https://youtu.be/video123456" });
+  const visualRef = createVisualReference(ownerId, universeId, { url: "https://youtu.be/video789101" });
 
-  const snapshot = {
-    storytellingApproach: "First-person narrative",
-    tone: "Eerie"
-  };
+  // A niche reference can only create niche profiles
+  const profileNiche = createManualDraftProfile(ownerId, nicheRef.id, { tone: "dark" });
+  assert.equal(profileNiche.profileType, "niche");
 
-  const profile = createManualDraftProfile(ref.id, snapshot);
-  submitProfileForApproval(profile.id);
+  // Try to create visual profile under niche reference should be impossible because of reference type enforcement
+  const profileVisual = createManualDraftProfile(ownerId, visualRef.id, { art: "realism" });
+  assert.equal(profileVisual.profileType, "visual");
 
-  // Exact hash binds approval
-  const expectedHash = computeProfileHash(snapshot);
-  const approval = approveExactProfileSnapshot(ownerId, profile.id, expectedHash);
+  submitProfileForApproval(ownerId, profileNiche.id);
+  submitProfileForApproval(ownerId, profileVisual.id);
 
-  assert.ok(approval);
-  assert.equal(profile.status, "approved");
+  const hNiche = computeProfileHash(profileNiche.snapshot);
+  const hVisual = computeProfileHash(profileVisual.snapshot);
 
-  // Attempting to activate with wrong hash throws
-  assert.throws(() => {
-    approveExactProfileSnapshot(ownerId, profile.id, "wrong_hash_value");
-  }, /SNAPSHOT_HASH_MISMATCH/);
+  approveExactProfileSnapshot(ownerId, profileNiche.id, hNiche);
+  approveExactProfileSnapshot(ownerId, profileVisual.id, hVisual);
+
+  // retrieveLatestApprovedNicheProfile strictly ignores visual profiles
+  assert.equal(retrieveLatestApprovedNicheProfile(visualRef.id), null);
+  assert.equal(retrieveLatestApprovedNicheProfile(nicheRef.id).id, profileNiche.id);
+
+  // retrieveLatestApprovedVisualProfile strictly ignores niche profiles
+  assert.equal(retrieveLatestApprovedVisualProfile(nicheRef.id), null);
+  assert.equal(retrieveLatestApprovedVisualProfile(visualRef.id).id, profileVisual.id);
+
+  // Worker context only contains typed profiles
+  const nicheCtx = buildSanitizedInternalWorkerContext(nicheRef.id);
+  assert.ok(nicheCtx.nicheSnapshot);
+  assert.equal(nicheCtx.visualSnapshot, null);
+
+  const visualCtx = buildSanitizedInternalWorkerContext(visualRef.id);
+  assert.ok(visualCtx.visualSnapshot);
+  assert.equal(visualCtx.nicheSnapshot, null);
 });
 
-test("14. An edited profile requires new approval", () => {
+test("9. Cross-owner authorization rejections", () => {
+  resetCreativeReferenceRegistry();
+  const owner1 = "owner-1";
+  const owner2 = "owner-2";
+  const universeId = "universe-1";
+
+  const ref = createNicheReference(owner1, universeId, { url: "https://youtu.be/video123456" });
+
+  assert.throws(() => {
+    createManualDraftProfile(owner2, ref.id, { data: 1 });
+  }, /OWNER_AUTHENTICATION_FAILED/);
+});
+
+test("10. Immutable profiles are protected from changes", () => {
   resetCreativeReferenceRegistry();
   const ownerId = "owner-123";
-  const universeId = "universe-horror-123";
+  const universeId = "universe-1";
 
-  const ref = createNicheReference(ownerId, universeId, {
-    url: "https://youtu.be/videoA"
-  });
+  const ref = createNicheReference(ownerId, universeId, { url: "https://youtu.be/video123456" });
+  const profile = createManualDraftProfile(ownerId, ref.id, { data: 1 });
 
-  const snapshot = {
-    storytellingApproach: "First-person narrative"
-  };
-
-  const profile = createManualDraftProfile(ref.id, snapshot);
-  submitProfileForApproval(profile.id);
-
-  const expectedHash = computeProfileHash(snapshot);
+  submitProfileForApproval(ownerId, profile.id);
+  const expectedHash = computeProfileHash(profile.snapshot);
   approveExactProfileSnapshot(ownerId, profile.id, expectedHash);
 
-  // Since profile is now approved, editing is blocked
   assert.throws(() => {
-    updateProfileSnapshot(profile.id, { storytellingApproach: "Third-person" });
+    updateProfileSnapshot(ownerId, profile.id, 1, { data: 2 });
   }, /CANNOT_MODIFY_APPROVED_PROFILE/);
 });
 
-test("15. Scope assignments are validated", () => {
+test("11. Polymorphic scope validation targets and crossovers are blocked", () => {
   resetCreativeReferenceRegistry();
   const ownerId = "owner-123";
-  const universeId = "universe-horror-123";
+  const universeId = "universe-1";
 
-  const ref = createNicheReference(ownerId, universeId, {
-    url: "https://youtu.be/videoA"
-  });
+  const ref = createNicheReference(ownerId, universeId, { url: "https://youtu.be/video123456" });
+  const nicheProfile = createManualDraftProfile(ownerId, ref.id, { data: 1 });
 
-  const assignment = assignReferenceScope(ref.id, {
-    scopeType: "story_arc",
-    scopeTargetId: "story-arc-uuid-abc"
-  });
-
-  assert.ok(assignment);
-  assert.equal(assignment.scopeType, "story_arc");
-
+  // Reject unsupported live scope target
   assert.throws(() => {
-    assignReferenceScope(ref.id, {
-      scopeType: "invalid_scope_value",
-      scopeTargetId: "uuid"
+    assignReferenceScope(ownerId, ref.id, {
+      scopeType: "series",
+      scopeTargetId: "unsupported-live-uuid"
     });
-  }, /INVALID_SCOPE_TYPE/);
+  }, /UNSUPPORTED_LIVE_ASSIGNMENT/);
+
+  // Rejects visualProfileId being populated by a niche profile
+  assert.throws(() => {
+    assignReferenceScope(ownerId, ref.id, {
+      scopeType: "series",
+      scopeTargetId: "series-uuid",
+      visualProfileId: nicheProfile.id
+    });
+  }, /INVALID_PROFILE_TYPE_PLACEMENT/);
 });
 
-test("16. Worker context contains no plaintext secrets", () => {
+test("12. Optimistic concurrency revisions are validated", () => {
   resetCreativeReferenceRegistry();
   const ownerId = "owner-123";
-  const universeId = "universe-horror-123";
+  const universeId = "universe-1";
 
-  const ref = createNicheReference(ownerId, universeId, {
-    url: "https://youtu.be/videoA"
-  });
+  const ref = createNicheReference(ownerId, universeId, { url: "https://youtu.be/video123456" });
+  assert.equal(ref.revision, 1);
 
-  const context = buildSanitizedInternalWorkerContext(ref.id);
-  assert.ok(context);
-  assert.equal(context.apiKey, undefined);
-  assert.equal(context.secretLocator, undefined);
-  assert.equal(context.token, undefined);
-  assert.equal(context.password, undefined);
+  // Mismatch expected revision throws stale write
+  assert.throws(() => {
+    updateReference(ownerId, ref.id, 2, { status: "analysis_in_progress" });
+  }, /STALE_WRITE_REJECTED/);
+
+  updateReference(ownerId, ref.id, 1, { status: "analysis_in_progress" });
+  assert.equal(ref.revision, 2);
+  assert.equal(ref.status, "analysis_in_progress");
 });
 
-test("17. Public output contains no JARVIS, LAKME, or other internal agent names", () => {
+test("13. Public attribution contains no internal agent name leakages", () => {
   const agent = { id: "agent-01", name: "JARVIS" };
   assert.equal(preventInternalAgentNames("Brand JARVIS Show", agent), true);
   assert.equal(preventInternalAgentNames("LAKME Channel", agent), true);

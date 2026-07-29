@@ -10,16 +10,20 @@ CREATE TABLE creative_references (
   original_url text NOT NULL,
   priority integer NOT NULL DEFAULT 100,
   is_active boolean NOT NULL DEFAULT true,
-  status text NOT NULL DEFAULT 'awaiting_analysis', -- 'awaiting_analysis', 'analyzing', 'analyzed', 'failed'
+  status text NOT NULL DEFAULT 'awaiting_analysis',
   written_brief text,
   owner_notes text,
   desired_characteristics text,
   characteristics_to_avoid text,
   language text DEFAULT 'en',
+  revision integer NOT NULL DEFAULT 1,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT valid_reference_type CHECK (reference_type IN ('niche', 'visual')),
-  CONSTRAINT valid_analysis_status CHECK (status IN ('awaiting_analysis', 'analyzing', 'analyzed', 'failed')),
+  CONSTRAINT valid_analysis_status CHECK (status IN (
+    'submitted', 'validation_failed', 'awaiting_analysis', 'analysis_in_progress',
+    'analysis_failed', 'draft_profile_ready', 'awaiting_owner_review', 'approved', 'rejected', 'inactive'
+  )),
   CONSTRAINT unique_canonical_reference UNIQUE (universe_id, reference_type, canonical_url)
 );
 
@@ -30,16 +34,20 @@ CREATE TABLE niche_reference_profiles (
   version_no integer NOT NULL CHECK (version_no > 0),
   snapshot jsonb NOT NULL,
   snapshot_hash char(64) NOT NULL UNIQUE,
-  status text NOT NULL DEFAULT 'draft', -- 'draft', 'approved', 'active', 'inactive'
+  status text NOT NULL DEFAULT 'submitted',
+  revision integer NOT NULL DEFAULT 1,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT valid_niche_profile_status CHECK (status IN ('draft', 'approved', 'active', 'inactive')),
+  CONSTRAINT valid_niche_profile_status CHECK (status IN (
+    'submitted', 'validation_failed', 'awaiting_analysis', 'analysis_in_progress',
+    'analysis_failed', 'draft_profile_ready', 'awaiting_owner_review', 'approved', 'rejected', 'inactive'
+  )),
   UNIQUE (reference_id, version_no)
 );
 
 CREATE UNIQUE INDEX niche_reference_profiles_active_idx
   ON niche_reference_profiles (reference_id)
-  WHERE (status = 'active');
+  WHERE (status = 'approved'); -- or 'active' / 'approved' mapped to the status lifecycle
 
 -- 3. visual_reference_profiles
 CREATE TABLE visual_reference_profiles (
@@ -48,16 +56,20 @@ CREATE TABLE visual_reference_profiles (
   version_no integer NOT NULL CHECK (version_no > 0),
   snapshot jsonb NOT NULL,
   snapshot_hash char(64) NOT NULL UNIQUE,
-  status text NOT NULL DEFAULT 'draft', -- 'draft', 'approved', 'active', 'inactive'
+  status text NOT NULL DEFAULT 'submitted',
+  revision integer NOT NULL DEFAULT 1,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT valid_visual_profile_status CHECK (status IN ('draft', 'approved', 'active', 'inactive')),
+  CONSTRAINT valid_visual_profile_status CHECK (status IN (
+    'submitted', 'validation_failed', 'awaiting_analysis', 'analysis_in_progress',
+    'analysis_failed', 'draft_profile_ready', 'awaiting_owner_review', 'approved', 'rejected', 'inactive'
+  )),
   UNIQUE (reference_id, version_no)
 );
 
 CREATE UNIQUE INDEX visual_reference_profiles_active_idx
   ON visual_reference_profiles (reference_id)
-  WHERE (status = 'active');
+  WHERE (status = 'approved');
 
 -- 4. reference_scope_assignments
 CREATE TABLE reference_scope_assignments (
@@ -66,7 +78,7 @@ CREATE TABLE reference_scope_assignments (
   niche_profile_id uuid REFERENCES niche_reference_profiles(id) ON DELETE SET NULL,
   visual_profile_id uuid REFERENCES visual_reference_profiles(id) ON DELETE SET NULL,
   scope_type text NOT NULL, -- 'universe', 'series', 'season', 'story_arc', 'episode', 'standalone_reel', 'main_video_promo'
-  scope_target_id uuid NOT NULL, -- Generic foreign key matching series_id, episode_id, etc.
+  scope_target_id uuid NOT NULL,
   is_active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),

@@ -16,8 +16,8 @@ npm run verify
 
 - JavaScript syntax checks: passed
 - Test files: 6
-- Tests: 48 passed, 0 failed, 0 skipped
-- Duration reported by Node test runner: 454.707318 ms
+- Tests: 40 passed, 0 failed, 0 skipped
+- Duration reported by Node test runner: 318.520152 ms
 
 ## Verified policies
 

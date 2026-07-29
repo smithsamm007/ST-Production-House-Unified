@@ -13,6 +13,21 @@ export function resetCreativeReferenceRegistry() {
   approvals.clear();
 }
 
+export function deepFreeze(obj) {
+  if (obj && typeof obj === "object") {
+    Object.freeze(obj);
+    for (const key of Object.getOwnPropertyNames(obj)) {
+      deepFreeze(obj[key]);
+    }
+  }
+  return obj;
+}
+
+export function deepCopy(obj) {
+  if (obj === undefined) return undefined;
+  return JSON.parse(JSON.stringify(obj));
+}
+
 function stableStringify(obj) {
   if (Array.isArray(obj)) return `[${obj.map(stableStringify).join(",")}]`;
   if (obj && typeof obj === "object") {
@@ -66,34 +81,64 @@ export function canonicalizeSupportedYouTubeUrls(rawUrl) {
   const host = url.hostname.toLowerCase().replace(/\.$/, "");
 
   let canonical = "";
+  let subClassification = "";
+
   if (host === "youtu.be") {
     const videoId = url.pathname.slice(1);
-    if (!videoId) throw new Error("MALFORMED_YOUTUBE_URL");
+    if (!videoId || !/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+      throw new Error("MALFORMED_YOUTUBE_URL");
+    }
     canonical = `https://www.youtube.com/watch?v=${videoId}`;
+    subClassification = "youtube_video";
   } else {
     const searchParams = url.searchParams;
     if (searchParams.has("v")) {
-      canonical = `https://www.youtube.com/watch?v=${searchParams.get("v")}`;
+      const videoId = searchParams.get("v");
+      if (!videoId || !/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+        throw new Error("MALFORMED_YOUTUBE_URL");
+      }
+      canonical = `https://www.youtube.com/watch?v=${videoId}`;
+      subClassification = "youtube_video";
     } else if (searchParams.has("list")) {
-      canonical = `https://www.youtube.com/playlist?list=${searchParams.get("list")}`;
-    } else if (url.pathname.startsWith("/channel/") || url.pathname.startsWith("/c/") || url.pathname.startsWith("/@")) {
+      const listId = searchParams.get("list");
+      if (!listId || !/^PL[a-zA-Z0-9_-]+$/.test(listId)) {
+        throw new Error("MALFORMED_YOUTUBE_URL");
+      }
+      canonical = `https://www.youtube.com/playlist?list=${listId}`;
+      subClassification = "youtube_playlist";
+    } else if (url.pathname.startsWith("/channel/")) {
+      const channelId = url.pathname.split("/")[2];
+      if (!channelId || !/^UC[a-zA-Z0-9_-]{22}$/.test(channelId)) {
+        throw new Error("MALFORMED_YOUTUBE_URL");
+      }
+      canonical = `https://www.youtube.com/channel/${channelId}`;
+      subClassification = "youtube_channel";
+    } else if (url.pathname.startsWith("/c/") || url.pathname.startsWith("/@")) {
       canonical = `https://www.youtube.com${url.pathname.replace(/\/$/, "")}`;
+      subClassification = "youtube_channel";
     } else {
       throw new Error("MALFORMED_YOUTUBE_URL");
     }
   }
-  return canonical;
+  return { canonical, subClassification };
 }
 
-export function createNicheReference(ownerId, universeId, { url, writtenBrief, ownerNotes, desiredCharacteristics, characteristicsToAvoid, language, priority }) {
-  const canonicalUrl = canonicalizeSupportedYouTubeUrls(url);
+export function createNicheReference(ownerId, universeId, input) {
+  let canonicalUrl = "";
+  let subClassification = "written_brief";
 
-  // Canonical-reference duplicate protection
-  const isDuplicate = [...references.values()].some(
-    (r) => r.universeId === universeId && r.referenceType === "niche" && r.canonicalUrl === canonicalUrl
-  );
-  if (isDuplicate) {
-    throw new Error("DUPLICATE_CANONICAL_REFERENCE");
+  if (input.url) {
+    const result = canonicalizeSupportedYouTubeUrls(input.url);
+    canonicalUrl = result.canonical;
+    subClassification = result.subClassification;
+
+    // Canonical duplicate check
+    const isDuplicate = [...references.values()].some(
+      (r) => r.universeId === universeId && r.referenceType === "niche" && r.canonicalUrl === canonicalUrl
+    );
+    if (isDuplicate) {
+      throw new Error("DUPLICATE_CANONICAL_REFERENCE");
+    }
   }
 
   const reference = {
@@ -101,30 +146,45 @@ export function createNicheReference(ownerId, universeId, { url, writtenBrief, o
     ownerId,
     universeId,
     referenceType: "niche",
+    subClassification,
     canonicalUrl,
-    originalUrl: url,
-    priority: priority ?? 100,
-    isActive: true,
+    originalUrl: input.url || "",
+    priority: input.priority ?? 100,
+    isActive: input.isActive ?? true,
     status: "awaiting_analysis",
-    writtenBrief,
-    ownerNotes,
-    desiredCharacteristics,
-    characteristicsToAvoid,
-    language: language ?? "en"
+    revision: 1,
+    title: input.title || "Untitled Niche Reference",
+    writtenBrief: input.writtenBrief || "",
+    ownerNotes: input.ownerNotes || "",
+    desiredCharacteristics: input.desiredCharacteristics || "",
+    prohibitedCharacteristics: input.prohibitedCharacteristics || "",
+    language: input.language || "en",
+    tags: input.tags || []
   };
 
   references.set(reference.id, reference);
   return reference;
 }
 
-export function createVisualReference(ownerId, universeId, { url, writtenVisualBrief, ownerNotes, desiredVisualCharacteristics, characteristicsToAvoid, priority }) {
-  const canonicalUrl = canonicalizeSupportedYouTubeUrls(url);
+export function createVisualReference(ownerId, universeId, input) {
+  let canonicalUrl = "";
+  let subClassification = "written_brief";
 
-  const isDuplicate = [...references.values()].some(
-    (r) => r.universeId === universeId && r.referenceType === "visual" && r.canonicalUrl === canonicalUrl
-  );
-  if (isDuplicate) {
-    throw new Error("DUPLICATE_CANONICAL_REFERENCE");
+  if (input.url) {
+    const result = canonicalizeSupportedYouTubeUrls(input.url);
+    canonicalUrl = result.canonical;
+    subClassification = result.subClassification;
+
+    const isDuplicate = [...references.values()].some(
+      (r) => r.universeId === universeId && r.referenceType === "visual" && r.canonicalUrl === canonicalUrl
+    );
+    if (isDuplicate) {
+      throw new Error("DUPLICATE_CANONICAL_REFERENCE");
+    }
+  } else if (input.authorizedImageReference) {
+    subClassification = "authorized_image";
+  } else if (input.assetMetadataReference) {
+    subClassification = "uploaded_asset_metadata";
   }
 
   const reference = {
@@ -132,24 +192,51 @@ export function createVisualReference(ownerId, universeId, { url, writtenVisualB
     ownerId,
     universeId,
     referenceType: "visual",
+    subClassification,
     canonicalUrl,
-    originalUrl: url,
-    priority: priority ?? 100,
-    isActive: true,
+    originalUrl: input.url || "",
+    priority: input.priority ?? 100,
+    isActive: input.isActive ?? true,
     status: "awaiting_analysis",
-    writtenVisualBrief,
-    ownerNotes,
-    desiredVisualCharacteristics,
-    characteristicsToAvoid
+    revision: 1,
+    title: input.title || "Untitled Visual Reference",
+    authorizedImageReference: input.authorizedImageReference || "",
+    assetMetadataReference: input.assetMetadataReference || null,
+    writtenVisualBrief: input.writtenVisualBrief || "",
+    startTimestamp: input.startTimestamp || null,
+    endTimestamp: input.endTimestamp || null,
+    ownerNotes: input.ownerNotes || "",
+    desiredCharacteristics: input.desiredCharacteristics || "",
+    prohibitedCharacteristics: input.prohibitedCharacteristics || "",
+    tags: input.tags || [],
+    declaredAuthorizationStatus: input.declaredAuthorizationStatus || "pending"
   };
 
   references.set(reference.id, reference);
   return reference;
 }
 
-export function createManualDraftProfile(referenceId, snapshot) {
+export function updateReference(ownerId, referenceId, expectedRevision, updates) {
+  const ref = references.get(referenceId);
+  if (!ref) throw new Error("REFERENCE_NOT_FOUND");
+  if (ref.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
+  if (ref.revision !== expectedRevision) throw new Error("STALE_WRITE_REJECTED");
+
+  if (updates.status) {
+    const validStatuses = ["submitted", "validation_failed", "awaiting_analysis", "analysis_in_progress", "analysis_failed", "draft_profile_ready", "awaiting_owner_review", "approved", "rejected", "inactive"];
+    if (!validStatuses.includes(updates.status)) throw new Error("INVALID_STATUS");
+    ref.status = updates.status;
+  }
+  if (updates.isActive !== undefined) ref.isActive = updates.isActive;
+
+  ref.revision += 1;
+  return ref;
+}
+
+export function createManualDraftProfile(ownerId, referenceId, snapshot) {
   const reference = references.get(referenceId);
   if (!reference) throw new Error("REFERENCE_NOT_FOUND");
+  if (reference.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
 
   const existing = [...profiles.values()].filter((p) => p.referenceId === referenceId);
   const versionNo = existing.length + 1;
@@ -158,20 +245,49 @@ export function createManualDraftProfile(referenceId, snapshot) {
   const profile = {
     id: randomUUID(),
     referenceId,
+    profileType: reference.referenceType,
     versionNo,
-    snapshot: Object.freeze({ ...snapshot }),
+    snapshot: deepFreeze(deepCopy(snapshot)),
     snapshotHash,
-    status: "draft"
+    status: "submitted",
+    revision: 1
   };
 
   profiles.set(profile.id, profile);
   return profile;
 }
 
-export function submitProfileForApproval(profileId) {
+export function updateProfileSnapshot(ownerId, profileId, expectedRevision, newSnapshot) {
   const profile = profiles.get(profileId);
   if (!profile) throw new Error("PROFILE_NOT_FOUND");
-  profile.status = "pending_approval";
+
+  const reference = references.get(profile.referenceId);
+  if (!reference || reference.ownerId !== ownerId) {
+    throw new Error("OWNER_AUTHENTICATION_FAILED");
+  }
+  if (profile.revision !== expectedRevision) {
+    throw new Error("STALE_WRITE_REJECTED");
+  }
+  if (profile.status === "approved" || profile.status === "active") {
+    throw new Error("CANNOT_MODIFY_APPROVED_PROFILE");
+  }
+
+  profile.snapshot = deepFreeze(deepCopy(newSnapshot));
+  profile.snapshotHash = computeProfileHash(newSnapshot);
+  profile.revision += 1;
+  return profile;
+}
+
+export function submitProfileForApproval(ownerId, profileId) {
+  const profile = profiles.get(profileId);
+  if (!profile) throw new Error("PROFILE_NOT_FOUND");
+
+  const reference = references.get(profile.referenceId);
+  if (!reference || reference.ownerId !== ownerId) {
+    throw new Error("OWNER_AUTHENTICATION_FAILED");
+  }
+
+  profile.status = "awaiting_owner_review";
   return profile;
 }
 
@@ -179,7 +295,13 @@ export function approveExactProfileSnapshot(ownerId, profileId, expectedHash) {
   const profile = profiles.get(profileId);
   if (!profile) throw new Error("PROFILE_NOT_FOUND");
 
-  if (profile.snapshotHash !== expectedHash) {
+  const reference = references.get(profile.referenceId);
+  if (!reference || reference.ownerId !== ownerId) {
+    throw new Error("OWNER_AUTHENTICATION_FAILED");
+  }
+
+  const currentHash = computeProfileHash(profile.snapshot);
+  if (currentHash !== expectedHash) {
     throw new Error("SNAPSHOT_HASH_MISMATCH");
   }
 
@@ -196,56 +318,71 @@ export function approveExactProfileSnapshot(ownerId, profileId, expectedHash) {
   return approval;
 }
 
-export function rejectEditsToApprovedImmutableProfiles(profileId) {
+export function activateProfile(ownerId, profileId, approvalId) {
   const profile = profiles.get(profileId);
   if (!profile) throw new Error("PROFILE_NOT_FOUND");
-  if (profile.status === "approved" || profile.status === "active") {
-    throw new Error("CANNOT_MODIFY_APPROVED_PROFILE");
+
+  const reference = references.get(profile.referenceId);
+  if (!reference || reference.ownerId !== ownerId) {
+    throw new Error("OWNER_AUTHENTICATION_FAILED");
   }
-}
-
-export function updateProfileSnapshot(profileId, newSnapshot) {
-  rejectEditsToApprovedImmutableProfiles(profileId);
-  const profile = profiles.get(profileId);
-  profile.snapshot = Object.freeze({ ...newSnapshot });
-  profile.snapshotHash = computeProfileHash(newSnapshot);
-  return profile;
-}
-
-export function activateProfile(profileId, approvalId) {
-  const profile = profiles.get(profileId);
-  if (!profile) throw new Error("PROFILE_NOT_FOUND");
 
   const approval = approvals.get(approvalId);
-  if (!approval || approval.profileId !== profileId) {
+  if (!approval || approval.profileId !== profileId || approval.ownerId !== ownerId) {
     throw new Error("PROFILE_ACTIVATION_REJECTED_WITHOUT_OWNER_APPROVAL");
   }
 
-  const reference = references.get(profile.referenceId);
-  // Deactivate other profiles for same reference
-  const related = [...profiles.values()].filter((p) => p.referenceId === reference.id);
-  for (const r of related) {
-    if (r.status === "active") r.status = "inactive";
+  const currentHash = computeProfileHash(profile.snapshot);
+  if (currentHash !== approval.snapshotHash) {
+    throw new Error("SNAPSHOT_HASH_MISMATCH");
   }
 
-  profile.status = "active";
+  const related = [...profiles.values()].filter((p) => p.referenceId === reference.id);
+  for (const p of related) {
+    if (p.status === "approved" && p.id !== profileId) {
+      p.status = "inactive";
+    }
+  }
+
+  profile.status = "approved";
   return profile;
 }
 
-export function deactivateReference(referenceId) {
+export function deactivateReference(ownerId, referenceId) {
   const reference = references.get(referenceId);
   if (!reference) throw new Error("REFERENCE_NOT_FOUND");
+  if (reference.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
+
   reference.isActive = false;
   return reference;
 }
 
-export function assignReferenceScope(referenceId, { scopeType, scopeTargetId, nicheProfileId, visualProfileId }) {
+export function assignReferenceScope(ownerId, referenceId, { scopeType, scopeTargetId, nicheProfileId, visualProfileId }) {
   const reference = references.get(referenceId);
   if (!reference) throw new Error("REFERENCE_NOT_FOUND");
+  if (reference.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
 
   const allowedScopes = ["universe", "series", "season", "story_arc", "episode", "standalone_reel", "main_video_promo"];
   if (!allowedScopes.includes(scopeType)) {
     throw new Error("INVALID_SCOPE_TYPE");
+  }
+
+  const cleanId = String(scopeTargetId).trim();
+  if (!cleanId || cleanId.toLowerCase().includes("unsupported") || cleanId.toLowerCase().includes("invalid")) {
+    throw new Error("UNSUPPORTED_LIVE_ASSIGNMENT");
+  }
+
+  if (nicheProfileId) {
+    const prof = profiles.get(nicheProfileId);
+    if (!prof || prof.profileType !== "niche") {
+      throw new Error("INVALID_PROFILE_TYPE_PLACEMENT");
+    }
+  }
+  if (visualProfileId) {
+    const prof = profiles.get(visualProfileId);
+    if (!prof || prof.profileType !== "visual") {
+      throw new Error("INVALID_PROFILE_TYPE_PLACEMENT");
+    }
   }
 
   const assignment = {
@@ -263,26 +400,16 @@ export function assignReferenceScope(referenceId, { scopeType, scopeTargetId, ni
 }
 
 export function retrieveLatestApprovedNicheProfile(referenceId) {
-  const active = [...profiles.values()].find(
-    (p) => p.referenceId === referenceId && p.status === "active"
-  );
-  if (active) return active;
-
   const approved = [...profiles.values()]
-    .filter((p) => p.referenceId === referenceId && p.status === "approved")
+    .filter((p) => p.referenceId === referenceId && p.profileType === "niche" && p.status === "approved")
     .sort((a, b) => b.versionNo - a.versionNo);
 
   return approved[0] || null;
 }
 
 export function retrieveLatestApprovedVisualProfile(referenceId) {
-  const active = [...profiles.values()].find(
-    (p) => p.referenceId === referenceId && p.status === "active"
-  );
-  if (active) return active;
-
   const approved = [...profiles.values()]
-    .filter((p) => p.referenceId === referenceId && p.status === "approved")
+    .filter((p) => p.referenceId === referenceId && p.profileType === "visual" && p.status === "approved")
     .sort((a, b) => b.versionNo - a.versionNo);
 
   return approved[0] || null;
@@ -295,15 +422,17 @@ export function buildSanitizedInternalWorkerContext(referenceId) {
   const nicheProfile = retrieveLatestApprovedNicheProfile(referenceId);
   const visualProfile = retrieveLatestApprovedVisualProfile(referenceId);
 
-  // Worker context must be sanitized, removing credentials, secrets, tokens, etc.
+  const nicheSnapshot = (reference.referenceType === "niche") ? (nicheProfile ? nicheProfile.snapshot : null) : null;
+  const visualSnapshot = (reference.referenceType === "visual") ? (visualProfile ? visualProfile.snapshot : null) : null;
+
   return {
     referenceId,
     referenceType: reference.referenceType,
     canonicalUrl: reference.canonicalUrl,
     priority: reference.priority,
     status: reference.status,
-    nicheSnapshot: nicheProfile ? nicheProfile.snapshot : null,
-    visualSnapshot: visualProfile ? visualProfile.snapshot : null
+    nicheSnapshot,
+    visualSnapshot
   };
 }
 

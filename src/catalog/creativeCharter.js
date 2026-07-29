@@ -1,16 +1,28 @@
 import { createHash, randomUUID } from "node:crypto";
 
-// In-memory backing stores for policy validation
 const charters = new Map();
-const universes = new Map();
 const assignments = new Map();
 const approvals = new Map();
 
 export function resetCreativeCharterRegistry() {
   charters.clear();
-  universes.clear();
   assignments.clear();
   approvals.clear();
+}
+
+export function deepFreeze(obj) {
+  if (obj && typeof obj === "object") {
+    Object.freeze(obj);
+    for (const key of Object.getOwnPropertyNames(obj)) {
+      deepFreeze(obj[key]);
+    }
+  }
+  return obj;
+}
+
+export function deepCopy(obj) {
+  if (obj === undefined) return undefined;
+  return JSON.parse(JSON.stringify(obj));
 }
 
 function stableStringify(obj) {
@@ -41,22 +53,35 @@ export function createDraftCharter(ownerId, { name, vision, defaultLanguage, sec
     defaultLanguage,
     secondaryLanguage,
     status: "draft",
+    revision: 1,
     versions: []
   };
   charters.set(charter.id, charter);
   return charter;
 }
 
-export function validateCharterStructure(charter) {
-  if (!charter || !charter.id || !charter.name || !charter.vision) {
-    throw new Error("INVALID_CHARTER_STRUCTURE");
-  }
-  return true;
-}
-
-export function createNewCharterVersion(charterId, snapshot) {
+export function updateDraftCharter(ownerId, charterId, expectedRevision, updates) {
   const charter = charters.get(charterId);
   if (!charter) throw new Error("CHARTER_NOT_FOUND");
+  if (charter.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
+  if (charter.revision !== expectedRevision) throw new Error("STALE_WRITE_REJECTED");
+  if (charter.status === "approved" || charter.status === "active") {
+    throw new Error("CANNOT_MODIFY_APPROVED_CHARTER");
+  }
+
+  if (updates.name) charter.name = updates.name.trim();
+  if (updates.vision) charter.vision = updates.vision.trim();
+  if (updates.defaultLanguage) charter.defaultLanguage = updates.defaultLanguage;
+  if (updates.secondaryLanguage) charter.secondaryLanguage = updates.secondaryLanguage;
+
+  charter.revision += 1;
+  return charter;
+}
+
+export function createNewCharterVersion(ownerId, charterId, snapshot) {
+  const charter = charters.get(charterId);
+  if (!charter) throw new Error("CHARTER_NOT_FOUND");
+  if (charter.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
   if (charter.status === "approved" || charter.status === "active") {
     throw new Error("CANNOT_MODIFY_APPROVED_CHARTER");
   }
@@ -68,19 +93,22 @@ export function createNewCharterVersion(charterId, snapshot) {
     id: randomUUID(),
     charterId,
     versionNo,
-    snapshot: Object.freeze({ ...snapshot }),
+    snapshot: deepFreeze(deepCopy(snapshot)),
     snapshotHash,
     isApproved: false,
-    isActive: false
+    isActive: false,
+    revision: 1
   };
 
   charter.versions.push(version);
   return version;
 }
 
-export function submitCharterForOwnerApproval(charterId, versionNo) {
+export function submitCharterForOwnerApproval(ownerId, charterId, versionNo) {
   const charter = charters.get(charterId);
   if (!charter) throw new Error("CHARTER_NOT_FOUND");
+  if (charter.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
+
   const version = charter.versions.find((v) => v.versionNo === versionNo);
   if (!version) throw new Error("CHARTER_VERSION_NOT_FOUND");
   return { charterId, versionNo, status: "pending_approval" };
@@ -89,6 +117,8 @@ export function submitCharterForOwnerApproval(charterId, versionNo) {
 export function approveExactImmutableVersion(ownerId, charterId, versionNo, { assignedAgentId, assignedUniverseId }) {
   const charter = charters.get(charterId);
   if (!charter) throw new Error("CHARTER_NOT_FOUND");
+  if (charter.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
+
   const version = charter.versions.find((v) => v.versionNo === versionNo);
   if (!version) throw new Error("CHARTER_VERSION_NOT_FOUND");
 
@@ -109,24 +139,25 @@ export function approveExactImmutableVersion(ownerId, charterId, versionNo, { as
   return approval;
 }
 
-export function activateApprovedVersion(charterId, versionNo, approvalId) {
+export function activateApprovedVersion(ownerId, charterId, versionNo, approvalId) {
   const charter = charters.get(charterId);
   if (!charter) throw new Error("CHARTER_NOT_FOUND");
+  if (charter.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
+
   const version = charter.versions.find((v) => v.versionNo === versionNo);
   if (!version) throw new Error("CHARTER_VERSION_NOT_FOUND");
 
   const approval = approvals.get(approvalId);
-  if (!approval || approval.charterVersionId !== version.id) {
+  if (!approval || approval.charterVersionId !== version.id || approval.ownerId !== ownerId) {
     throw new Error("ACTIVATION_REJECTED_WITHOUT_OWNER_APPROVAL");
   }
 
-  // Verify hash match dynamically to prevent snapshot tampering after approval
+  // Deep copy and verify hash dynamically to prevent snapshot tampering after approval
   const currentHash = computeSnapshotHash(version.snapshot);
   if (currentHash !== approval.snapshotHash) {
     throw new Error("APPROVAL_INVALID_FOR_MODIFIED_SNAPSHOT");
   }
 
-  // Deactivate any previous active version
   for (const v of charter.versions) {
     v.isActive = false;
   }
@@ -136,9 +167,11 @@ export function activateApprovedVersion(charterId, versionNo, approvalId) {
   return { charterId, versionNo, isActive: true };
 }
 
-export function deactivateCharter(charterId) {
+export function deactivateCharter(ownerId, charterId) {
   const charter = charters.get(charterId);
   if (!charter) throw new Error("CHARTER_NOT_FOUND");
+  if (charter.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
+
   charter.status = "inactive";
   for (const v of charter.versions) {
     v.isActive = false;
@@ -146,14 +179,28 @@ export function deactivateCharter(charterId) {
   return { charterId, isActive: false };
 }
 
-export function assignCharterToInternalAgent(agentId, charterId, universeId, approvalId) {
+export function assignCharterToInternalAgent(ownerId, agentId, charterId, universeId, approvalId) {
+  const charter = charters.get(charterId);
+  if (!charter) throw new Error("CHARTER_NOT_FOUND");
+  if (charter.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
+
   const approval = approvals.get(approvalId);
-  if (!approval) throw new Error("ACTIVATION_REJECTED_WITHOUT_OWNER_APPROVAL");
+  if (!approval || approval.ownerId !== ownerId) {
+    throw new Error("ACTIVATION_REJECTED_WITHOUT_OWNER_APPROVAL");
+  }
   if (approval.assignedAgentId !== agentId) {
     throw new Error("APPROVAL_NOT_REUSABLE_FOR_ANOTHER_AGENT");
   }
+  if (approval.assignedUniverseId !== universeId) {
+    throw new Error("APPROVAL_NOT_REUSABLE_FOR_ANOTHER_UNIVERSE");
+  }
 
-  // Ensure safe handling of concurrent activation attempts & multiple active assignments per agent
+  const activeVersion = charter.versions.find((v) => v.isActive && v.isApproved);
+  if (!activeVersion || activeVersion.id !== approval.charterVersionId) {
+    throw new Error("ACTIVATION_REJECTED_WITHOUT_OWNER_APPROVAL");
+  }
+
+  // Safe handling of concurrent activations & multiple active assignments per agent
   const existingActive = [...assignments.values()].find((a) => a.agentId === agentId && a.isActive);
   if (existingActive && existingActive.charterId !== charterId) {
     throw new Error("MULTIPLE_ACTIVE_ASSIGNMENTS_REJECTED");
@@ -165,9 +212,25 @@ export function assignCharterToInternalAgent(agentId, charterId, universeId, app
     charterId,
     universeId,
     isActive: true,
+    revision: 1,
     assignedAt: new Date().toISOString()
   };
   assignments.set(assignment.id, assignment);
+  return assignment;
+}
+
+export function updateAssignment(ownerId, assignmentId, expectedRevision, updates) {
+  const assignment = assignments.get(assignmentId);
+  if (!assignment) throw new Error("ASSIGNMENT_NOT_FOUND");
+  const charter = charters.get(assignment.charterId);
+  if (!charter || charter.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
+  if (assignment.revision !== expectedRevision) throw new Error("STALE_WRITE_REJECTED");
+
+  if (updates.isActive !== undefined) {
+    assignment.isActive = updates.isActive;
+  }
+
+  assignment.revision += 1;
   return assignment;
 }
 
@@ -185,7 +248,6 @@ export function generateSanitizedWorkerContext(agentId) {
   const activeVersion = charter.versions.find((v) => v.isActive);
   const snapshot = activeVersion ? activeVersion.snapshot : {};
 
-  // Worker context can contain internal agentId, but never API keys, OAuth tokens or passwords
   return {
     agentId,
     charterId: charter.id,
@@ -217,7 +279,6 @@ export function generateSanitizedPublicAttribution({ profile, primarySocialAccou
     return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
   }
 
-  // Strict internal agent name check to prevent exposure of internal worker identities
   const cleanName = resolved.toLowerCase().replace(/[_\-\.\s]+/g, "");
   const cleanAgentName = agent.name.toLowerCase().replace(/[_\-\.\s]+/g, "");
   const cleanAgentId = agent.id.toLowerCase().replace(/[_\-\.\s]+/g, "");
@@ -226,7 +287,6 @@ export function generateSanitizedPublicAttribution({ profile, primarySocialAccou
     return "PUBLIC_PUBLISHING_IDENTITY_REQUIRED";
   }
 
-  // Preloaded registry checks
   const internalNames = ["JARVIS", "SHERLOCK", "LAKME", "PANCHI", "VEDA", "BYTE", "CHANAKYA", "KABIR", "SHAKTI", "ROHAN", "MAYA", "AAROHI", "VIKRAM", "TARA", "ANANYA", "KARAN", "DEV", "AANYA", "ARJUN", "NISHA"];
   for (const name of internalNames) {
     if (cleanName.includes(name.toLowerCase().replace(/[_\-\.\s]+/g, ""))) {
@@ -238,17 +298,85 @@ export function generateSanitizedPublicAttribution({ profile, primarySocialAccou
 }
 
 // ----------------------------------------------------
-// LAKME Cosmic and Timeline Lazy Hierarchy resolution
-// Universe -> Era or Yuga -> Source Collection -> Series -> Season -> Story Arc -> Episode
+// Idempotent Seeding Implementation
 // ----------------------------------------------------
+export function initializeSeedState(ownerId) {
+  resetCreativeCharterRegistry();
+
+  // 1. Seed JARVIS
+  const jarvisCharter = createDraftCharter(ownerId, {
+    name: "JARVIS Show Charter",
+    vision: "A connected, long-running cinematic universe designed to produce stories and episodes for many years.",
+    defaultLanguage: "Hindi",
+    secondaryLanguage: "Hinglish"
+  });
+  const jarvisSnapshot = {
+    universeType: "Hindi/Hinglish Horror Cinematic Universe",
+    genresAndThemes: ["horror", "suspense", "thriller", "supernatural mystery", "curses", "crime", "emotion", "entertainment"],
+    universeBible: {
+      recurringCharacters: [],
+      supernaturalEntities: [],
+      cursedObjects: [],
+      curseRules: [],
+      organizations: [],
+      historicalEvents: [],
+      storyArcs: [],
+      episodeContinuity: [],
+      universeTimeline: [],
+      characterRelationships: [],
+      crossovers: [],
+      callbacks: [],
+      unresolvedMysteries: [],
+      postCreditContinuity: [],
+      canonAndNonCanon: []
+    }
+  };
+  const jVersion = createNewCharterVersion(ownerId, jarvisCharter.id, jarvisSnapshot);
+  const jApproval = approveExactImmutableVersion(ownerId, jarvisCharter.id, jVersion.versionNo, {
+    assignedAgentId: "agent-01",
+    assignedUniverseId: "universe-horror-jarvis-uuid"
+  });
+  activateApprovedVersion(ownerId, jarvisCharter.id, jVersion.versionNo, jApproval.id);
+  assignCharterToInternalAgent(ownerId, "agent-01", jarvisCharter.id, "universe-horror-jarvis-uuid", jApproval.id);
+
+  // 2. Seed LAKME
+  const lakmeCharter = createDraftCharter(ownerId, {
+    name: "LAKME Mythology Charter",
+    vision: "Respectful treatment of Hindu traditions presenting timeline of cosmic and historical events.",
+    defaultLanguage: "Hindi"
+  });
+  const lakmeSnapshot = {
+    universeType: "Hindu Mythology Universe",
+    narrator: {
+      identity: "Samay (Time)",
+      concept: "Samay narrates events according to their position in the cosmic and historical timeline."
+    },
+    sacredTerminology: "Sanskrit with Hindi explanations.",
+    sourceCategories: ["Vedas", "Puranas", "Upanishads", "Ramayana", "Mahabharata"],
+    claimSafetyClassifications: {
+      directlySupported: "directly supported by a cited source",
+      traditionalVersion: "traditional or regional version",
+      interpretation: "scholarly or narrative interpretation",
+      dramatizedConnective: "dramatized connective material",
+      ownerApprovedFictional: "owner-approved fictionalization"
+    }
+  };
+  const lVersion = createNewCharterVersion(ownerId, lakmeCharter.id, lakmeSnapshot);
+  const lApproval = approveExactImmutableVersion(ownerId, lakmeCharter.id, lVersion.versionNo, {
+    assignedAgentId: "agent-03",
+    assignedUniverseId: "universe-mythology-lakme-uuid"
+  });
+  activateApprovedVersion(ownerId, lakmeCharter.id, lVersion.versionNo, lApproval.id);
+  assignCharterToInternalAgent(ownerId, "agent-03", lakmeCharter.id, "universe-mythology-lakme-uuid", lApproval.id);
+}
+
+// LAKME Cosmic and Timeline Lazy Hierarchy resolution
 export class LakmeLazyHierarchy {
   constructor(universeId) {
     this.universeId = universeId;
   }
 
   resolveNodePath({ era, sourceCollection, series, season, storyArc, episodeNo }) {
-    // Dynamically structures an episode coordinates on-demand
-    // Supports more than 8,000 episodes without creating preloaded db rows.
     const path = [];
     if (era) path.push({ level: "Era_or_Yuga", name: era });
     if (sourceCollection) path.push({ level: "Source_Collection", name: sourceCollection });
