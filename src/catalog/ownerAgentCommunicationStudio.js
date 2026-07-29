@@ -1,5 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
-import { deepFreeze, deepCopy, sanitizeSecrets } from "./creativeReferenceLibrary.js";
+import { deepFreeze as originalDeepFreeze, deepCopy, sanitizeSecrets } from "./creativeReferenceLibrary.js";
+
+// Custom deepFreeze that recursively freezes objects
+export function deepFreeze(obj) {
+  if (obj && typeof obj === "object") {
+    Object.freeze(obj);
+    for (const key of Object.getOwnPropertyNames(obj)) {
+      deepFreeze(obj[key]);
+    }
+  }
+  return obj;
+}
 
 // In-memory registry to mock/simulate database layers and policies
 const sessions = new Map();
@@ -11,6 +22,7 @@ const suggestions = new Map();
 const unresolvedQuestions = new Map();
 const validationResults = new Map();
 const approvals = new Map();
+const proposedChanges = new Map();
 
 export function resetOwnerAgentCommunicationRegistry() {
   sessions.clear();
@@ -22,32 +34,33 @@ export function resetOwnerAgentCommunicationRegistry() {
   unresolvedQuestions.clear();
   validationResults.clear();
   approvals.clear();
+  proposedChanges.clear();
 }
 
-// Exactly 22 specific Interactive Interview Catalog sections
+// Correction 1: Required Creative Universe sections (exactly 22 specific names)
 export const BLUEPRINT_SECTIONS = [
-  { no: 1, name: "Brand Voice & Tone Profile" },
-  { no: 2, name: "Pacing & Editing Cadence" },
-  { no: 3, name: "Color Palettes & Color Grading" },
-  { no: 4, name: "Visual Reference Preferences" },
-  { no: 5, name: "Hook Formulas & Patterns" },
-  { no: 6, name: "Format Structures & Durations" },
-  { no: 7, name: "Content Boundaries & Prohibitions" },
-  { no: 8, name: "Affiliate Placement Guidelines" },
-  { no: 9, name: "Custom Fonts & Typography Styles" },
-  { no: 10, name: "Aspect Ratios & Framing Rules" },
-  { no: 11, name: "Target Platform Constraints" },
-  { no: 12, name: "Call to Action (CTA) Styles" },
-  { no: 13, name: "Soundscapes & Sound Effects Rules" },
-  { no: 14, name: "Content-Safe Restrictions" },
-  { no: 15, name: "Regulatory & Sponsor Disclosures" },
-  { no: 16, name: "Output Rendering Formats" },
-  { no: 17, name: "Editing & Scene Cuts Rules" },
-  { no: 18, name: "Source Asset Metadata Guidelines" },
-  { no: 19, name: "Parallel Job Execution Options" },
-  { no: 20, name: "Retry Strategies & Backoff Rules" },
-  { no: 21, name: "Primary Platform Destination Formats" },
-  { no: 22, name: "Thumbnail & Cover Art Specifications" }
+  { no: 1, name: "Universe Overview" },
+  { no: 2, name: "Niche" },
+  { no: 3, name: "Audience" },
+  { no: 4, name: "Language" },
+  { no: 5, name: "Tone" },
+  { no: 6, name: "Story Architecture" },
+  { no: 7, name: "Canon" },
+  { no: 8, name: "Characters" },
+  { no: 9, name: "Narration" },
+  { no: 10, name: "Source Policy" },
+  { no: 11, name: "Niche References" },
+  { no: 12, name: "Visual References" },
+  { no: 13, name: "Voice Profile" },
+  { no: 14, name: "Visual Profile" },
+  { no: 15, name: "Episode Rules" },
+  { no: 16, name: "Provider Policy" },
+  { no: 17, name: "Promotion Rules" },
+  { no: 18, name: "Affiliate Rules" },
+  { no: 19, name: "Storage Policy" },
+  { no: 20, name: "Publishing Policy" },
+  { no: 21, name: "Autopilot Boundaries" },
+  { no: 22, name: "Unresolved Decisions" }
 ];
 
 function stableStringify(obj) {
@@ -65,11 +78,30 @@ export function computeBlueprintHash(snapshot) {
     .digest("hex");
 }
 
+// Helper to prevent mutable internal references from escaping (Correction 4)
+function copyAndFreeze(obj) {
+  if (obj === undefined) return undefined;
+  return deepFreeze(deepCopy(obj));
+}
+
+// Internal raw lookups to avoid TypeError on frozen objects
+function getDraftInternal(blueprintId) {
+  const d = drafts.get(blueprintId);
+  if (!d) throw new Error("BLUEPRINT_DRAFT_NOT_FOUND");
+  return d;
+}
+
+function getSessionInternal(sessionId) {
+  const s = sessions.get(sessionId);
+  if (!s) throw new Error("SESSION_NOT_FOUND");
+  return s;
+}
+
 // ----------------------------------------------------
-// 1. Session Registry & Messaging Engine
+// 1. Session Registry & Messaging Engine (Correction 3 - Session/Draft Isolation)
 // ----------------------------------------------------
 
-export function createSession(ownerId, agentId) {
+export function createSession(ownerId, agentId, blueprintDraftId = null) {
   if (!ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
   if (!agentId) throw new Error("AGENT_ID_REQUIRED");
 
@@ -78,30 +110,30 @@ export function createSession(ownerId, agentId) {
     ownerId,
     agentId,
     isActive: true,
-    activeQuestionId: null, // Tracks currently active interview question
+    activeQuestionId: null,
+    blueprintDraftId, // Linked blueprint draft for this session
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
 
   sessions.set(session.id, session);
-  return session;
+  return copyAndFreeze(session);
 }
 
 export function getSession(ownerId, sessionId) {
-  const session = sessions.get(sessionId);
-  if (!session) throw new Error("SESSION_NOT_FOUND");
+  const session = getSessionInternal(sessionId);
   if (session.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
-  return session;
+  return copyAndFreeze(session);
 }
 
 export function sendMessage(ownerId, sessionId, sender, messageType, content) {
-  const session = getSession(ownerId, sessionId);
+  const sessionObj = getSessionInternal(sessionId);
+  if (sessionObj.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
 
   if (!content || content.trim().length === 0) {
     throw new Error("MESSAGE_CONTENT_CANNOT_BE_EMPTY");
   }
 
-  // Validate message matrix constraints
   const allowedSenders = ["owner", "agent", "system"];
   if (!allowedSenders.includes(sender)) throw new Error("INVALID_SENDER");
 
@@ -112,7 +144,6 @@ export function sendMessage(ownerId, sessionId, sender, messageType, content) {
   ];
   if (!validTypes.includes(messageType)) throw new Error("INVALID_MESSAGE_TYPE");
 
-  // Validate sender / message_type matching
   if (sender === "owner" && !["owner_decision", "owner_question"].includes(messageType)) {
     throw new Error("INVALID_SENDER_MESSAGE_TYPE_COMBINATION");
   }
@@ -133,26 +164,21 @@ export function sendMessage(ownerId, sessionId, sender, messageType, content) {
   };
 
   messages.set(message.id, message);
-  session.updatedAt = new Date().toISOString();
-  return message;
+  sessionObj.updatedAt = new Date().toISOString();
+  return copyAndFreeze(message);
 }
 
 // ----------------------------------------------------
-// 2. Blueprint Draft Management & Version Control
+// 2. Blueprint Draft Management (Correction 3 - Session/Draft Isolation)
 // ----------------------------------------------------
 
-export function createBlueprintDraft(ownerId, agentId, universeId = null) {
+export function createBlueprintDraft(ownerId, agentId, universeId = null, sessionId = null) {
   if (!ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
   if (!agentId) throw new Error("AGENT_ID_REQUIRED");
 
-  // Ensure there is only at most one active blueprint draft per agent
-  const activeDrafts = [...drafts.values()].filter(d => d.agentId === agentId && d.isActive);
-  if (activeDrafts.length > 0) {
-    throw new Error("ACTIVE_BLUEPRINT_DRAFT_ALREADY_EXISTS_FOR_AGENT");
-  }
-
   const draft = {
     id: randomUUID(),
+    communicationSessionId: sessionId,
     ownerId,
     agentId,
     universeId,
@@ -164,71 +190,273 @@ export function createBlueprintDraft(ownerId, agentId, universeId = null) {
   };
 
   drafts.set(draft.id, draft);
-  return draft;
+
+  if (sessionId) {
+    const sessionObj = getSessionInternal(sessionId);
+    if (sessionObj) {
+      sessionObj.blueprintDraftId = draft.id;
+    }
+  }
+
+  return copyAndFreeze(draft);
 }
 
 export function getBlueprintDraft(ownerId, blueprintId) {
-  const draft = drafts.get(blueprintId);
-  if (!draft) throw new Error("BLUEPRINT_DRAFT_NOT_FOUND");
+  const draft = getDraftInternal(blueprintId);
   if (draft.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
-  return draft;
+  return copyAndFreeze(draft);
 }
 
-/**
- * Owner answers must create a proposed change first, rather than directly overwriting the active blueprint draft.
- * Accepts expectedRevision for optimistic concurrency checking.
- */
-export function saveBlueprintDecision(ownerId, blueprintId, sectionNo, decisionValue, expectedRevision, provenance = "direct_owner") {
-  const draft = getBlueprintDraft(ownerId, blueprintId);
+// ----------------------------------------------------
+// 3. Proposed Changes Engine (Correction 2)
+// ----------------------------------------------------
+
+export function createProposedChange(ownerId, sessionId, blueprintId, sectionNo, rawAnswer, proposedValue, provenance = "interview_answer") {
+  const session = getSessionInternal(sessionId);
+  if (session.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
+
+  const draft = getDraftInternal(blueprintId);
+  if (draft.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
   if (!draft.isActive) throw new Error("BLUEPRINT_DRAFT_IS_INACTIVE");
 
-  if (draft.revision !== expectedRevision) {
+  const sec = BLUEPRINT_SECTIONS.find(s => s.no === sectionNo);
+  if (!sec) throw new Error("INVALID_BLUEPRINT_SECTION_NUMBER");
+
+  if (!rawAnswer || rawAnswer.trim().length === 0) {
+    throw new Error("RAW_ANSWER_CANNOT_BE_EMPTY");
+  }
+
+  const change = {
+    id: randomUUID(),
+    ownerId,
+    sessionId,
+    blueprintId,
+    sectionNo,
+    rawAnswer: rawAnswer.trim(),
+    proposedValue: proposedValue,
+    provenance,
+    status: "proposed", // 'proposed', 'accepted', 'rejected', 'superseded'
+    revision: draft.revision,
+    createdAt: new Date().toISOString()
+  };
+
+  proposedChanges.set(change.id, change);
+  return copyAndFreeze(change);
+}
+
+export function acceptProposedChange(ownerId, blueprintId, changeId, expectedRevision) {
+  const draftObj = getDraftInternal(blueprintId);
+  if (draftObj.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
+
+  // Correction 8: Fork approved blueprint draft instead of mutating it
+  let targetDraft = draftObj;
+  if (!draftObj.isActive) {
+    targetDraft = forkApprovedDraftIfNeeded(ownerId, blueprintId);
+  }
+
+  if (targetDraft.revision !== expectedRevision) {
+    throw new Error("STALE_WRITE_REJECTED");
+  }
+
+  const changeObj = proposedChanges.get(changeId);
+  if (!changeObj || changeObj.blueprintId !== blueprintId) {
+    throw new Error("PROPOSED_CHANGE_NOT_FOUND");
+  }
+  if (changeObj.status !== "proposed") {
+    throw new Error("PROPOSED_CHANGE_ALREADY_PROCESSED");
+  }
+
+  // Update blueprint draft snapshot upon owner acceptance
+  targetDraft.snapshot[String(changeObj.sectionNo)] = changeObj.proposedValue;
+  targetDraft.revision += 1;
+  targetDraft.updatedAt = new Date().toISOString();
+
+  changeObj.status = "accepted";
+  changeObj.updatedAt = new Date().toISOString();
+
+  // Supersede other proposed changes in the same section
+  const related = [...proposedChanges.values()].filter(
+    c => c.blueprintId === blueprintId && c.sectionNo === changeObj.sectionNo && c.id !== changeId && c.status === "proposed"
+  );
+  for (const c of related) {
+    c.status = "superseded";
+  }
+
+  return copyAndFreeze(changeObj);
+}
+
+export function rejectProposedChange(ownerId, blueprintId, changeId) {
+  const draft = getDraftInternal(blueprintId);
+  if (draft.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
+
+  const changeObj = proposedChanges.get(changeId);
+  if (!changeObj || changeObj.blueprintId !== blueprintId) {
+    throw new Error("PROPOSED_CHANGE_NOT_FOUND");
+  }
+  if (changeObj.status !== "proposed") {
+    throw new Error("PROPOSED_CHANGE_ALREADY_PROCESSED");
+  }
+
+  changeObj.status = "rejected";
+  changeObj.updatedAt = new Date().toISOString();
+  return copyAndFreeze(changeObj);
+}
+
+// Direct Blueprint edits are recorded immediately ONLY via owner_direct_edit (Correction 2)
+export function ownerDirectEdit(ownerId, blueprintId, sectionNo, value, expectedRevision) {
+  const draftObj = getDraftInternal(blueprintId);
+  if (draftObj.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
+
+  // Correction 8: Editing an approved blueprint generates a unapproved successor draft
+  let targetDraft = draftObj;
+  if (!draftObj.isActive) {
+    targetDraft = forkApprovedDraftIfNeeded(ownerId, blueprintId);
+  }
+
+  if (targetDraft.revision !== expectedRevision) {
     throw new Error("STALE_WRITE_REJECTED");
   }
 
   const sec = BLUEPRINT_SECTIONS.find(s => s.no === sectionNo);
   if (!sec) throw new Error("INVALID_BLUEPRINT_SECTION_NUMBER");
 
-  if (!decisionValue || decisionValue.trim().length === 0) {
-    throw new Error("DECISION_VALUE_CANNOT_BE_EMPTY");
-  }
+  targetDraft.snapshot[String(sectionNo)] = value;
+  targetDraft.revision += 1;
+  targetDraft.updatedAt = new Date().toISOString();
 
-  const allowedProv = ["direct_owner", "accepted_suggestion"];
-  if (!allowedProv.includes(provenance)) throw new Error("INVALID_PROVENANCE_TYPE");
+  // Record a decision row
+  const dec = {
+    id: randomUUID(),
+    blueprintId: targetDraft.id,
+    sectionNo,
+    decisionValue: value,
+    provenance: "owner_direct_edit",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  decisions.set(dec.id, dec);
 
-  // Create or update decision record
-  const existing = [...decisions.values()].find(d => d.blueprintId === blueprintId && d.sectionNo === sectionNo);
-  if (existing) {
-    existing.decisionValue = decisionValue.trim();
-    existing.provenance = provenance;
-    existing.updatedAt = new Date().toISOString();
-  } else {
-    const dec = {
-      id: randomUUID(),
-      blueprintId,
-      sectionNo,
-      decisionValue: decisionValue.trim(),
-      provenance,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    decisions.set(dec.id, dec);
-  }
-
-  // Synchronize snapshot field
-  draft.snapshot[String(sectionNo)] = decisionValue.trim();
-  draft.revision += 1;
-  draft.updatedAt = new Date().toISOString();
-
-  return draft;
+  return copyAndFreeze(targetDraft);
 }
 
-/**
- * Propose suggestion with confidence validation (0 to 100 range)
- */
+// Helper to fork approved drafts to successor (Correction 8)
+export function forkApprovedDraftIfNeeded(ownerId, blueprintId) {
+  const draft = getDraftInternal(blueprintId);
+  if (draft.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
+
+  const approvedVer = [...versions.values()].find(v => v.blueprintId === blueprintId && v.status === "approved");
+  if (!approvedVer) {
+    throw new Error("INACTIVE_DRAFT_HAS_NO_APPROVED_VERSION");
+  }
+
+  // Create a brand new draft successor derived from approved snapshot
+  const successorDraft = {
+    id: randomUUID(),
+    communicationSessionId: draft.communicationSessionId,
+    ownerId: draft.ownerId,
+    agentId: draft.agentId,
+    universeId: draft.universeId,
+    revision: 1,
+    snapshot: deepCopy(approvedVer.snapshot), // Inherit approved snapshot
+    isActive: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  drafts.set(successorDraft.id, successorDraft);
+  return successorDraft;
+}
+
+// ----------------------------------------------------
+// 4. Configurable Interview Question & Suggestions Engine
+// ----------------------------------------------------
+
+export function raiseUnresolvedQuestion(ownerId, agentId, blueprintId, sectionNo, questionText, sessionId = null) {
+  const draft = getDraftInternal(blueprintId);
+  if (draft.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
+  if (draft.agentId !== agentId) throw new Error("CROSS_AGENT_MUTATION_REJECTED");
+  if (!draft.isActive) throw new Error("BLUEPRINT_DRAFT_IS_INACTIVE");
+
+  const sec = BLUEPRINT_SECTIONS.find(s => s.no === sectionNo);
+  if (!sec) throw new Error("INVALID_BLUEPRINT_SECTION_NUMBER");
+
+  if (!questionText || questionText.trim().length === 0) {
+    throw new Error("QUESTION_TEXT_CANNOT_BE_EMPTY");
+  }
+
+  // Active question session lock (only one active question at a time per session)
+  if (sessionId) {
+    const sessionObj = getSessionInternal(sessionId);
+    if (sessionObj) {
+      if (sessionObj.activeQuestionId) {
+        const activeQ = unresolvedQuestions.get(sessionObj.activeQuestionId);
+        if (activeQ && activeQ.isActive) {
+          throw new Error("SESSION_ALREADY_HAS_AN_ACTIVE_INTERVIEW_QUESTION");
+        }
+      }
+    }
+  }
+
+  const q = {
+    id: randomUUID(),
+    blueprintId,
+    sectionNo,
+    questionText: questionText.trim(),
+    isActive: true,
+    sessionId,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  unresolvedQuestions.set(q.id, q);
+
+  if (sessionId) {
+    const sessionObj = getSessionInternal(sessionId);
+    if (sessionObj) {
+      sessionObj.activeQuestionId = q.id;
+    }
+  }
+
+  draft.updatedAt = new Date().toISOString();
+  return copyAndFreeze(q);
+}
+
+// Answering a question creates a reviewable proposed change, doesn't directly mutate (Correction 2)
+export function resolveQuestion(ownerId, blueprintId, questionId, rawAnswer, proposedValue, sessionId = null) {
+  const draft = getDraftInternal(blueprintId);
+  if (draft.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
+  if (!draft.isActive) throw new Error("BLUEPRINT_DRAFT_IS_INACTIVE");
+
+  const q = unresolvedQuestions.get(questionId);
+  if (!q || q.blueprintId !== blueprintId) {
+    throw new Error("QUESTION_NOT_FOUND");
+  }
+  if (!q.isActive) {
+    throw new Error("QUESTION_ALREADY_RESOLVED");
+  }
+
+  // Create a proposed change instead of direct mutate
+  const resolvedSessionId = sessionId || q.sessionId || randomUUID();
+  if (!sessions.has(resolvedSessionId)) {
+    createSession(ownerId, draft.agentId, blueprintId);
+  }
+  const change = createProposedChange(ownerId, resolvedSessionId, blueprintId, q.sectionNo, rawAnswer, proposedValue, "question_resolution");
+
+  q.isActive = false;
+  q.updatedAt = new Date().toISOString();
+
+  // Clear session lock
+  const sessionObj = getSessionInternal(resolvedSessionId);
+  if (sessionObj && sessionObj.activeQuestionId === q.id) {
+    sessionObj.activeQuestionId = null;
+  }
+
+  draft.updatedAt = new Date().toISOString();
+  return copyAndFreeze(q);
+}
+
 export function proposeAgentSuggestion(ownerId, agentId, blueprintId, sectionNo, suggestionValue, confidence = 100, provenance = "agent_recommendation") {
-  const draft = drafts.get(blueprintId);
-  if (!draft) throw new Error("BLUEPRINT_DRAFT_NOT_FOUND");
+  const draft = getDraftInternal(blueprintId);
   if (draft.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
   if (draft.agentId !== agentId) throw new Error("CROSS_AGENT_MUTATION_REJECTED");
   if (!draft.isActive) throw new Error("BLUEPRINT_DRAFT_IS_INACTIVE");
@@ -249,7 +477,7 @@ export function proposeAgentSuggestion(ownerId, agentId, blueprintId, sectionNo,
     blueprintId,
     sectionNo,
     suggestionValue: suggestionValue.trim(),
-    status: "proposed", // 'proposed', 'accepted', 'rejected', 'superseded'
+    status: "proposed",
     provenance,
     confidence,
     decisionId: null,
@@ -259,12 +487,12 @@ export function proposeAgentSuggestion(ownerId, agentId, blueprintId, sectionNo,
 
   suggestions.set(sugg.id, sugg);
   draft.updatedAt = new Date().toISOString();
-  return sugg;
+  return copyAndFreeze(sugg);
 }
 
 export function acceptSuggestion(ownerId, blueprintId, suggestionId, expectedRevision) {
-  const draft = getBlueprintDraft(ownerId, blueprintId);
-  if (!draft.isActive) throw new Error("BLUEPRINT_DRAFT_IS_INACTIVE");
+  const draftObj = getDraftInternal(blueprintId);
+  if (draftObj.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
 
   const sugg = suggestions.get(suggestionId);
   if (!sugg || sugg.blueprintId !== blueprintId) {
@@ -274,29 +502,32 @@ export function acceptSuggestion(ownerId, blueprintId, suggestionId, expectedRev
     throw new Error("SUGGESTION_ALREADY_PROCESSED");
   }
 
-  // Record owner decision (uses expectedRevision)
-  saveBlueprintDecision(ownerId, blueprintId, sugg.sectionNo, sugg.suggestionValue, expectedRevision, "accepted_suggestion");
+  // Accepting suggestion creates a proposed change rather than directly mutating the blueprint
+  const resolvedSessionId = draftObj.communicationSessionId || randomUUID();
+  const change = createProposedChange(ownerId, resolvedSessionId, blueprintId, sugg.sectionNo, "Accept agent suggestion", sugg.suggestionValue, "accepted_suggestion");
 
-  // Retrieve decisionId to bind
-  const decision = [...decisions.values()].find(d => d.blueprintId === blueprintId && d.sectionNo === sugg.sectionNo);
+  // Accept the proposed change to apply it to the draft
+  acceptProposedChange(ownerId, blueprintId, change.id, expectedRevision);
+
   sugg.status = "accepted";
-  sugg.decisionId = decision ? decision.id : null;
+  sugg.decisionId = change.id;
   sugg.updatedAt = new Date().toISOString();
 
   // Supersede other suggestions in this section
-  const related = [...suggestions.values()].filter(s => s.blueprintId === blueprintId && s.sectionNo === sugg.sectionNo && s.id !== suggestionId && s.status === "proposed");
+  const related = [...suggestions.values()].filter(
+    s => s.blueprintId === blueprintId && s.sectionNo === sugg.sectionNo && s.id !== suggestionId && s.status === "proposed"
+  );
   for (const s of related) {
     s.status = "superseded";
     s.updatedAt = new Date().toISOString();
   }
 
-  draft.updatedAt = new Date().toISOString();
-  return sugg;
+  return copyAndFreeze(sugg);
 }
 
 export function rejectSuggestion(ownerId, blueprintId, suggestionId) {
-  const draft = getBlueprintDraft(ownerId, blueprintId);
-  if (!draft.isActive) throw new Error("BLUEPRINT_DRAFT_IS_INACTIVE");
+  const draftObj = getDraftInternal(blueprintId);
+  if (draftObj.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
 
   const sugg = suggestions.get(suggestionId);
   if (!sugg || sugg.blueprintId !== blueprintId) {
@@ -308,106 +539,21 @@ export function rejectSuggestion(ownerId, blueprintId, suggestionId) {
 
   sugg.status = "rejected";
   sugg.updatedAt = new Date().toISOString();
-  draft.updatedAt = new Date().toISOString();
-  return sugg;
-}
-
-/**
- * Configurable Interview Engine: Ask exactly one active question at a time.
- * Adding a question tracks its state. It can be linked to a communication session.
- */
-export function raiseUnresolvedQuestion(ownerId, agentId, blueprintId, sectionNo, questionText, sessionId = null) {
-  const draft = drafts.get(blueprintId);
-  if (!draft) throw new Error("BLUEPRINT_DRAFT_NOT_FOUND");
-  if (draft.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
-  if (draft.agentId !== agentId) throw new Error("CROSS_AGENT_MUTATION_REJECTED");
-  if (!draft.isActive) throw new Error("BLUEPRINT_DRAFT_IS_INACTIVE");
-
-  const sec = BLUEPRINT_SECTIONS.find(s => s.no === sectionNo);
-  if (!sec) throw new Error("INVALID_BLUEPRINT_SECTION_NUMBER");
-
-  if (!questionText || questionText.trim().length === 0) {
-    throw new Error("QUESTION_TEXT_CANNOT_BE_EMPTY");
-  }
-
-  // Active question block: If a session is linked, ensure there is only at most one active interview question.
-  if (sessionId) {
-    const session = getSession(ownerId, sessionId);
-    if (session.activeQuestionId) {
-      const activeQ = unresolvedQuestions.get(session.activeQuestionId);
-      if (activeQ && activeQ.isActive) {
-        throw new Error("SESSION_ALREADY_HAS_AN_ACTIVE_INTERVIEW_QUESTION");
-      }
-    }
-  }
-
-  const q = {
-    id: randomUUID(),
-    blueprintId,
-    sectionNo,
-    questionText: questionText.trim(),
-    isActive: true,
-    sessionId,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-
-  unresolvedQuestions.set(q.id, q);
-
-  if (sessionId) {
-    const session = getSession(ownerId, sessionId);
-    session.activeQuestionId = q.id;
-  }
-
-  draft.updatedAt = new Date().toISOString();
-  return q;
-}
-
-/**
- * Answering a question resolves it. Must pass expectedRevision of the blueprint draft.
- */
-export function resolveQuestion(ownerId, blueprintId, questionId, decisionValue, expectedRevision) {
-  const draft = getBlueprintDraft(ownerId, blueprintId);
-  if (!draft.isActive) throw new Error("BLUEPRINT_DRAFT_IS_INACTIVE");
-
-  const q = unresolvedQuestions.get(questionId);
-  if (!q || q.blueprintId !== blueprintId) {
-    throw new Error("QUESTION_NOT_FOUND");
-  }
-  if (!q.isActive) {
-    throw new Error("QUESTION_ALREADY_RESOLVED");
-  }
-
-  // Answer question by recording a blueprint decision
-  saveBlueprintDecision(ownerId, blueprintId, q.sectionNo, decisionValue, expectedRevision, "direct_owner");
-
-  q.isActive = false;
-  q.updatedAt = new Date().toISOString();
-
-  // Clean active session question link if applicable
-  if (q.sessionId) {
-    const session = sessions.get(q.sessionId);
-    if (session && session.activeQuestionId === q.id) {
-      session.activeQuestionId = null;
-    }
-  }
-
-  draft.updatedAt = new Date().toISOString();
-  return q;
+  return copyAndFreeze(sugg);
 }
 
 // ----------------------------------------------------
-// 3. Draft Validation Engine
+// 5. Validation & Versioning
 // ----------------------------------------------------
 
 export function validateBlueprintDraft(ownerId, blueprintId) {
-  const draft = getBlueprintDraft(ownerId, blueprintId);
+  const draft = getDraftInternal(blueprintId);
+  if (draft.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
   const snapshot = draft.snapshot || {};
 
   const errors = [];
   const warnings = [];
 
-  // 1. Complete validation across all 22 specific Interactive Interview sections
   for (const sec of BLUEPRINT_SECTIONS) {
     const val = snapshot[String(sec.no)];
     if (!val) {
@@ -419,9 +565,8 @@ export function validateBlueprintDraft(ownerId, blueprintId) {
     }
   }
 
-  // 2. Strict brand voice and content boundaries safety analysis
-  const brandVoice = typeof snapshot["1"] === "string" ? snapshot["1"] : "";
-  const boundaries = typeof snapshot["7"] === "string" ? snapshot["7"] : "";
+  const brandVoice = typeof snapshot["5"] === "string" ? snapshot["5"] : ""; // Tone
+  const boundaries = typeof snapshot["21"] === "string" ? snapshot["21"] : ""; // Autopilot Boundaries
 
   if (brandVoice.toLowerCase().includes("unsafe") || brandVoice.toLowerCase().includes("unfiltered")) {
     errors.push("Brand voice contains unsafe or prohibited terminology (e.g. 'unfiltered', 'unsafe').");
@@ -430,14 +575,16 @@ export function validateBlueprintDraft(ownerId, blueprintId) {
     warnings.push("Content boundaries entry is exceptionally short; review for safety compliance.");
   }
 
-  // 3. Automated check for any unresolved open-ended questions
   const openQuestions = [...unresolvedQuestions.values()].filter(q => q.blueprintId === blueprintId && q.isActive);
   if (openQuestions.length > 0) {
     errors.push(`Blueprint has ${openQuestions.length} unresolved active questions.`);
   }
 
   const isValid = errors.length === 0;
-  const snapshotHash = computeBlueprintHash(snapshot);
+
+  // Correction 5: Hashing the Stored Snapshot Order
+  const cleanSnapshot = sanitizeBlueprintSnapshotForWorkers(snapshot);
+  const snapshotHash = computeBlueprintHash(cleanSnapshot);
 
   const result = {
     id: randomUUID(),
@@ -451,56 +598,94 @@ export function validateBlueprintDraft(ownerId, blueprintId) {
   };
 
   validationResults.set(result.id, result);
-  return result;
+  return copyAndFreeze(result);
 }
 
-// ----------------------------------------------------
-// 4. Version Control, Snapshotting & Approvals
-// ----------------------------------------------------
+// Sanitization worker-context allowlist (Correction 9)
+export function sanitizeBlueprintSnapshotForWorkers(snapshot) {
+  const clean = {};
+  for (const [key, value] of Object.entries(snapshot)) {
+    const sectionNo = parseInt(key, 10);
+    if (sectionNo >= 1 && sectionNo <= 22) {
+      if (typeof value === "string") {
+        clean[key] = sanitizeSecrets(value);
+      } else if (value && typeof value === "object") {
+        clean[key] = sanitizeObjectWithWorkerAllowlist(value);
+      } else {
+        clean[key] = value;
+      }
+    }
+  }
+  return clean;
+}
 
+function sanitizeObjectWithWorkerAllowlist(obj) {
+  if (!obj || typeof obj !== "object") return obj;
+  const safeObj = {};
+  const allowlistedFields = [
+    "brandVoice", "tone", "pace", "colorPalette", "aspectRatio",
+    "ctaText", "soundType", "fontName", "fontSize", "normalField",
+    "nicheReferences", "visualReferences", "platform", "destination",
+    "value", "name", "description", "id"
+  ];
+  for (const [k, v] of Object.entries(obj)) {
+    if (allowlistedFields.includes(k)) {
+      if (typeof v === "object") {
+        safeObj[k] = sanitizeObjectWithWorkerAllowlist(v);
+      } else {
+        safeObj[k] = v;
+      }
+    }
+  }
+  return safeObj;
+}
+
+// Correction 5: Create Blueprint Version
 export function createBlueprintVersion(ownerId, blueprintId) {
-  const draft = getBlueprintDraft(ownerId, blueprintId);
+  const draft = getDraftInternal(blueprintId);
+  if (draft.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
   if (!draft.isActive) throw new Error("BLUEPRINT_DRAFT_IS_INACTIVE");
 
-  // Run validation
   const valResult = validateBlueprintDraft(ownerId, blueprintId);
   if (!valResult.isValid) {
     throw new Error("CANNOT_VERSION_INVALID_BLUEPRINT_DRAFT");
   }
 
-  const snapshot = deepCopy(draft.snapshot);
-  const snapshotHash = computeBlueprintHash(snapshot);
+  // 1. deep-copy draft snapshot
+  const rawSnapshot = deepCopy(draft.snapshot);
+  // 2. sanitize using explicit allowlist
+  const cleanSnapshot = sanitizeBlueprintSnapshotForWorkers(rawSnapshot);
+  // 3. compute SHA-256 on exactly the stored sanitized version
+  const snapshotHash = computeBlueprintHash(cleanSnapshot);
 
   const existing = [...versions.values()].filter(v => v.blueprintId === blueprintId);
   const versionNo = existing.length + 1;
-
-  // Enforce zero-trust credential sanitization
-  const cleanSnapshot = sanitizeSecrets(snapshot);
 
   const v = {
     id: randomUUID(),
     blueprintId,
     versionNo,
-    snapshot: deepFreeze(cleanSnapshot),
+    snapshot: deepFreeze(cleanSnapshot), // Stored recursively frozen
     snapshotHash,
-    status: "unapproved", // 'unapproved', 'approved', 'superseded'
+    status: "unapproved",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
 
   versions.set(v.id, v);
   draft.updatedAt = new Date().toISOString();
-  return v;
+  return copyAndFreeze(v);
 }
 
+// Correction 6: Validation-Bound Approvals
 export function approveExactBlueprintVersion(ownerId, versionId, expectedHash) {
   if (!ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
 
   const version = versions.get(versionId);
   if (!version) throw new Error("BLUEPRINT_VERSION_NOT_FOUND");
 
-  const draft = drafts.get(version.blueprintId);
-  if (!draft || draft.ownerId !== ownerId) {
+  const draft = getDraftInternal(version.blueprintId);
+  if (draft.ownerId !== ownerId) {
     throw new Error("OWNER_AUTHENTICATION_FAILED");
   }
 
@@ -508,11 +693,26 @@ export function approveExactBlueprintVersion(ownerId, versionId, expectedHash) {
     throw new Error("SNAPSHOT_HASH_MISMATCH");
   }
 
-  if (version.status === "approved") {
-    throw new Error("VERSION_ALREADY_APPROVED");
+  if (version.status !== "unapproved") {
+    throw new Error("VERSION_ALREADY_APPROVED_OR_SUPERSEDED");
   }
 
-  // Create immutable owner approval
+  // validation-bound validation presence
+  const valResult = [...validationResults.values()].find(
+    r => r.blueprintId === version.blueprintId && r.snapshotHash === expectedHash && r.isValid
+  );
+  if (!valResult) {
+    throw new Error("NO_STORED_SUCCESSFUL_VALIDATION_RESULT_FOUND_FOR_HASH");
+  }
+
+  // zero open unresolved questions
+  const openQuestions = [...unresolvedQuestions.values()].filter(
+    q => q.blueprintId === version.blueprintId && q.isActive
+  );
+  if (openQuestions.length > 0) {
+    throw new Error("BLUEPRINT_HAS_UNRESOLVED_BLOCKING_QUESTIONS");
+  }
+
   const approval = {
     id: randomUUID(),
     blueprintVersionId: versionId,
@@ -520,33 +720,35 @@ export function approveExactBlueprintVersion(ownerId, versionId, expectedHash) {
     ownerId,
     approvedAt: new Date().toISOString(),
     createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
+    updatedAt: new Date().toISOString(),
+    // Correction 11: Boundaries (no autopilot/publishing granted)
+    isAgentActive: false,
+    autopilotEnabled: false,
+    publishingAuthorized: false,
+    credentialsResolved: false,
+    providersInvoked: false,
+    productionEnqueued: false
   };
 
   approvals.set(approval.id, approval);
 
-  // Transition current version status
   version.status = "approved";
   version.updatedAt = new Date().toISOString();
 
-  // Supersede other approved/unapproved versions for this blueprint draft
   const related = [...versions.values()].filter(v => v.blueprintId === version.blueprintId && v.id !== versionId);
   for (const rv of related) {
     if (rv.status === "approved") {
       rv.status = "superseded";
-      rv.updatedAt = new Date().toISOString();
     }
   }
 
-  // Deactivate draft to prevent further edits (immutable upon approval)
   draft.isActive = false;
   draft.updatedAt = new Date().toISOString();
 
-  return approval;
+  return copyAndFreeze(approval);
 }
 
 export function retrieveActiveApprovedBlueprint(ownerId, agentId) {
-  // Find approved versions belonging to an agent
   const agentDrafts = [...drafts.values()].filter(d => d.agentId === agentId && d.ownerId === ownerId);
   const draftIds = agentDrafts.map(d => d.id);
 
@@ -554,16 +756,13 @@ export function retrieveActiveApprovedBlueprint(ownerId, agentId) {
     .filter(v => draftIds.includes(v.blueprintId) && v.status === "approved")
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
-  return approved[0] || null;
+  return approved[0] ? copyAndFreeze(approved[0]) : null;
 }
 
 // ----------------------------------------------------
-// 5. Version Comparison Tools & Sanitized Context Previews
+// 6. Version Comparison Tools & Sanitized Context Previews
 // ----------------------------------------------------
 
-/**
- * Returns section-by-section comparison differences between two versions of a blueprint
- */
 export function compareBlueprintVersions(ownerId, blueprintId, versionIdA, versionIdB) {
   const draft = getBlueprintDraft(ownerId, blueprintId);
   const verA = versions.get(versionIdA);
@@ -586,27 +785,78 @@ export function compareBlueprintVersions(ownerId, blueprintId, versionIdA, versi
     }
   }
 
-  return {
+  return copyAndFreeze({
     blueprintId,
     versionIdA,
     versionIdB,
     hasDifferences: Object.keys(diff).length > 0,
     differences: diff
-  };
+  });
 }
 
-/**
- * Previews sanitized, recursively-scrubbed context payload before committing / approving.
- */
+// Correction 9: Explicit worker allowlisted context preview
 export function previewSanitizedWorkerContext(ownerId, blueprintId) {
   const draft = getBlueprintDraft(ownerId, blueprintId);
+  const rawSnapshot = deepCopy(draft.snapshot);
+  const cleanSnapshot = sanitizeBlueprintSnapshotForWorkers(rawSnapshot);
+
   const rawContext = {
     blueprintId,
     agentId: draft.agentId,
     universeId: draft.universeId,
-    snapshot: draft.snapshot,
+    snapshot: cleanSnapshot,
     revision: draft.revision
   };
 
-  return deepFreeze(sanitizeSecrets(deepCopy(rawContext)));
+  return deepFreeze(deepCopy(rawContext));
 }
+
+// Correction 10: Dynamic Agent name privacy check using registry
+export function preventInternalAgentNames(name, agentRegistry) {
+  if (!name) return false;
+  const cleanName = String(name).toLowerCase().replace(/[_\-\.\s]+/g, "");
+
+  if (agentRegistry && typeof agentRegistry.list === "function") {
+    const list = agentRegistry.list();
+    for (const agent of list) {
+      const cleanAgentName = String(agent.name || "").toLowerCase().replace(/[_\-\.\s]+/g, "");
+      if (cleanName.includes(cleanAgentName)) {
+        return true;
+      }
+    }
+  } else {
+    // Hard fallback standard preloaded agent names
+    const preloaded = ["JARVIS", "SHERLOCK", "LAKME", "PANCHI", "VEDA", "BYTE", "CHANAKYA", "KABIR", "SHAKTI", "ROHAN", "MAYA", "AAROHI", "VIKRAM", "TARA", "ANANYA", "KARAN", "DEV", "AANYA", "ARJUN", "NISHA"];
+    for (const item of preloaded) {
+      if (cleanName.includes(item.toLowerCase().replace(/[_\-\.\s]+/g, ""))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Correction 12: Interface Contract Documentation
+export const INTERFACE_CONTRACT = {
+  layout: "desktop 45/55 split | mobile tabs",
+  components: [
+    "conversation stream",
+    "one active question",
+    "Blueprint preview",
+    "progress",
+    "warnings",
+    "version comparison"
+  ],
+  actions: [
+    "Save Draft",
+    "Continue Later",
+    "Preview Worker Context",
+    "Validate Charter",
+    "Compare Versions",
+    "Reject Suggested Changes",
+    "Approve Charter"
+  ],
+  disabledActions: [
+    "Configure Autopilot"
+  ]
+};

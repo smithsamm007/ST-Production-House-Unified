@@ -6,6 +6,7 @@ CREATE TABLE communication_sessions (
   owner_id uuid NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
   agent_id text NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
   is_active boolean NOT NULL DEFAULT true,
+  active_question_id uuid, -- Tracks currently active interview question
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -37,6 +38,7 @@ CREATE TABLE communication_messages (
 -- 3. blueprint_drafts
 CREATE TABLE blueprint_drafts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  communication_session_id uuid REFERENCES communication_sessions(id) ON DELETE CASCADE,
   owner_id uuid NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
   agent_id text NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
   universe_id uuid REFERENCES creative_universes(id) ON DELETE SET NULL,
@@ -46,10 +48,6 @@ CREATE TABLE blueprint_drafts (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-
-CREATE UNIQUE INDEX blueprint_drafts_active_idx
-  ON blueprint_drafts (agent_id)
-  WHERE (is_active = true);
 
 -- 4. blueprint_versions
 CREATE TABLE blueprint_versions (
@@ -72,7 +70,7 @@ CREATE TABLE blueprint_decisions (
   blueprint_id uuid NOT NULL REFERENCES blueprint_drafts(id) ON DELETE CASCADE,
   section_no integer NOT NULL CHECK (section_no BETWEEN 1 AND 22),
   decision_value text NOT NULL,
-  provenance text NOT NULL, -- 'direct_owner', 'accepted_suggestion'
+  provenance text NOT NULL, -- 'direct_owner', 'accepted_suggestion', 'accepted_proposed_change'
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -114,7 +112,8 @@ CREATE TABLE blueprint_validation_results (
   errors text[] NOT NULL DEFAULT '{}',
   warnings text[] NOT NULL DEFAULT '{}',
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT valid_val_res_hash CHECK (snapshot_hash ~ '^[a-f0-9]{64}$')
 );
 
 -- 9. blueprint_owner_approvals
@@ -130,8 +129,26 @@ CREATE TABLE blueprint_owner_approvals (
   UNIQUE (blueprint_version_id)
 );
 
+-- 10. proposed_changes (Correction 2)
+CREATE TABLE proposed_changes (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id uuid NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
+  session_id uuid NOT NULL REFERENCES communication_sessions(id) ON DELETE CASCADE,
+  blueprint_id uuid NOT NULL REFERENCES blueprint_drafts(id) ON DELETE CASCADE,
+  section_no integer NOT NULL CHECK (section_no BETWEEN 1 AND 22),
+  raw_answer text NOT NULL,
+  proposed_value text NOT NULL,
+  provenance text NOT NULL,
+  status text NOT NULL DEFAULT 'proposed', -- 'proposed', 'accepted', 'rejected', 'superseded'
+  revision integer NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT valid_proposed_status CHECK (status IN ('proposed', 'accepted', 'rejected', 'superseded')),
+  CONSTRAINT non_empty_raw_answer CHECK (length(trim(raw_answer)) > 0),
+  CONSTRAINT non_empty_proposed_value CHECK (length(trim(proposed_value)) > 0)
+);
+
 -- ----------------------------------------------------
--- IMMUTABILITY SECURITY TRIGGERS
+-- IMMUTABILITY SECURITY TRIGGERS & CONSTRAINTS
 -- ----------------------------------------------------
 
 -- Deny updates/deletes of owner approval records
@@ -183,6 +200,65 @@ CREATE TRIGGER blueprint_version_no_delete
   BEFORE DELETE ON blueprint_versions
   FOR EACH ROW
   EXECUTE FUNCTION check_blueprint_version_deletion();
+
+-- Verification of Blueprint Approval Constraints (Correction 7)
+CREATE OR REPLACE FUNCTION verify_blueprint_approval_constraints() RETURNS trigger AS $$
+DECLARE
+  v_version_hash char(64);
+  v_version_blueprint_id uuid;
+  v_blueprint_owner_id uuid;
+  v_validation_valid boolean;
+  v_has_open_questions boolean;
+BEGIN
+  -- Get version info
+  SELECT blueprint_id, snapshot_hash INTO v_version_blueprint_id, v_version_hash
+    FROM blueprint_versions WHERE id = NEW.blueprint_version_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'BLUEPRINT_VERSION_NOT_FOUND';
+  END IF;
+
+  -- 1. approval hash matches Blueprint version hash
+  IF NEW.snapshot_hash <> v_version_hash THEN
+    RAISE EXCEPTION 'SNAPSHOT_HASH_MISMATCH';
+  END IF;
+
+  -- 2. approval owner matches Blueprint owner
+  SELECT owner_id INTO v_blueprint_owner_id
+    FROM blueprint_drafts WHERE id = v_version_blueprint_id;
+
+  IF NEW.owner_id <> v_blueprint_owner_id THEN
+    RAISE EXCEPTION 'OWNER_MISMATCH';
+  END IF;
+
+  -- 3. validation result exists for the same hash and is valid
+  SELECT is_valid INTO v_validation_valid
+    FROM blueprint_validation_results
+    WHERE blueprint_id = v_version_blueprint_id AND snapshot_hash = NEW.snapshot_hash
+    LIMIT 1;
+
+  IF NOT FOUND OR v_validation_valid IS NOT TRUE THEN
+    RAISE EXCEPTION 'NO_VALID_VALIDATION_RESULT_FOUND';
+  END IF;
+
+  -- 4. no active blocking questions exist
+  SELECT EXISTS(
+    SELECT 1 FROM blueprint_unresolved_questions
+    WHERE blueprint_id = v_version_blueprint_id AND is_active = TRUE
+  ) INTO v_has_open_questions;
+
+  IF v_has_open_questions THEN
+    RAISE EXCEPTION 'BLUEPRINT_HAS_ACTIVE_BLOCKING_QUESTIONS';
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER blueprint_owner_approval_insert_verify
+  BEFORE INSERT ON blueprint_owner_approvals
+  FOR EACH ROW
+  EXECUTE FUNCTION verify_blueprint_approval_constraints();
 
 -- Trigger applications for updated_at column automatic updating
 CREATE TRIGGER update_communication_sessions_updated_at BEFORE UPDATE ON communication_sessions FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
