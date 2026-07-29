@@ -25,8 +25,6 @@ DECLARE
   -- Genuine computed snapshot hashes matching stable serializations
   v_j_hash            char(64) := 'de4fe123a0453899e35661debf8f22278be203dc26c500cdb019127f2edc3092';
   v_l_hash            char(64) := 'cea206577342ac7a633e0f91736d33b68513491556cc5dbb392672e169bd3a46';
-
-  v_existing_owner    uuid;
 BEGIN
   IF p_owner_id IS NULL THEN
     RAISE EXCEPTION 'EXPLICIT_OWNER_ID_REQUIRED_FOR_SEED_INITIALIZATION';
@@ -64,9 +62,9 @@ BEGIN
     (v_l_version_id, v_lakme_charter_id, 1, '{"claimSafetyClassifications":{"directlySupported":"directly supported by a cited source","dramatizedConnective":"dramatized connective material","interpretation":"scholarly or narrative interpretation","ownerApprovedFictional":"owner-approved fictionalization","traditionalVersion":"traditional or regional version"},"narrator":{"concept":"Samay narrates events according to their position in the cosmic and historical timeline.","identity":"Samay (Time)"},"sacredTerminology":"Sanskrit with Hindi explanations.","sourceCategories":["Vedas","Puranas","Upanishads","Ramayana","Mahabharata"],"universeType":"Hindu Mythology Universe"}', v_l_hash, true)
   ON CONFLICT (id) DO NOTHING;
 
-  -- Verify existing immutable version exactly matches expected hash
-  IF EXISTS(SELECT 1 FROM creative_charter_versions WHERE id = v_j_version_id AND snapshot_hash <> v_j_hash) OR
-     EXISTS(SELECT 1 FROM creative_charter_versions WHERE id = v_l_version_id AND snapshot_hash <> v_l_hash) THEN
+  -- Verify existing immutable charter versions match all expected fields exactly
+  IF EXISTS(SELECT 1 FROM creative_charter_versions WHERE id = v_j_version_id AND (charter_id <> v_jarvis_charter_id OR version_no <> 1 OR snapshot_hash <> v_j_hash OR is_active <> true)) OR
+     EXISTS(SELECT 1 FROM creative_charter_versions WHERE id = v_l_version_id AND (charter_id <> v_lakme_charter_id OR version_no <> 1 OR snapshot_hash <> v_l_hash OR is_active <> true)) THEN
     RAISE EXCEPTION 'INITIAL_CHARTER_VERSION_SNAPSHOT_HASH_CONFLICT';
   END IF;
 
@@ -86,6 +84,12 @@ BEGIN
     (v_j_assignment_id, 'agent-01', v_jarvis_charter_id, v_j_universe_id, true),
     (v_l_assignment_id, 'agent-03', v_lakme_charter_id, v_l_universe_id, true)
   ON CONFLICT (id) DO NOTHING;
+
+  -- Verify existing assignments match expected fields exactly
+  IF EXISTS(SELECT 1 FROM agent_charter_assignments WHERE id = v_j_assignment_id AND (agent_id <> 'agent-01' OR charter_id <> v_jarvis_charter_id OR universe_id <> v_j_universe_id OR is_active <> true)) OR
+     EXISTS(SELECT 1 FROM agent_charter_assignments WHERE id = v_l_assignment_id AND (agent_id <> 'agent-03' OR charter_id <> v_lakme_charter_id OR universe_id <> v_l_universe_id OR is_active <> true)) THEN
+    RAISE EXCEPTION 'INITIAL_ASSIGNMENT_CONFLICT';
+  END IF;
 
   RAISE NOTICE 'Deterministic seeding completed successfully for JARVIS and LAKME.';
 END $$;
