@@ -16,10 +16,10 @@ npm run verify
 
 - JavaScript syntax checks: passed
 - Test files: 7
-- Tests: 76 passed, 0 failed, 0 skipped
-- Duration reported by Node test runner: 332.854859 ms
-- Verified source commit: 1b8b24104a978d6f4d4bfa07cb1c3597e4a54219
-- Included main commit: a7ddae3bccb24e9db9552bd6ab08e08d8874ad27
+- Tests: 75 passed, 0 failed, 0 skipped
+- Duration reported by Node test runner: 359.79434 ms
+- Verified source commit: 28044e50687a5d3a8e2f6cfa3ed1b1024b4be10b
+- Included main commit: 46cbcbb6205dc94c94d44955fcad32c6ed95f7e7
 - Final report commit: recorded externally in the Jules completion response
 - PostgreSQL actually executed: no
 - GitHub Actions status: recorded after the final push

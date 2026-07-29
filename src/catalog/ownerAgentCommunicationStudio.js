@@ -97,6 +97,33 @@ function getSessionInternal(sessionId) {
   return s;
 }
 
+// Scan snapshot recursively and reject plaintext secrets or credential keys (Correction 3)
+export function checkForPlaintextSecrets(obj) {
+  if (!obj) return;
+  const sensitiveKeys = [
+    "apikey", "api_key", "token", "accesstoken", "access_token",
+    "refreshtoken", "refresh_token", "password", "secret",
+    "secretlocator", "secret_locator", "credential", "credentialref", "credential_ref",
+    "authorization", "cookie", "privatekey", "private_key", "oauth"
+  ];
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      checkForPlaintextSecrets(item);
+    }
+  } else if (typeof obj === "object") {
+    for (const [key, value] of Object.entries(obj)) {
+      const cleanKey = key.toLowerCase().replace(/[_\-\.\s]+/g, "");
+      const isSensitive = sensitiveKeys.some(sk => cleanKey.includes(sk));
+      if (isSensitive) {
+        if (value && typeof value === "string" && value.trim().length > 0) {
+          throw new Error("FORBIDDEN_CREDENTIAL_OR_PLAINTEXT_SECRET_DETECTED");
+        }
+      }
+      checkForPlaintextSecrets(value);
+    }
+  }
+}
+
 // ----------------------------------------------------
 // 1. Session Registry & Messaging Engine (Correction 3 - Session/Draft Isolation)
 // ----------------------------------------------------
@@ -185,6 +212,7 @@ export function createBlueprintDraft(ownerId, agentId, universeId = null, sessio
     revision: 1,
     snapshot: {},
     isActive: true,
+    predecessor_version_id: null, // Link to predecessor approved version (Correction 5)
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -217,7 +245,12 @@ export function createProposedChange(ownerId, sessionId, blueprintId, sectionNo,
 
   const draft = getDraftInternal(blueprintId);
   if (draft.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
-  if (!draft.isActive) throw new Error("BLUEPRINT_DRAFT_IS_INACTIVE");
+
+  // Correction 8: Editing an approved blueprint creates or resumes exactly one active successor draft
+  let targetDraft = draft;
+  if (!draft.isActive) {
+    targetDraft = forkApprovedDraftIfNeeded(ownerId, blueprintId);
+  }
 
   const sec = BLUEPRINT_SECTIONS.find(s => s.no === sectionNo);
   if (!sec) throw new Error("INVALID_BLUEPRINT_SECTION_NUMBER");
@@ -230,13 +263,13 @@ export function createProposedChange(ownerId, sessionId, blueprintId, sectionNo,
     id: randomUUID(),
     ownerId,
     sessionId,
-    blueprintId,
+    blueprintId: targetDraft.id,
     sectionNo,
     rawAnswer: rawAnswer.trim(),
     proposedValue: proposedValue,
     provenance,
     status: "proposed", // 'proposed', 'accepted', 'rejected', 'superseded'
-    revision: draft.revision,
+    revision: targetDraft.revision,
     createdAt: new Date().toISOString()
   };
 
@@ -248,7 +281,7 @@ export function acceptProposedChange(ownerId, blueprintId, changeId, expectedRev
   const draftObj = getDraftInternal(blueprintId);
   if (draftObj.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
 
-  // Correction 8: Fork approved blueprint draft instead of mutating it
+  // Correction 8: Editing an approved blueprint creates or resumes exactly one active successor draft
   let targetDraft = draftObj;
   if (!draftObj.isActive) {
     targetDraft = forkApprovedDraftIfNeeded(ownerId, blueprintId);
@@ -259,7 +292,7 @@ export function acceptProposedChange(ownerId, blueprintId, changeId, expectedRev
   }
 
   const changeObj = proposedChanges.get(changeId);
-  if (!changeObj || changeObj.blueprintId !== blueprintId) {
+  if (!changeObj || changeObj.blueprintId !== targetDraft.id) {
     throw new Error("PROPOSED_CHANGE_NOT_FOUND");
   }
   if (changeObj.status !== "proposed") {
@@ -276,7 +309,7 @@ export function acceptProposedChange(ownerId, blueprintId, changeId, expectedRev
 
   // Supersede other proposed changes in the same section
   const related = [...proposedChanges.values()].filter(
-    c => c.blueprintId === blueprintId && c.sectionNo === changeObj.sectionNo && c.id !== changeId && c.status === "proposed"
+    c => c.blueprintId === targetDraft.id && c.sectionNo === changeObj.sectionNo && c.id !== changeId && c.status === "proposed"
   );
   for (const c of related) {
     c.status = "superseded";
@@ -307,7 +340,7 @@ export function ownerDirectEdit(ownerId, blueprintId, sectionNo, value, expected
   const draftObj = getDraftInternal(blueprintId);
   if (draftObj.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
 
-  // Correction 8: Editing an approved blueprint generates a unapproved successor draft
+  // Correction 8: Editing an approved blueprint generates/resumes unapproved successor draft
   let targetDraft = draftObj;
   if (!draftObj.isActive) {
     targetDraft = forkApprovedDraftIfNeeded(ownerId, blueprintId);
@@ -339,7 +372,7 @@ export function ownerDirectEdit(ownerId, blueprintId, sectionNo, value, expected
   return copyAndFreeze(targetDraft);
 }
 
-// Helper to fork approved drafts to successor (Correction 8)
+// Helper to fork approved drafts to successor (Correction 8 - Resume active successor)
 export function forkApprovedDraftIfNeeded(ownerId, blueprintId) {
   const draft = getDraftInternal(blueprintId);
   if (draft.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
@@ -349,7 +382,15 @@ export function forkApprovedDraftIfNeeded(ownerId, blueprintId) {
     throw new Error("INACTIVE_DRAFT_HAS_NO_APPROVED_VERSION");
   }
 
-  // Create a brand new draft successor derived from approved snapshot
+  // Check if we already have exactly one active successor draft for this predecessor approved version (Correction 5)
+  const existingSuccessor = [...drafts.values()].find(
+    d => d.predecessor_version_id === approvedVer.id && d.isActive
+  );
+  if (existingSuccessor) {
+    return existingSuccessor;
+  }
+
+  // Create exactly one brand new active draft successor
   const successorDraft = {
     id: randomUUID(),
     communicationSessionId: draft.communicationSessionId,
@@ -357,8 +398,9 @@ export function forkApprovedDraftIfNeeded(ownerId, blueprintId) {
     agentId: draft.agentId,
     universeId: draft.universeId,
     revision: 1,
-    snapshot: deepCopy(approvedVer.snapshot), // Inherit approved snapshot
+    snapshot: deepCopy(approvedVer.snapshot), // Copy old approved version snapshot completely
     isActive: true,
+    predecessor_version_id: approvedVer.id, // Record predecessor approved version ID (Correction 5)
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -385,8 +427,9 @@ export function raiseUnresolvedQuestion(ownerId, agentId, blueprintId, sectionNo
   }
 
   // Active question session lock (only one active question at a time per session)
-  if (sessionId) {
-    const sessionObj = getSessionInternal(sessionId);
+  const resolvedSessionId = sessionId || draft.communicationSessionId;
+  if (resolvedSessionId) {
+    const sessionObj = getSessionInternal(resolvedSessionId);
     if (sessionObj) {
       if (sessionObj.activeQuestionId) {
         const activeQ = unresolvedQuestions.get(sessionObj.activeQuestionId);
@@ -403,15 +446,15 @@ export function raiseUnresolvedQuestion(ownerId, agentId, blueprintId, sectionNo
     sectionNo,
     questionText: questionText.trim(),
     isActive: true,
-    sessionId,
+    sessionId: resolvedSessionId,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
 
   unresolvedQuestions.set(q.id, q);
 
-  if (sessionId) {
-    const sessionObj = getSessionInternal(sessionId);
+  if (resolvedSessionId) {
+    const sessionObj = getSessionInternal(resolvedSessionId);
     if (sessionObj) {
       sessionObj.activeQuestionId = q.id;
     }
@@ -435,8 +478,7 @@ export function resolveQuestion(ownerId, blueprintId, questionId, rawAnswer, pro
     throw new Error("QUESTION_ALREADY_RESOLVED");
   }
 
-  // Create a proposed change instead of direct mutate
-  const resolvedSessionId = sessionId || q.sessionId || randomUUID();
+  const resolvedSessionId = sessionId || q.sessionId || draft.communicationSessionId || randomUUID();
   if (!sessions.has(resolvedSessionId)) {
     createSession(ownerId, draft.agentId, blueprintId);
   }
@@ -582,9 +624,8 @@ export function validateBlueprintDraft(ownerId, blueprintId) {
 
   const isValid = errors.length === 0;
 
-  // Correction 5: Hashing the Stored Snapshot Order
-  const cleanSnapshot = sanitizeBlueprintSnapshotForWorkers(snapshot);
-  const snapshotHash = computeBlueprintHash(cleanSnapshot);
+  // Correction 3: Complete Blueprint snapshot hash
+  const snapshotHash = computeBlueprintHash(snapshot);
 
   const result = {
     id: randomUUID(),
@@ -640,32 +681,36 @@ function sanitizeObjectWithWorkerAllowlist(obj) {
   return safeObj;
 }
 
-// Correction 5: Create Blueprint Version
+// Correction 3: Preserving the Complete Blueprint Snapshot
 export function createBlueprintVersion(ownerId, blueprintId) {
   const draft = getDraftInternal(blueprintId);
   if (draft.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
   if (!draft.isActive) throw new Error("BLUEPRINT_DRAFT_IS_INACTIVE");
 
+  // 1. reject forbidden credentials and plaintext secrets (Correction 3)
+  checkForPlaintextSecrets(draft.snapshot);
+
+  // 2. validate the complete schema
   const valResult = validateBlueprintDraft(ownerId, blueprintId);
   if (!valResult.isValid) {
     throw new Error("CANNOT_VERSION_INVALID_BLUEPRINT_DRAFT");
   }
 
-  // 1. deep-copy draft snapshot
+  // 3. deep-copy draft snapshot
   const rawSnapshot = deepCopy(draft.snapshot);
-  // 2. sanitize using explicit allowlist
-  const cleanSnapshot = sanitizeBlueprintSnapshotForWorkers(rawSnapshot);
-  // 3. compute SHA-256 on exactly the stored sanitized version
-  const snapshotHash = computeBlueprintHash(cleanSnapshot);
+
+  // 4. canonicalize and compute SHA-256 over exactly the complete stored snapshot
+  const snapshotHash = computeBlueprintHash(rawSnapshot);
 
   const existing = [...versions.values()].filter(v => v.blueprintId === blueprintId);
   const versionNo = existing.length + 1;
 
+  // 5. Store the complete snapshot (Correction 3)
   const v = {
     id: randomUUID(),
     blueprintId,
     versionNo,
-    snapshot: deepFreeze(cleanSnapshot), // Stored recursively frozen
+    snapshot: deepFreeze(rawSnapshot), // Stored completely unchanged
     snapshotHash,
     status: "unapproved",
     createdAt: new Date().toISOString(),
@@ -805,10 +850,53 @@ export function previewSanitizedWorkerContext(ownerId, blueprintId) {
     agentId: draft.agentId,
     universeId: draft.universeId,
     snapshot: cleanSnapshot,
-    revision: draft.revision
+    revision: draft.revision,
+    isProduction: false // draft preview clearly non-production (Correction 4)
   };
 
   return deepFreeze(deepCopy(rawContext));
+}
+
+// Correction 4: Production worker context only
+export function generateProductionWorkerContext(ownerId, versionId) {
+  const version = versions.get(versionId);
+  if (!version) throw new Error("BLUEPRINT_VERSION_NOT_FOUND");
+
+  const draft = drafts.get(version.blueprintId);
+  if (!draft || draft.ownerId !== ownerId) {
+    throw new Error("OWNER_AUTHENTICATION_FAILED");
+  }
+
+  // verify its immutable approval
+  const approval = [...approvals.values()].find(a => a.blueprintVersionId === versionId);
+  if (!approval) {
+    throw new Error("BLUEPRINT_VERSION_IS_NOT_APPROVED");
+  }
+
+  // verify exact snapshot hash
+  if (version.snapshotHash !== approval.snapshotHash) {
+    throw new Error("SNAPSHOT_HASH_MISMATCH");
+  }
+
+  // fail if the version is unapproved, superseded
+  if (version.status !== "approved") {
+    throw new Error("BLUEPRINT_VERSION_IS_NOT_APPROVED");
+  }
+
+  // Only use accepted owner decisions & explicitly allowlisted operational fields
+  const rawSnapshot = deepCopy(version.snapshot);
+  const cleanSnapshot = sanitizeBlueprintSnapshotForWorkers(rawSnapshot);
+
+  const context = {
+    blueprintId: version.blueprintId,
+    versionId: version.id,
+    agentId: draft.agentId,
+    universeId: draft.universeId,
+    snapshot: cleanSnapshot,
+    isProduction: true
+  };
+
+  return deepFreeze(deepCopy(context));
 }
 
 // Correction 10: Dynamic Agent name privacy check using registry

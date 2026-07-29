@@ -45,6 +45,7 @@ CREATE TABLE blueprint_drafts (
   revision integer NOT NULL DEFAULT 1 CHECK (revision > 0),
   snapshot jsonb NOT NULL DEFAULT '{}'::jsonb,
   is_active boolean NOT NULL DEFAULT true,
+  predecessor_version_id uuid, -- Link to predecessor approved version (Correction 5)
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -64,13 +65,18 @@ CREATE TABLE blueprint_versions (
   CONSTRAINT valid_version_status CHECK (status IN ('unapproved', 'approved', 'superseded'))
 );
 
+-- Add foreign key from blueprint_drafts to blueprint_versions for predecessor lineage
+ALTER TABLE blueprint_drafts
+  ADD CONSTRAINT fk_blueprint_drafts_predecessor_version
+  FOREIGN KEY (predecessor_version_id) REFERENCES blueprint_versions(id) ON DELETE SET NULL;
+
 -- 5. blueprint_decisions
 CREATE TABLE blueprint_decisions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   blueprint_id uuid NOT NULL REFERENCES blueprint_drafts(id) ON DELETE CASCADE,
   section_no integer NOT NULL CHECK (section_no BETWEEN 1 AND 22),
   decision_value text NOT NULL,
-  provenance text NOT NULL, -- 'direct_owner', 'accepted_suggestion', 'accepted_proposed_change'
+  provenance text NOT NULL, -- 'direct_owner', 'accepted_suggestion', 'accepted_proposed_change', 'owner_direct_edit'
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -92,16 +98,22 @@ CREATE TABLE blueprint_suggestions (
   CONSTRAINT valid_confidence_range CHECK (confidence BETWEEN 0 AND 100)
 );
 
--- 7. blueprint_unresolved_questions
+-- 7. blueprint_unresolved_questions (Correction 6)
 CREATE TABLE blueprint_unresolved_questions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   blueprint_id uuid NOT NULL REFERENCES blueprint_drafts(id) ON DELETE CASCADE,
+  communication_session_id uuid NOT NULL REFERENCES communication_sessions(id) ON DELETE CASCADE,
   section_no integer NOT NULL CHECK (section_no BETWEEN 1 AND 22),
   question_text text NOT NULL,
   is_active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Index enforcing exactly one active question per session (Correction 6)
+CREATE UNIQUE INDEX blueprint_unresolved_questions_active_session_idx
+  ON blueprint_unresolved_questions (communication_session_id)
+  WHERE (is_active = TRUE);
 
 -- 8. blueprint_validation_results
 CREATE TABLE blueprint_validation_results (
@@ -116,7 +128,7 @@ CREATE TABLE blueprint_validation_results (
   CONSTRAINT valid_val_res_hash CHECK (snapshot_hash ~ '^[a-f0-9]{64}$')
 );
 
--- 9. blueprint_owner_approvals
+-- 9. blueprint_owner_approvals (Correction 2, 7)
 CREATE TABLE blueprint_owner_approvals (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   blueprint_version_id uuid NOT NULL REFERENCES blueprint_versions(id) ON DELETE CASCADE,
@@ -137,14 +149,13 @@ CREATE TABLE proposed_changes (
   blueprint_id uuid NOT NULL REFERENCES blueprint_drafts(id) ON DELETE CASCADE,
   section_no integer NOT NULL CHECK (section_no BETWEEN 1 AND 22),
   raw_answer text NOT NULL,
-  proposed_value text NOT NULL,
+  proposed_value jsonb NOT NULL,
   provenance text NOT NULL,
   status text NOT NULL DEFAULT 'proposed', -- 'proposed', 'accepted', 'rejected', 'superseded'
   revision integer NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT valid_proposed_status CHECK (status IN ('proposed', 'accepted', 'rejected', 'superseded')),
-  CONSTRAINT non_empty_raw_answer CHECK (length(trim(raw_answer)) > 0),
-  CONSTRAINT non_empty_proposed_value CHECK (length(trim(proposed_value)) > 0)
+  CONSTRAINT non_empty_raw_answer CHECK (length(trim(raw_answer)) > 0)
 );
 
 -- ----------------------------------------------------
@@ -168,10 +179,16 @@ CREATE OR REPLACE FUNCTION check_blueprint_version_immutability() RETURNS trigge
 DECLARE
   v_has_approval boolean;
 BEGIN
+  -- If old version already has an approval, prevent any mutation of blueprint contents
   SELECT EXISTS(SELECT 1 FROM blueprint_owner_approvals WHERE blueprint_version_id = OLD.id) INTO v_has_approval;
-  IF v_has_approval THEN
+  IF v_has_approval OR OLD.status = 'approved' THEN
+    -- Legitimate transitions like changing status from approved to superseded are allowed, but snapshot must remain untouched!
     IF (NEW.snapshot <> OLD.snapshot OR NEW.snapshot_hash <> OLD.snapshot_hash) THEN
       RAISE EXCEPTION 'APPROVED_BLUEPRINT_VERSIONS_ARE_IMMUTABLE';
+    END IF;
+    -- Also prevent changing from 'approved' back to 'unapproved'
+    IF OLD.status = 'approved' AND NEW.status = 'unapproved' THEN
+      RAISE EXCEPTION 'CANNOT_REVERT_APPROVED_VERSION_STATUS_TO_UNAPPROVED';
     END IF;
   END IF;
   RETURN NEW;
@@ -201,7 +218,7 @@ CREATE TRIGGER blueprint_version_no_delete
   FOR EACH ROW
   EXECUTE FUNCTION check_blueprint_version_deletion();
 
--- Verification of Blueprint Approval Constraints (Correction 7)
+-- Verification of Blueprint Approval Constraints (Correction 2, 7)
 CREATE OR REPLACE FUNCTION verify_blueprint_approval_constraints() RETURNS trigger AS $$
 DECLARE
   v_version_hash char(64);
@@ -209,21 +226,27 @@ DECLARE
   v_blueprint_owner_id uuid;
   v_validation_valid boolean;
   v_has_open_questions boolean;
+  v_version_status text;
 BEGIN
-  -- Get version info
-  SELECT blueprint_id, snapshot_hash INTO v_version_blueprint_id, v_version_hash
+  -- 1. verify the version exists
+  SELECT blueprint_id, snapshot_hash, status INTO v_version_blueprint_id, v_version_hash, v_version_status
     FROM blueprint_versions WHERE id = NEW.blueprint_version_id;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'BLUEPRINT_VERSION_NOT_FOUND';
   END IF;
 
-  -- 1. approval hash matches Blueprint version hash
+  -- 2. requires version status = 'unapproved'
+  IF v_version_status <> 'unapproved' THEN
+    RAISE EXCEPTION 'VERSION_MUST_BE_UNAPPROVED_BEFORE_APPROVAL';
+  END IF;
+
+  -- 3. verify the submitted hash matches the version snapshot hash
   IF NEW.snapshot_hash <> v_version_hash THEN
     RAISE EXCEPTION 'SNAPSHOT_HASH_MISMATCH';
   END IF;
 
-  -- 2. approval owner matches Blueprint owner
+  -- 4. verify the version belongs to the approving owner
   SELECT owner_id INTO v_blueprint_owner_id
     FROM blueprint_drafts WHERE id = v_version_blueprint_id;
 
@@ -231,17 +254,17 @@ BEGIN
     RAISE EXCEPTION 'OWNER_MISMATCH';
   END IF;
 
-  -- 3. validation result exists for the same hash and is valid
+  -- 5. require a successful validation result for the exact snapshot hash
   SELECT is_valid INTO v_validation_valid
     FROM blueprint_validation_results
     WHERE blueprint_id = v_version_blueprint_id AND snapshot_hash = NEW.snapshot_hash
     LIMIT 1;
 
   IF NOT FOUND OR v_validation_valid IS NOT TRUE THEN
-    RAISE EXCEPTION 'NO_VALID_VALIDATION_RESULT_FOUND';
+    RAISE EXCEPTION 'NO_VALID_VALIDATION_RESULT_FOUND_FOR_HASH';
   END IF;
 
-  -- 4. no active blocking questions exist
+  -- 6. require zero active blocking questions
   SELECT EXISTS(
     SELECT 1 FROM blueprint_unresolved_questions
     WHERE blueprint_id = v_version_blueprint_id AND is_active = TRUE
@@ -259,6 +282,41 @@ CREATE TRIGGER blueprint_owner_approval_insert_verify
   BEFORE INSERT ON blueprint_owner_approvals
   FOR EACH ROW
   EXECUTE FUNCTION verify_blueprint_approval_constraints();
+
+-- Post-approval operations: Atomic state transitions (Correction 2)
+CREATE OR REPLACE FUNCTION post_blueprint_approval_operations() RETURNS trigger AS $$
+DECLARE
+  v_blueprint_id uuid;
+BEGIN
+  -- Retrieve blueprint draft id
+  SELECT blueprint_id INTO v_blueprint_id FROM blueprint_versions WHERE id = NEW.blueprint_version_id;
+
+  -- 1. change the approved version status to 'approved'
+  -- Note: Legitimate trigger-check allows this update without modifying snapshot
+  UPDATE blueprint_versions
+    SET status = 'approved', updated_at = now()
+    WHERE id = NEW.blueprint_version_id;
+
+  -- 2. supersede the previously approved version for the same Creative Universe/scope
+  UPDATE blueprint_versions
+    SET status = 'superseded', updated_at = now()
+    WHERE blueprint_id = v_blueprint_id
+      AND id <> NEW.blueprint_version_id
+      AND status = 'approved';
+
+  -- 3. deactivate the corresponding draft
+  UPDATE blueprint_drafts
+    SET is_active = false, updated_at = now()
+    WHERE id = v_blueprint_id;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER blueprint_owner_approval_after_insert
+  AFTER INSERT ON blueprint_owner_approvals
+  FOR EACH ROW
+  EXECUTE FUNCTION post_blueprint_approval_operations();
 
 -- Trigger applications for updated_at column automatic updating
 CREATE TRIGGER update_communication_sessions_updated_at BEFORE UPDATE ON communication_sessions FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
