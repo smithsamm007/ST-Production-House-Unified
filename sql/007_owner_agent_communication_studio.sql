@@ -58,6 +58,9 @@ CREATE TABLE blueprint_versions (
   snapshot jsonb NOT NULL,
   snapshot_hash char(64) NOT NULL,
   status text NOT NULL DEFAULT 'unapproved', -- 'unapproved', 'approved', 'superseded'
+  owner_id uuid NOT NULL REFERENCES owners(id) ON DELETE CASCADE, -- copied scope fields (Correction 2)
+  agent_id text NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  universe_id uuid REFERENCES creative_universes(id) ON DELETE SET NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (blueprint_id, version_no),
@@ -69,6 +72,11 @@ CREATE TABLE blueprint_versions (
 ALTER TABLE blueprint_drafts
   ADD CONSTRAINT fk_blueprint_drafts_predecessor_version
   FOREIGN KEY (predecessor_version_id) REFERENCES blueprint_versions(id) ON DELETE SET NULL;
+
+-- Database-enforced uniqueness strategy for exactly one current approved version per scope (Correction 2)
+CREATE UNIQUE INDEX blueprint_versions_one_active_approved_scope_idx
+  ON blueprint_versions (owner_id, agent_id, COALESCE(universe_id, '00000000-0000-0000-0000-000000000000'::uuid))
+  WHERE (status = 'approved');
 
 -- 5. blueprint_decisions
 CREATE TABLE blueprint_decisions (
@@ -227,6 +235,9 @@ DECLARE
   v_validation_valid boolean;
   v_has_open_questions boolean;
   v_version_status text;
+  v_owner_id uuid;
+  v_agent_id text;
+  v_universe_id uuid;
 BEGIN
   -- 1. verify the version exists
   SELECT blueprint_id, snapshot_hash, status INTO v_version_blueprint_id, v_version_hash, v_version_status
@@ -247,10 +258,10 @@ BEGIN
   END IF;
 
   -- 4. verify the version belongs to the approving owner
-  SELECT owner_id INTO v_blueprint_owner_id
+  SELECT owner_id, agent_id, universe_id INTO v_owner_id, v_agent_id, v_universe_id
     FROM blueprint_drafts WHERE id = v_version_blueprint_id;
 
-  IF NEW.owner_id <> v_blueprint_owner_id THEN
+  IF NEW.owner_id <> v_owner_id THEN
     RAISE EXCEPTION 'OWNER_MISMATCH';
   END IF;
 
@@ -274,6 +285,9 @@ BEGIN
     RAISE EXCEPTION 'BLUEPRINT_HAS_ACTIVE_BLOCKING_QUESTIONS';
   END IF;
 
+  -- 7. transaction-safe lock (Correction 2) (Cast to bigint to prevent integer overflow sum aborts)
+  PERFORM pg_advisory_xact_lock((hashtext(v_owner_id::text)::bigint + hashtext(v_agent_id)::bigint + COALESCE(hashtext(v_universe_id::text), 0)::bigint)::bigint);
+
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -287,22 +301,30 @@ CREATE TRIGGER blueprint_owner_approval_insert_verify
 CREATE OR REPLACE FUNCTION post_blueprint_approval_operations() RETURNS trigger AS $$
 DECLARE
   v_blueprint_id uuid;
+  v_owner_id uuid;
+  v_agent_id text;
+  v_universe_id uuid;
 BEGIN
   -- Retrieve blueprint draft id
   SELECT blueprint_id INTO v_blueprint_id FROM blueprint_versions WHERE id = NEW.blueprint_version_id;
 
-  -- 1. change the approved version status to 'approved'
-  -- Note: Legitimate trigger-check allows this update without modifying snapshot
+  -- Retrieve scope elements
+  SELECT owner_id, agent_id, universe_id INTO v_owner_id, v_agent_id, v_universe_id
+    FROM blueprint_drafts WHERE id = v_blueprint_id;
+
+  -- 1. supersede the previously approved versions in the same owner/agent/universe scope (Correction 2)
+  UPDATE blueprint_versions
+    SET status = 'superseded', updated_at = now()
+    WHERE id <> NEW.blueprint_version_id
+      AND status = 'approved'
+      AND owner_id = v_owner_id
+      AND agent_id = v_agent_id
+      AND (universe_id = v_universe_id OR (universe_id IS NULL AND v_universe_id IS NULL));
+
+  -- 2. change the approved version status to 'approved'
   UPDATE blueprint_versions
     SET status = 'approved', updated_at = now()
     WHERE id = NEW.blueprint_version_id;
-
-  -- 2. supersede the previously approved version for the same Creative Universe/scope
-  UPDATE blueprint_versions
-    SET status = 'superseded', updated_at = now()
-    WHERE blueprint_id = v_blueprint_id
-      AND id <> NEW.blueprint_version_id
-      AND status = 'approved';
 
   -- 3. deactivate the corresponding draft
   UPDATE blueprint_drafts

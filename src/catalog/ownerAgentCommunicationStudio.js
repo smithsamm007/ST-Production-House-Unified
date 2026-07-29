@@ -713,6 +713,9 @@ export function createBlueprintVersion(ownerId, blueprintId) {
     snapshot: deepFreeze(rawSnapshot), // Stored completely unchanged
     snapshotHash,
     status: "unapproved",
+    ownerId: draft.ownerId, // scope fields (Correction 2)
+    agentId: draft.agentId,
+    universeId: draft.universeId,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -722,7 +725,7 @@ export function createBlueprintVersion(ownerId, blueprintId) {
   return copyAndFreeze(v);
 }
 
-// Correction 6: Validation-Bound Approvals
+// Correction 6: Validation-Bound Approvals (one approved per scope)
 export function approveExactBlueprintVersion(ownerId, versionId, expectedHash) {
   if (!ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
 
@@ -758,6 +761,20 @@ export function approveExactBlueprintVersion(ownerId, versionId, expectedHash) {
     throw new Error("BLUEPRINT_HAS_UNRESOLVED_BLOCKING_QUESTIONS");
   }
 
+  // Database transaction uniqueness strategy simulation (Correction 2)
+  // Lock/check across the entire owner/agent/universe scope in-memory
+  const activeApprovedInScope = [...versions.values()].find(
+    v => v.status === "approved"
+      && v.ownerId === draft.ownerId
+      && v.agentId === draft.agentId
+      && v.universeId === draft.universeId
+  );
+  if (activeApprovedInScope && activeApprovedInScope.id !== versionId) {
+    // Legitimate operation automatically supersedes previously approved version in same scope (Correction 2)
+    activeApprovedInScope.status = "superseded";
+    activeApprovedInScope.updatedAt = new Date().toISOString();
+  }
+
   const approval = {
     id: randomUUID(),
     blueprintVersionId: versionId,
@@ -780,10 +797,12 @@ export function approveExactBlueprintVersion(ownerId, versionId, expectedHash) {
   version.status = "approved";
   version.updatedAt = new Date().toISOString();
 
-  const related = [...versions.values()].filter(v => v.blueprintId === version.blueprintId && v.id !== versionId);
-  for (const rv of related) {
+  // Supersede other approved/unapproved versions belonging strictly to this blueprint_id
+  const relatedDraftVersions = [...versions.values()].filter(v => v.blueprintId === version.blueprintId && v.id !== versionId);
+  for (const rv of relatedDraftVersions) {
     if (rv.status === "approved") {
       rv.status = "superseded";
+      rv.updatedAt = new Date().toISOString();
     }
   }
 
@@ -857,7 +876,7 @@ export function previewSanitizedWorkerContext(ownerId, blueprintId) {
   return deepFreeze(deepCopy(rawContext));
 }
 
-// Correction 4: Production worker context only
+// Correction 4: Production worker context only (EXCLUDE ALL database and internal IDs!)
 export function generateProductionWorkerContext(ownerId, versionId) {
   const version = versions.get(versionId);
   if (!version) throw new Error("BLUEPRINT_VERSION_NOT_FOUND");
@@ -887,11 +906,9 @@ export function generateProductionWorkerContext(ownerId, versionId) {
   const rawSnapshot = deepCopy(version.snapshot);
   const cleanSnapshot = sanitizeBlueprintSnapshotForWorkers(rawSnapshot);
 
+  // Correction 3: REMOVE ALL INTERNAL IDENTIFIERS FROM PRODUCTION WORKER CONTEXT
+  // Exclude: blueprintId, versionId, agentId, universeId, ownerId, etc.
   const context = {
-    blueprintId: version.blueprintId,
-    versionId: version.id,
-    agentId: draft.agentId,
-    universeId: draft.universeId,
     snapshot: cleanSnapshot,
     isProduction: true
   };

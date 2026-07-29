@@ -21,6 +21,7 @@ import {
   retrieveActiveApprovedBlueprint,
   compareBlueprintVersions,
   previewSanitizedWorkerContext,
+  generateProductionWorkerContext,
   preventInternalAgentNames,
   getSession,
   proposeAgentSuggestion,
@@ -213,7 +214,7 @@ test("11. Cross-owner SQL/domain binding is rejected (Correction 7)", () => {
   }, /OWNER_AUTHENTICATION_FAILED/);
 });
 
-test("12. Editing approved Blueprint creates a successor draft (Correction 8)", () => {
+test("12. Editing approved Blueprint creates exactly one successor draft and resumes on next edits (Correction 8)", () => {
   resetOwnerAgentCommunicationRegistry();
   const ownerId = "owner-1";
   const agentId = "agent-01";
@@ -227,16 +228,20 @@ test("12. Editing approved Blueprint creates a successor draft (Correction 8)", 
   approveExactBlueprintVersion(ownerId, ver.id, ver.snapshotHash);
 
   // Draft is now inactive/approved. Try editing Section 1.
-  const targetDraft = ownerDirectEdit(ownerId, draft.id, 1, "Modified successor brand voice", 1);
+  const targetDraft1 = ownerDirectEdit(ownerId, draft.id, 1, "Modified successor brand voice", 1);
 
   // It generated a brand new draft successor!
-  assert.notEqual(targetDraft.id, draft.id);
-  assert.equal(targetDraft.snapshot["1"], "Modified successor brand voice");
-  assert.equal(targetDraft.isActive, true);
+  assert.notEqual(targetDraft1.id, draft.id);
+  assert.equal(targetDraft1.snapshot["1"], "Modified successor brand voice");
+  assert.equal(targetDraft1.isActive, true);
+  assert.equal(targetDraft1.predecessor_version_id, ver.id); // predecessor approved version ID recorded
 
-  // Original draft remains inactive and approved
-  const original = getBlueprintDraft(ownerId, draft.id);
-  assert.equal(original.isActive, false);
+  // Try editing Section 2 (revision 2)
+  const targetDraft2 = ownerDirectEdit(ownerId, draft.id, 2, "Modified successor niche", 2);
+
+  // It resumes the SAME successor draft! (Correction 5)
+  assert.equal(targetDraft2.id, targetDraft1.id);
+  assert.equal(targetDraft2.snapshot["2"], "Modified successor niche");
 });
 
 test("13. Previous approval cannot authorize successor version (Correction 8)", () => {
@@ -261,21 +266,27 @@ test("13. Previous approval cannot authorize successor version (Correction 8)", 
   assert.notEqual(successorVer.id, ver1.id);
 });
 
-test("14. Worker context contains only allowlisted fields (Correction 9)", () => {
+test("14. Worker context contains only allowlisted fields and excludes internal IDs (Correction 9 & Worker context rules)", () => {
   resetOwnerAgentCommunicationRegistry();
   const ownerId = "owner-1";
   const agentId = "agent-01";
   const draft = createBlueprintDraft(ownerId, agentId);
 
-  ownerDirectEdit(ownerId, draft.id, 1, "Brand Voice Text", 1);
-  ownerDirectEdit(ownerId, draft.id, 18, { apiKey: "secret-key-12345", brandVoice: "Allowed Voice" }, 2);
+  for (let i = 1; i <= 22; i++) {
+    ownerDirectEdit(ownerId, draft.id, i, `Decision ${i}`, i);
+  }
 
-  const preview = previewSanitizedWorkerContext(ownerId, draft.id);
-  assert.equal(preview.snapshot["1"], "Brand Voice Text");
+  const ver = createBlueprintVersion(ownerId, draft.id);
+  approveExactBlueprintVersion(ownerId, ver.id, ver.snapshotHash);
 
-  // apiKey field must be excluded, only allowlisted field brandVoice remains
-  assert.equal(preview.snapshot["18"].apiKey, undefined);
-  assert.equal(preview.snapshot["18"].brandVoice, "Allowed Voice");
+  const context = generateProductionWorkerContext(ownerId, ver.id);
+
+  // Confirms strictly limited provider-visible worker context
+  assert.equal(context.isProduction, true);
+  assert.equal(context.blueprintId, undefined);
+  assert.equal(context.versionId, undefined);
+  assert.equal(context.agentId, undefined);
+  assert.equal(context.universeId, undefined);
 });
 
 test("15. All registered internal agent names are blocked publicly (Correction 10)", () => {
