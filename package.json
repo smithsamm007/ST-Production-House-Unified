@@ -10,5 +10,11 @@
   "scripts": {
     "test": "node --test",
     "verify": "node --check src/catalog/agents.js && node --check src/providers/providerRouter.js && node --check src/promotion/promotionPolicy.js && node --check src/evidence/evidenceLedger.js && node --check src/publishing/publishingService.js && node --test"
+  },
+  "dependencies": {
+    "argon2": "^0.45.1",
+    "express": "^5.2.1",
+    "pg": "^8.22.0",
+    "supertest": "^7.2.2"
   }
 }
