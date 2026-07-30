@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { query } from "./db.js";
+import { query, transaction } from "./db.js";
 
 const MIGRATION_FILES = [
   "001_core.sql",
@@ -10,11 +10,13 @@ const MIGRATION_FILES = [
   "005_creative_reference.sql",
   "006_seed_initial_creative_charters.sql",
   "007_owner_agent_communication_studio.sql",
-  "008_owner_authentication_and_sessions.sql"
+  "008_owner_authentication_and_sessions.sql",
+  "009_add_owner_role.sql"
 ];
 
 /**
  * Ensures the migration tracking table exists, then runs all unapplied migrations.
+ * Each migration and its schema_migrations record is executed atomically within one transaction.
  */
 export async function runMigrations() {
   // Create schema_migrations table if not exists
@@ -44,14 +46,20 @@ export async function runMigrations() {
       throw new Error(`Migration file not found: ${file}`);
     }
 
-    const sql = fs.readFileSync(filePath, "utf8");
+    let sql = fs.readFileSync(filePath, "utf8");
+
+    // Remove any hardcoded transaction markers from SQL file content to prevent nested transaction errors
+    sql = sql.replace(/\bBEGIN\s*;/gi, "")
+             .replace(/\bCOMMIT\s*;/gi, "")
+             .replace(/\bBEGIN\b/gi, "")
+             .replace(/\bCOMMIT\b/gi, "");
 
     try {
-      // Execute the entire SQL migration file contents
-      await query(sql);
-
-      // Record migration as applied
-      await query("INSERT INTO schema_migrations (name) VALUES ($1);", [file]);
+      // Run the migration file and the registration of schema_migrations record in a single atomic transaction
+      await transaction(async (client) => {
+        await client.query(sql);
+        await client.query("INSERT INTO schema_migrations (name) VALUES ($1);", [file]);
+      });
       console.log(`Successfully applied migration: ${file}`);
     } catch (err) {
       console.error(`Failed to apply migration: ${file}`, err);
