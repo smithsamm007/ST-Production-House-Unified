@@ -47,6 +47,14 @@ A structured library separating visual and niche aspects ensures absolute contro
 - **Approved Status Lifecycle**: Exactly the 10 approved lifecycle statuses: `submitted`, `validation_failed`, `awaiting_analysis`, `analysis_in_progress`, `analysis_failed`, `draft_profile_ready`, `awaiting_owner_review`, `approved`, `rejected`, `inactive`.
 - **Flexible Scope Assignments**: References can be assigned separately to Creative Universe, series, season, story arc, episode, standalone promotional Reel, or main-video promotion.
 
+## Owner-Agent Communication Studio and Blueprinting
+
+The Owner-Agent Communication Studio handles the onboarding phase, where the Owner and the chosen Agent collaboratively refine the Agent's blueprint across exactly 22 Interactive Interview Catalog sections:
+- **Comprehensive 22 Sections**: Spans Brand Voice, Color Palettes, Aspect Ratios, Call to Actions, Soundscapes, and Parallel execution options.
+- **Zero-Trust Message Engine**: Validates messaging matrix patterns, preventing unauthorized owners from accessing active session threads, and ensuring valid sender-to-message combinations.
+- **Strict Version Control & Validation**: Validates all 22 sections, checks brand safety terms (blocks keywords like 'unsafe' and 'unfiltered'), scans snapshots recursively to remove credential leaks, and ensures any unresolved open-ended questions block version generation.
+- **Immutable Approval Locking**: Once approved, the exact blueprint draft becomes inactive (cannot be edited), the approved version is marked approved, older versions are superseded, and the blueprint is permanently frozen.
+
 ## Runtime rules
 
 - An authenticated owner creates a task or promotion campaign.

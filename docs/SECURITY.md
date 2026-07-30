@@ -23,6 +23,14 @@ To safeguard creative vision, long-term brand equity, and prevent snapshot tampe
 - **Niche vs Visual Isolation**: Strict security separation of niche characteristics and visual characteristics prevents design decisions from silently controlling stories or characters, and prevents story rules from silently hijacking visuals.
 - **URL Sanitization & Allowlist Policy**: Rejects non-standard ports, localhost, embedded credentials, and non-allowlisted domains. Only canonicalized YouTube URL formats are permitted inside the system, with duplicate detection blocking equivalent URL profiles.
 
+## Owner-Agent Communication Studio Security
+
+The Owner-Agent Communication Studio ensures maximum protection during blueprint drafting and onboarding:
+- **Zero-Trust Sender Authorization**: Active session messaging threads validate sender roles against a strict message type matrix, preventing cross-tenant thread injection and message spoofing.
+- **Brand Safety Analysis**: Automated brand safety checks block validation of blueprints that include terms of concern like 'unsafe' or 'unfiltered'.
+- **Recursive Credential Scrubbing**: Blueprint version snapshots undergo recursive deep-scanning to eliminate API keys, access tokens, passwords, or credential-shaped objects from ever being persistent.
+- **Immutable Approval Locking**: Once an exact version snapshot is approved by the owner, any modifications to the blueprint draft are blocked, previous versions are superseded, and the blueprint is permanently frozen.
+
 ## Credentials and Reference Architecture
 
 The database stores only opaque secret-manager locators (e.g., `vault://st/agents/agent-01/providers/gemini/primary`). A worker obtains a short-lived, task-scoped credential from a trusted broker. Credential audit logs record the agent, task, slot, provider, and outcome—but never the secret.

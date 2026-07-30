@@ -17,6 +17,12 @@ This is a clean, ST-owned secure foundation for consolidating the strongest idea
   - Classifies references strictly into: `youtube_channel`, `youtube_video`, `youtube_playlist`, `written_brief`, `authorized_image`, `uploaded_asset_metadata`.
   - Enforces the 10 approved lifecycle statuses exactly: `submitted`, `validation_failed`, `awaiting_analysis`, `analysis_in_progress`, `analysis_failed`, `draft_profile_ready`, `awaiting_owner_review`, `approved`, `rejected`, `inactive`.
   - Restricts scope assignments cleanly (preventing crossover of niche references into visual profiles).
+- **Owner-Agent Communication Studio and Blueprinting**:
+  - Collaboratively refines Agent parameters across exactly 22 Interactive Interview Catalog sections spanning Brand Voice, Framing, CTA, Soundscapes, and Parallelism.
+  - Interactive Messaging Engine validating message types and enforcing zero-trust sender-to-thread authorization.
+  - Unresolved question blockades that prevent blueprint versioning until resolved by the owner.
+  - Automated 22-section validation, brand safety checks (e.g. blocking terms like 'unsafe' and 'unfiltered'), and recursive snapshot secret-leak scanning.
+  - Permanent lock upon owner approval, deactivating edits and freezing the blueprint draft.
 - **Agent Digital Identity and Account Isolation**:
   - Every agent name is used as an internal identifier only. Public publishing strictly uses the connected channel/account brand.
   - Every agent possesses unconfigured account slots for emails, YouTube, Instagram, Facebook, and Snapchat.
@@ -62,6 +68,6 @@ Read:
 - `docs/IMPLEMENTATION_ROADMAP.md`
 - `AGENTS.md`
 
-Apply `sql/001_core.sql`, `sql/002_seed_agents.sql`, `sql/003_agent_digital_identity.sql`, `sql/004_creative_charter.sql`, and `sql/005_creative_reference.sql` to a new PostgreSQL database only after replacing the example credentials and adding backups.
+Apply `sql/001_core.sql`, `sql/002_seed_agents.sql`, `sql/003_agent_digital_identity.sql`, `sql/004_creative_charter.sql`, `sql/005_creative_reference.sql`, `sql/006_seed_initial_creative_charters.sql`, and `sql/007_owner_agent_communication_studio.sql` to a new PostgreSQL database only after replacing the example credentials and adding backups.
 
 The recommended first implementation increment is the authenticated API, PostgreSQL repositories, durable worker leases, and a secret-manager broker.

@@ -20,6 +20,14 @@ This repository is the verified secure foundation, not a claim that every live p
 - **Niche Reference and Visual Reference Library**:
   - Relational schema tables added for `creative_references`, `niche_reference_profiles`, `visual_reference_profiles`, `reference_scope_assignments`, `reference_analysis_attempts`, and approvals.
   - Separate Niche and Visual properties with dynamic URL verification, canonical duplicate detection, and sanitized context extraction.
+- **Owner-Agent Communication Studio and Blueprinting**:
+  - Relational schema tables added for `communication_sessions`, `communication_messages`, `blueprint_drafts`, `blueprint_versions`, `blueprint_decisions`, `blueprint_suggestions`, `blueprint_unresolved_questions`, `blueprint_validation_results`, and `blueprint_owner_approvals`.
+  - Exactly 22 preloaded interactive interview catalog sections spanning Brand Voice, Aspect Ratios, CTA Styles, Soundscapes, and Parallel Job options.
+  - Interactive Messaging Engine validating message types (`owner_decision`, `owner_question`, `agent_question`, `agent_suggestion`, `agent_explanation`, `validation_warning`, `system_status`) and strict sender matrices.
+  - Unresolved question blockades that prevent blueprint draft versioning until addressed by the owner.
+  - Automated 22-section validation and brand safety scanning (blocking words like 'unsafe' or 'unfiltered').
+  - Recursive secret-leak sanitization on generated blueprint version snapshots.
+  - Immutable Owner approvals that permanently lock the blueprint and deactivate edits.
 - Affiliate URL/disclosure policy.
 - Owner-approval and non-fabricated publishing receipt policy.
 - PostgreSQL schema for durable jobs, leases, evidence, and receipts.
