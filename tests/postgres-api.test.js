@@ -8,7 +8,7 @@ import { checkDatabaseHealth } from "../src/catalog/repositories.js";
 import { runMigrations } from "../src/db/index.js";
 import { bootstrapOwner } from "../src/catalog/bootstrap.js";
 import { validatePasswordStrength, hashPassword, verifyPassword } from "../src/catalog/ownerAuthentication.js";
-import { EvidenceLedgerRepository, AgentRepository } from "../src/catalog/repositories.js";
+import { EvidenceLedgerRepository, AgentRepository, dbAdapter, setMockQueryHandler } from "../src/catalog/repositories.js";
 import app from "../src/catalog/server.js";
 
 test("PostgreSQL connection check skips gracefully or verifies health", async () => {
@@ -121,16 +121,38 @@ test("API: Anonymous requests to protected me route return 401", async () => {
 
 test("Agent 50-limit is checked at JS repository layer", async () => {
   const repo = new AgentRepository();
-  const dummyAgents = [];
-  for (let i = 0; i < 50; i++) {
-    dummyAgents.push({ id: `a-${i}`, name: `Agent ${i}`, namespace: `ns.${i}`, enabled: true });
-  }
 
-  // Verification of cap check is present in JS code and triggers exception
-  assert.throws(() => {
-    // If the database has 50 or more records or we simulate the 50-agent cap check:
-    throw new Error("AGENT_CAP_REACHED");
-  }, /AGENT_CAP_REACHED/);
+  if (process.env.USE_IN_MEMORY_STUB === "true") {
+    // Under in-memory stub, we can mock the query handler explicitly
+    setMockQueryHandler(async (text, params) => {
+      if (text.includes("count(*) FROM agents")) {
+        return { rows: [{ count: 50 }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+    try {
+      await assert.rejects(async () => {
+        await repo.add({ id: "agent-51", name: "Agent 51", namespace: "ns.51" });
+      }, /AGENT_CAP_REACHED/);
+    } finally {
+      setMockQueryHandler(null);
+    }
+  } else {
+    // Under live PG, we can populate real records and test it
+    await dbAdapter.query("DELETE FROM agents WHERE id LIKE 'a-%';");
+    for (let i = 0; i < 50; i++) {
+      await dbAdapter.query(
+        "INSERT INTO agents (id, name, namespace, enabled) VALUES ($1, $2, $3, true) ON CONFLICT DO NOTHING;",
+        [`a-${i}`, `Agent ${i}`, `ns.${i}`]
+      );
+    }
+    await assert.rejects(async () => {
+      await repo.add({ id: "agent-51", name: "Agent 51", namespace: "ns.51" });
+    }, /AGENT_CAP_REACHED/);
+
+    // Clean up
+    await dbAdapter.query("DELETE FROM agents WHERE id LIKE 'a-%';");
+  }
 });
 
 test("EvidenceLedgerRepository append-only and hashing verification contracts are intact", async () => {

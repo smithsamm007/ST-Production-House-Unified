@@ -11,8 +11,16 @@ const usePg = () => {
   return true;
 };
 
+let mockQueryHandler = null;
+export function setMockQueryHandler(handler) {
+  mockQueryHandler = handler;
+}
+
 export async function query(text, params = []) {
   if (!usePg()) {
+    if (mockQueryHandler) {
+      return await mockQueryHandler(text, params);
+    }
     return { rows: [], rowCount: 0 };
   }
   return await dbAdapter.query(text, params);
@@ -21,7 +29,12 @@ export async function query(text, params = []) {
 export async function transaction(callback) {
   if (!usePg()) {
     const mockClient = {
-      query: async (text, params) => ({ rows: [], rowCount: 0 })
+      query: async (text, params) => {
+        if (mockQueryHandler) {
+          return await mockQueryHandler(text, params);
+        }
+        return { rows: [], rowCount: 0 };
+      }
     };
     return await callback(mockClient);
   }
