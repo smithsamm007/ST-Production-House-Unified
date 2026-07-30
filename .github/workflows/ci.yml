@@ -2,7 +2,7 @@ name: ST Production House CI
 
 on:
   push:
-    branches: [ main, feat/agent-digital-identity-isolation ]
+    branches: [ main, feat/agent-digital-identity-isolation, feat/production-postgresql-adapter ]
   pull_request:
     branches: [ main ]
 
@@ -12,6 +12,21 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: st_app
+          POSTGRES_PASSWORD: st_test_password
+          POSTGRES_DB: st_production_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
     - name: Checkout repository
@@ -30,3 +45,8 @@ jobs:
 
     - name: Run unit and policy tests
       run: npm test
+
+    - name: Run PostgreSQL Integration Tests
+      env:
+        POSTGRES_TEST_URL: postgresql://st_app:st_test_password@localhost:5432/st_production_test
+      run: npm run test:integration
