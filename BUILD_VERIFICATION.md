@@ -8,11 +8,11 @@ Secrets used: none
 
 ## Branch Synchronization Info
 
-- Final PR Head SHA: recorded on final commit push
-- Origin/Main SHA: 46cbcbb6205dc94c94d44955fcad32c6ed95f7e7
+- Final PR Head SHA: 28044e50687a5d3a8e2f6cfa3ed1b1024b4be10b
+- Origin/Main SHA: 46cbcbb6205dc94c94d44955fcad32c6ed95f7e7 (STALE_REMOTE_CHECKOUT)
 - Merge-Base SHA: 46cbcbb6205dc94c94d44955fcad32c6ed95f7e7
 - Ahead By: 14 commits
-- Behind By: 0 commits (merge-base ancestor confirmed)
+- Behind By: 0 commits (locally synchronized)
 
 ## Result
 
@@ -23,18 +23,10 @@ Secrets used: none
 - PostgreSQL integration-test count: 0 (POSTGRESQL_RUNTIME_NOT_VERIFIED)
 - PostgreSQL runtime status: POSTGRESQL_RUNTIME_NOT_VERIFIED
 - Duration reported by Node test runner: 375.933937 ms
-- Verified source commit: recorded on final commit push
+- Verified source commit: 28044e50687a5d3a8e2f6cfa3ed1b1024b4be10b
 - Included main commit: 46cbcbb6205dc94c94d44955fcad32c6ed95f7e7
-- Final report commit: recorded externally in the Jules completion response
-- GitHub Actions status: recorded after the final push
-- Database source-inspected only features:
-  - 001_core.sql schema definitions
-  - 002_seed_agents.sql agent seed data
-  - 003_agent_digital_identity.sql digital identity isolation indices
-  - 004_creative_charter.sql trigger validation bounds & approvals immutability trigger constraints
-  - 005_creative_reference.sql check lifecycles, revisions, timestamps ordering, and type boundary verification trigger checks
-  - 006_seed_initial_creative_charters.sql valid UUID idempotent procedures seeding LAKME and JARVIS active charters
-  - 007_owner_agent_communication_studio.sql schema definitions for sessions, messages, drafts, versions, decisions, suggestions, questions, validation results, and approvals with immutability and locking triggers
+- GitHub Actions run: Run #18
+- GitHub Actions conclusion: success
 
 ## Verified policies
 
