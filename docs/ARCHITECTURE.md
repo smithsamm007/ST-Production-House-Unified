@@ -86,3 +86,10 @@ Duplicate campaigns are separate business records and require explicit owner aut
 Main-video promotion is a separate placement record. Intake must always ask the owner whether to include it and, if yes, which episode.
 
 Affiliate links are campaign/platform placements, not new videos. Every link requires an allowlisted HTTPS domain, disclosure, redirect/SSRF inspection, malware screening, expiration policy, and owner approval.
+
+## Canonical Database Foundation
+
+src/db/postgresAdapter.js and src/db/migrationRunner.js are the canonical
+PostgreSQL foundation. Future branches, including PR #5, must be rebased or
+adapted to this foundation and must not introduce a competing PostgreSQL
+adapter or migration runner.

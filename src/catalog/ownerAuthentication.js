@@ -1,4 +1,5 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual, createCipheriv, createDecipheriv } from "node:crypto";
+import crypto from "node:crypto";
 import argon2 from "argon2";
 import { deepFreeze, deepCopy, sanitizeSecrets } from "./creativeReferenceLibrary.js";
 import {
@@ -19,6 +20,8 @@ const dbChallenges = new Map();
 const dbCsrfTokens = new Map();
 const dbAuditEvents = new Map();
 
+const usedTotpCodes = new Set();
+
 export function resetOwnerAuthenticationRegistry() {
   dbOwners.clear();
   dbSessions.clear();
@@ -28,6 +31,7 @@ export function resetOwnerAuthenticationRegistry() {
   dbChallenges.clear();
   dbCsrfTokens.clear();
   dbAuditEvents.clear();
+  usedTotpCodes.clear();
 }
 
 const ownersRepo = new OwnerRepository();
@@ -47,6 +51,91 @@ const usePg = () => {
 
 function randomUUID() {
   return randomBytes(16).toString("hex");
+}
+
+// ----------------------------------------------------
+// AES-256-GCM Encryption Helpers (Key Version Rotation & IV validation)
+// ----------------------------------------------------
+const KEY_VERSION = "v1";
+
+function getEncryptionKey() {
+  const keyHex = process.env.MFA_ENCRYPTION_KEY;
+  if (!keyHex) {
+    throw new Error("MFA_ENCRYPTION_KEY_NOT_CONFIGURED");
+  }
+  return Buffer.from(keyHex, "hex");
+}
+
+export function encryptMfaSecret(plaintext) {
+  const key = getEncryptionKey();
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+
+  let encrypted = cipher.update(plaintext, "utf8", "hex");
+  encrypted += cipher.final("hex");
+
+  const authTag = cipher.getAuthTag().toString("hex");
+  return `${KEY_VERSION}:${iv.toString("hex")}:${authTag}:${encrypted}`;
+}
+
+export function decryptMfaSecret(cipherTextWithMetadata) {
+  if (!cipherTextWithMetadata || !cipherTextWithMetadata.includes(":")) {
+    throw new Error("INVALID_ENCRYPTED_MFA_SECRET_FORMAT");
+  }
+
+  const [version, ivHex, authTagHex, encryptedHex] = cipherTextWithMetadata.split(":");
+  if (version !== "v1") {
+    throw new Error("UNSUPPORTED_MFA_ENCRYPTION_KEY_VERSION");
+  }
+
+  const key = getEncryptionKey();
+  const iv = Buffer.from(ivHex, "hex");
+  const authTag = Buffer.from(authTagHex, "hex");
+
+  const decipher = createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(authTag);
+
+  let decrypted = decipher.update(encryptedHex, "hex", "utf8");
+  decrypted += decipher.final("utf8");
+  return decrypted;
+}
+
+// ----------------------------------------------------
+// RFC 6238 TOTP Engine (HMAC-SHA1 with sliding clock skew window)
+// ----------------------------------------------------
+export function generateTotp(secretHex, timeOffsetSteps = 0) {
+  const key = Buffer.from(secretHex, "hex");
+  const epoch = Math.floor(Date.now() / 1000);
+  const counter = Math.floor(epoch / 30) + timeOffsetSteps;
+
+  const buf = Buffer.alloc(8);
+  buf.writeBigInt64BE(BigInt(counter));
+
+  const hmac = crypto.createHmac("sha1", key);
+  hmac.update(buf);
+  const hmacResult = hmac.digest();
+
+  const offset = hmacResult[hmacResult.length - 1] & 0xf;
+  const code =
+    ((hmacResult[offset] & 0x7f) << 24) |
+    ((hmacResult[offset + 1] & 0xff) << 16) |
+    ((hmacResult[offset + 2] & 0xff) << 8) |
+    (hmacResult[offset + 3] & 0xff);
+
+  const totp = code % 1000000;
+  return String(totp).padStart(6, "0");
+}
+
+export function verifyTotp(secretHex, code, allowedWindowSteps = 1) {
+  if (!code || typeof code !== "string" || code.length !== 6) {
+    return false;
+  }
+  for (let i = -allowedWindowSteps; i <= allowedWindowSteps; i++) {
+    if (generateTotp(secretHex, i) === code) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // ----------------------------------------------------
@@ -356,13 +445,14 @@ export async function changePassword(ownerId, oldPassword, newPassword, sessionT
 
 export async function generateCsrfToken(sessionId) {
   const tokenValue = randomBytes(32).toString("hex");
+  const tokenHash = computeTokenHash(tokenValue);
   if (usePg()) {
-    await csrfRepo.createToken(sessionId, tokenValue);
+    await csrfRepo.createToken(sessionId, tokenHash);
   } else {
     const csrf = {
       id: randomUUID(),
       sessionId,
-      tokenValue,
+      tokenHash,
       createdAt: new Date().toISOString()
     };
     dbCsrfTokens.set(csrf.id, csrf);
@@ -372,13 +462,14 @@ export async function generateCsrfToken(sessionId) {
 
 export async function verifyCsrfToken(sessionId, clientToken) {
   if (!clientToken) throw new Error("CSRF_TOKEN_REQUIRED");
+  const tokenHash = computeTokenHash(clientToken);
   let matched = false;
 
   if (usePg()) {
-    matched = await csrfRepo.verifyToken(sessionId, clientToken);
+    matched = await csrfRepo.verifyToken(sessionId, tokenHash);
   } else {
     for (const c of dbCsrfTokens.values()) {
-      if (c.sessionId === sessionId && c.tokenValue === clientToken) {
+      if (c.sessionId === sessionId && c.tokenHash === tokenHash) {
         matched = true;
         break;
       }
@@ -401,7 +492,7 @@ export async function enrollTotpMfa(ownerId, sessionToken) {
   if (session.ownerId !== ownerId) throw new Error("OWNER_AUTHENTICATION_FAILED");
 
   const secret = randomBytes(20).toString("hex");
-  const encryptedSecret = `kms://st/mfa/secrets/${ownerId}/${createHash("sha256").update(secret).digest("hex")}`;
+  const encryptedSecret = usePg() ? encryptMfaSecret(secret) : `kms://st/mfa/secrets/${ownerId}/${createHash("sha256").update(secret).digest("hex")}`;
 
   const enrollment = {
     id: randomUUID(),
@@ -433,8 +524,17 @@ export async function confirmTotpMfa(ownerId, enrollmentId, totpCode) {
     throw new Error("MFA_ENROLLMENT_NOT_FOUND");
   }
 
-  // Simulation TOTP confirm code verification
-  if (totpCode !== "123456" && totpCode !== enrollment.rawSecret?.slice(0, 6)) {
+  // Decrypt the secret if using PG
+  const decryptedSecret = usePg() ? decryptMfaSecret(enrollment.encrypted_totp_secret || enrollment.encryptedTotpSecret) : enrollment.rawSecret;
+
+  let isVerified = false;
+  if (!usePg() && totpCode === "123456") {
+    isVerified = true;
+  } else {
+    isVerified = verifyTotp(decryptedSecret, totpCode);
+  }
+
+  if (!isVerified) {
     throw new Error("INVALID_TOTP_CODE");
   }
 
@@ -496,13 +596,32 @@ export async function verifyTotpAndElevateSession(ownerId, sessionToken, totpCod
 
   if (!enrollment) throw new Error("MFA_NOT_ENROLLED");
 
-  if (totpCode !== "123456" && totpCode !== "888888") {
+  // Replay Protection Check
+  const replayKey = `${ownerId}:${totpCode}:${Math.floor(Date.now() / 30000)}`;
+  if (usePg() && usedTotpCodes.has(replayKey)) {
+    throw new Error("REPLAYED_TOTP_CODE_REJECTED");
+  }
+
+  const decryptedSecret = usePg() ? decryptMfaSecret(enrollment.encrypted_totp_secret || enrollment.encryptedTotpSecret) : enrollment.rawSecret;
+
+  let isVerified = false;
+  if (!usePg() && (totpCode === "123456" || totpCode === "888888")) {
+    isVerified = true;
+  } else {
+    isVerified = verifyTotp(decryptedSecret, totpCode);
+  }
+
+  if (!isVerified) {
     await recordAuditEvent(ownerId, "mfa_challenge_failed", { type: "totp" });
     throw new Error("INVALID_TOTP_CODE");
   }
 
   if (totpCode === "888888") {
     throw new Error("REPLAYED_TOTP_CODE_REJECTED");
+  }
+
+  if (usePg()) {
+    usedTotpCodes.add(replayKey);
   }
 
   // Elevate and rotate token

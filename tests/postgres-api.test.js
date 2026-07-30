@@ -4,11 +4,10 @@ process.env.USE_IN_MEMORY_STUB = "true";
 import test from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
-import { checkDatabaseHealth } from "../src/catalog/repositories.js";
+import { checkDatabaseHealth, AgentRepository, dbAdapter, setMockQueryHandler, EvidenceLedgerRepository } from "../src/catalog/repositories.js";
 import { runMigrations } from "../src/db/index.js";
 import { bootstrapOwner } from "../src/catalog/bootstrap.js";
 import { validatePasswordStrength, hashPassword, verifyPassword } from "../src/catalog/ownerAuthentication.js";
-import { EvidenceLedgerRepository, AgentRepository, dbAdapter, setMockQueryHandler } from "../src/catalog/repositories.js";
 import app from "../src/catalog/server.js";
 
 test("PostgreSQL connection check skips gracefully or verifies health", async () => {
