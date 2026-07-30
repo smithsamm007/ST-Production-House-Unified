@@ -29,7 +29,7 @@ CREATE TABLE owner_sessions (
 );
 
 -- Index for session lookups and expired cleanup
-CREATE INDEX owner_sessions_active_idx ON owner_sessions (token_hash) WHERE (revoked_at IS NULL AND absolute_expires_at > now() AND idle_expires_at > now());
+CREATE INDEX owner_sessions_active_idx ON owner_sessions (token_hash, idle_expires_at, absolute_expires_at) WHERE (revoked_at IS NULL);
 
 -- 2. owner_mfa_methods / owner_totp_enrollments
 CREATE TABLE owner_totp_enrollments (
