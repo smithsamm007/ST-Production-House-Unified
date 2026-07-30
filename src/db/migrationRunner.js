@@ -56,13 +56,13 @@ export function stripOuterTransactionWrapper(sqlContent) {
   let executionSql = sqlContent;
 
   // Match leading outer BEGIN; / BEGIN TRANSACTION; ignoring leading comments/whitespace
-  executionSql = executionSql.replace(/^\s*(?:--(?:[^\n]*\n|\n)|\/\*[\s\S]*?\*\/\s*)*\s*\bBEGIN(?:\s+TRANSACTION)?\s*;/i, (match) => {
+  executionSql = executionSql.replace(/^\s*(?:--(?:[^\n]*\n|\n)|\/\*[\s\S]*?\*\/\s*)*\bBEGIN(?:\s+TRANSACTION)?\s*;/i, (match) => {
     const commentsOnly = match.replace(/\bBEGIN(?:\s+TRANSACTION)?\s*;/i, '');
     return commentsOnly;
   });
 
   // Match trailing outer COMMIT; / COMMIT TRANSACTION; ignoring trailing comments/whitespace
-  executionSql = executionSql.replace(/\s*\b(?:COMMIT|COMMIT\s+TRANSACTION)\s*;\s*(?:--(?:[^\n]*\n|\n)|\/\*[\s\S]*?\*\/\s*)*\s*$/i, (match) => {
+  executionSql = executionSql.replace(/\s*\b(?:COMMIT|COMMIT\s+TRANSACTION)\s*;\s*(?:--(?:[^\n]*\n|\n)|\/\*[\s\S]*?\*\/\s*)*$/i, (match) => {
     const commentsOnly = match.replace(/\s*\b(?:COMMIT|COMMIT\s+TRANSACTION)\s*;/i, '');
     return commentsOnly;
   });

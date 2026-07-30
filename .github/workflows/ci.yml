@@ -2,9 +2,9 @@ name: ST Production House CI
 
 on:
   push:
-    branches: [ main, feat/agent-digital-identity-isolation, feat/production-postgresql-adapter ]
+    branches: [ main, feat/agent-digital-identity-isolation, feat/production-postgresql-adapter, feat/postgres-authenticated-api-8899318215390372394 ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, feat/postgres-authenticated-api-8899318215390372394 ]
 
 permissions:
   contents: read

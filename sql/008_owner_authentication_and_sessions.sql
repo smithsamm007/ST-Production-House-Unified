@@ -28,7 +28,7 @@ CREATE TABLE owner_sessions (
   CONSTRAINT expiry_ordering CHECK (absolute_expires_at > created_at AND idle_expires_at > created_at)
 );
 
--- Index for session lookups and expired cleanup
+-- Index for session lookups and expired cleanup (Canonical, compliant with non-immutable functions restriction)
 CREATE INDEX owner_sessions_active_idx ON owner_sessions (token_hash, idle_expires_at, absolute_expires_at) WHERE (revoked_at IS NULL);
 
 -- 2. owner_mfa_methods / owner_totp_enrollments
