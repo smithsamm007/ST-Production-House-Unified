@@ -4,54 +4,20 @@ import { createPostgresAdapter } from "../db/index.js";
 // Canonical database adapter instance singleton
 export const dbAdapter = createPostgresAdapter();
 
-const usePg = () => {
-  if (process.env.USE_IN_MEMORY_STUB === "true") {
-    return false;
-  }
-  return true;
-};
-
+// Mock query handler for testing
 let mockQueryHandler = null;
 export function setMockQueryHandler(handler) {
   mockQueryHandler = handler;
 }
 
-export async function query(text, params = []) {
-  if (!usePg()) {
-    if (mockQueryHandler) {
-      return await mockQueryHandler(text, params);
-    }
-    return { rows: [], rowCount: 0 };
+// Intercept queries on the canonical adapter when a mock is set for unit/integration testing
+const originalQuery = dbAdapter.query.bind(dbAdapter);
+dbAdapter.query = async function (text, params) {
+  if (mockQueryHandler) {
+    return await mockQueryHandler(text, params);
   }
-  return await dbAdapter.query(text, params);
-}
-
-export async function transaction(callback) {
-  if (!usePg()) {
-    const mockClient = {
-      query: async (text, params) => {
-        if (mockQueryHandler) {
-          return await mockQueryHandler(text, params);
-        }
-        return { rows: [], rowCount: 0 };
-      }
-    };
-    return await callback(mockClient);
-  }
-  return await dbAdapter.withTransaction(callback);
-}
-
-export async function checkDatabaseHealth() {
-  if (!usePg()) {
-    return { status: "healthy" };
-  }
-  try {
-    await dbAdapter.query("SELECT 1");
-    return { status: "healthy" };
-  } catch (err) {
-    return { status: "unhealthy", reason: err.message };
-  }
-}
+  return await originalQuery(text, params);
+};
 
 // Helper function to sort and normalize object fields for deterministic hashing
 function stable(value) {
@@ -67,11 +33,30 @@ function stable(value) {
 }
 
 // ----------------------------------------------------
+// Database Health Check Utility
+// ----------------------------------------------------
+export async function checkDatabaseHealth(adapter = dbAdapter) {
+  try {
+    const res = await adapter.query("SELECT 1 as ok;");
+    if (res.rows && res.rows[0] && res.rows[0].ok === 1) {
+      return { status: "healthy", latency: 0 };
+    }
+    return { status: "unhealthy", reason: "Invalid database response" };
+  } catch (err) {
+    return { status: "unavailable", error: err.message };
+  }
+}
+
+// ----------------------------------------------------
 // 1. Owner Repository
 // ----------------------------------------------------
 export class OwnerRepository {
+  constructor(adapter = dbAdapter) {
+    this.dbAdapter = adapter;
+  }
+
   async findById(id) {
-    const res = await query("SELECT * FROM owners WHERE id = $1;", [id]);
+    const res = await this.dbAdapter.query("SELECT * FROM owners WHERE id = $1;", [id]);
     if (!res.rows[0]) return null;
     const row = res.rows[0];
     return {
@@ -92,7 +77,7 @@ export class OwnerRepository {
 
   async findByEmail(email) {
     if (!email) return null;
-    const res = await query("SELECT * FROM owners WHERE email = $1;", [email.toLowerCase().trim()]);
+    const res = await this.dbAdapter.query("SELECT * FROM owners WHERE email = $1;", [email.toLowerCase().trim()]);
     if (!res.rows[0]) return null;
     const row = res.rows[0];
     return {
@@ -112,7 +97,7 @@ export class OwnerRepository {
   }
 
   async create(owner) {
-    const res = await query(
+    const res = await this.dbAdapter.query(
       `INSERT INTO owners (id, email, password_hash, role, status, mfa_enabled, password_changed_at, session_revocation_epoch)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *;`,
       [
@@ -130,7 +115,7 @@ export class OwnerRepository {
   }
 
   async update(owner) {
-    const res = await query(
+    const res = await this.dbAdapter.query(
       `UPDATE owners
        SET email = $2, password_hash = $3, status = $4, role = $5, mfa_enabled = $6,
            failed_login_attempts = $7, lockout_until = $8, last_success_at = $9,
@@ -158,8 +143,12 @@ export class OwnerRepository {
 // 2. Session Repository
 // ----------------------------------------------------
 export class SessionRepository {
+  constructor(adapter = dbAdapter) {
+    this.dbAdapter = adapter;
+  }
+
   async create(session) {
-    const res = await query(
+    const res = await this.dbAdapter.query(
       `INSERT INTO owner_sessions (id, owner_id, token_hash, created_at, last_seen_at, absolute_expires_at, idle_expires_at, mfa_assurance_level, session_version)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *;`,
       [
@@ -178,7 +167,7 @@ export class SessionRepository {
   }
 
   async findByTokenHash(tokenHash) {
-    const res = await query("SELECT * FROM owner_sessions WHERE token_hash = $1 AND revoked_at IS NULL;", [tokenHash]);
+    const res = await this.dbAdapter.query("SELECT * FROM owner_sessions WHERE token_hash = $1 AND revoked_at IS NULL;", [tokenHash]);
     if (!res.rows[0]) return null;
     const row = res.rows[0];
     return {
@@ -196,29 +185,29 @@ export class SessionRepository {
   }
 
   async updateLastSeen(id, lastSeenAt, idleExpiresAt) {
-    await query(
+    await this.dbAdapter.query(
       "UPDATE owner_sessions SET last_seen_at = $2, idle_expires_at = $3 WHERE id = $1;",
       [id, lastSeenAt, idleExpiresAt]
     );
   }
 
   async revoke(id) {
-    await query("UPDATE owner_sessions SET revoked_at = now() WHERE id = $1;", [id]);
+    await this.dbAdapter.query("UPDATE owner_sessions SET revoked_at = now() WHERE id = $1;", [id]);
   }
 
   async revokeAllForOwner(ownerId) {
-    await query("UPDATE owner_sessions SET revoked_at = now() WHERE owner_id = $1 AND revoked_at IS NULL;", [ownerId]);
+    await this.dbAdapter.query("UPDATE owner_sessions SET revoked_at = now() WHERE owner_id = $1 AND revoked_at IS NULL;", [ownerId]);
   }
 
   async revokeAllOtherSessions(ownerId, keepSessionId) {
-    await query(
+    await this.dbAdapter.query(
       "UPDATE owner_sessions SET revoked_at = now() WHERE owner_id = $1 AND id <> $2 AND revoked_at IS NULL;",
       [ownerId, keepSessionId]
     );
   }
 
   async listActive(ownerId) {
-    const res = await query(
+    const res = await this.dbAdapter.query(
       "SELECT * FROM owner_sessions WHERE owner_id = $1 AND revoked_at IS NULL AND absolute_expires_at > now() AND idle_expires_at > now() ORDER BY created_at DESC;",
       [ownerId]
     );
@@ -236,8 +225,12 @@ export class SessionRepository {
 // 3. MFA & Secure Verification Repository
 // ----------------------------------------------------
 export class MfaRepository {
+  constructor(adapter = dbAdapter) {
+    this.dbAdapter = adapter;
+  }
+
   async createTotpEnrollment(enrollment) {
-    const res = await query(
+    const res = await this.dbAdapter.query(
       `INSERT INTO owner_totp_enrollments (id, owner_id, encrypted_totp_secret, is_confirmed, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *;`,
       [
@@ -253,7 +246,7 @@ export class MfaRepository {
   }
 
   async findTotpEnrollment(id) {
-    const res = await query("SELECT * FROM owner_totp_enrollments WHERE id = $1;", [id]);
+    const res = await this.dbAdapter.query("SELECT * FROM owner_totp_enrollments WHERE id = $1;", [id]);
     if (!res.rows[0]) return null;
     const row = res.rows[0];
     return {
@@ -266,13 +259,13 @@ export class MfaRepository {
   }
 
   async findConfirmedTotpEnrollment(ownerId) {
-    const res = await query("SELECT * FROM owner_totp_enrollments WHERE owner_id = $1 AND is_confirmed = true;", [ownerId]);
+    const res = await this.dbAdapter.query("SELECT * FROM owner_totp_enrollments WHERE owner_id = $1 AND is_confirmed = true;", [ownerId]);
     if (!res.rows[0]) return null;
     return res.rows[0];
   }
 
   async confirmTotpEnrollment(id, ownerId) {
-    await transaction(async (client) => {
+    await this.dbAdapter.withTransaction(async (client) => {
       await client.query("UPDATE owner_totp_enrollments SET is_confirmed = true, updated_at = now() WHERE id = $1 AND owner_id = $2;", [id, ownerId]);
       await client.query("UPDATE owners SET mfa_enabled = true, status = 'authenticated', updated_at = now() WHERE id = $1;", [ownerId]);
     });
@@ -280,7 +273,7 @@ export class MfaRepository {
 
   async saveRecoveryCodes(codes) {
     for (const code of codes) {
-      await query(
+      await this.dbAdapter.query(
         `INSERT INTO owner_recovery_codes (id, owner_id, code_hash, is_used, created_at)
          VALUES ($1, $2, $3, $4, $5);`,
         [code.id || randomUUID(), code.ownerId, code.codeHash, code.isUsed || false, code.createdAt || new Date().toISOString()]
@@ -289,22 +282,29 @@ export class MfaRepository {
   }
 
   async verifyAndUseRecoveryCode(ownerId, codeHash) {
-    const res = await query(
-      "SELECT * FROM owner_recovery_codes WHERE owner_id = $1 AND code_hash = $2 AND is_used = false;",
+    const res = await this.dbAdapter.query(
+      "SELECT * FROM owner_recovery_codes WHERE owner_id = $1 AND code_hash = $2 AND is_used = false FOR UPDATE;",
       [ownerId, codeHash]
     );
     if (!res.rows[0]) return false;
     const rc = res.rows[0];
 
-    await query(
+    await this.dbAdapter.query(
       "UPDATE owner_recovery_codes SET is_used = true, used_at = now() WHERE id = $1;",
       [rc.id]
     );
     return true;
   }
 
+  async recordUsedTotpCode(ownerId, totpCode, timeStep) {
+    await this.dbAdapter.query(
+      "INSERT INTO used_totp_codes (owner_id, totp_code, time_step) VALUES ($1, $2, $3);",
+      [ownerId, totpCode, timeStep]
+    );
+  }
+
   async savePasskeyCredential(id, ownerId, credentialId, publicKey, signCounter) {
-    await query(
+    await this.dbAdapter.query(
       `INSERT INTO owner_passkey_credentials (id, owner_id, credential_id, public_key, sign_counter)
        VALUES ($1, $2, $3, $4, $5);`,
       [id || randomUUID(), ownerId, credentialId, publicKey, signCounter || 0]
@@ -312,24 +312,24 @@ export class MfaRepository {
   }
 
   async findPasskeyCredential(credentialId) {
-    const res = await query("SELECT * FROM owner_passkey_credentials WHERE credential_id = $1;", [credentialId]);
+    const res = await this.dbAdapter.query("SELECT * FROM owner_passkey_credentials WHERE credential_id = $1;", [credentialId]);
     return res.rows[0] || null;
   }
 
   async createChallenge(challengeToken, expiresAt) {
-    await query(
+    await this.dbAdapter.query(
       "INSERT INTO authentication_challenges (challenge_token, expires_at) VALUES ($1, $2);",
       [challengeToken, expiresAt]
     );
   }
 
   async findChallenge(challengeToken) {
-    const res = await query("SELECT * FROM authentication_challenges WHERE challenge_token = $1;", [challengeToken]);
+    const res = await this.dbAdapter.query("SELECT * FROM authentication_challenges WHERE challenge_token = $1;", [challengeToken]);
     return res.rows[0] || null;
   }
 
   async useChallenge(challengeToken) {
-    await query("UPDATE authentication_challenges SET is_used = true WHERE challenge_token = $1;", [challengeToken]);
+    await this.dbAdapter.query("UPDATE authentication_challenges SET is_used = true WHERE challenge_token = $1;", [challengeToken]);
   }
 }
 
@@ -337,15 +337,19 @@ export class MfaRepository {
 // 4. CSRF Repository
 // ----------------------------------------------------
 export class CsrfRepository {
+  constructor(adapter = dbAdapter) {
+    this.dbAdapter = adapter;
+  }
+
   async createToken(sessionId, tokenValue) {
-    await query(
+    await this.dbAdapter.query(
       "INSERT INTO csrf_session_tokens (session_id, token_value) VALUES ($1, $2);",
       [sessionId, tokenValue]
     );
   }
 
   async verifyToken(sessionId, tokenValue) {
-    const res = await query(
+    const res = await this.dbAdapter.query(
       "SELECT 1 FROM csrf_session_tokens WHERE session_id = $1 AND token_value = $2;",
       [sessionId, tokenValue]
     );
@@ -357,9 +361,13 @@ export class CsrfRepository {
 // 5. Security & Audit Repository
 // ----------------------------------------------------
 export class AuditRepository {
+  constructor(adapter = dbAdapter) {
+    this.dbAdapter = adapter;
+  }
+
   async recordEvent(ownerId, eventType, payload) {
     const cleanPayload = typeof payload === "object" ? JSON.stringify(payload) : payload;
-    const res = await query(
+    const res = await this.dbAdapter.query(
       `INSERT INTO authentication_audit_events (id, owner_id, event_type, payload)
        VALUES ($1, $2, $3, $4) RETURNING *;`,
       [randomUUID(), ownerId, eventType, cleanPayload]
@@ -368,7 +376,7 @@ export class AuditRepository {
   }
 
   async listEvents() {
-    const res = await query("SELECT * FROM authentication_audit_events ORDER BY occurred_at DESC;");
+    const res = await this.dbAdapter.query("SELECT * FROM authentication_audit_events ORDER BY occurred_at DESC;");
     return res.rows.map((row) => ({
       id: row.id,
       ownerId: row.owner_id,
@@ -383,8 +391,12 @@ export class AuditRepository {
 // 6. Agent Repository (Preserves 50-Agent Hard Limit)
 // ----------------------------------------------------
 export class AgentRepository {
+  constructor(adapter = dbAdapter) {
+    this.dbAdapter = adapter;
+  }
+
   async list() {
-    const res = await query("SELECT * FROM agents ORDER BY id ASC;");
+    const res = await this.dbAdapter.query("SELECT * FROM agents ORDER BY id ASC;");
     return res.rows.map((row) => ({
       id: row.id,
       name: row.name,
@@ -394,7 +406,7 @@ export class AgentRepository {
   }
 
   async get(id) {
-    const res = await query("SELECT * FROM agents WHERE id = $1;", [id]);
+    const res = await this.dbAdapter.query("SELECT * FROM agents WHERE id = $1;", [id]);
     if (!res.rows[0]) return null;
     return {
       id: res.rows[0].id,
@@ -405,15 +417,15 @@ export class AgentRepository {
   }
 
   async add(agent) {
-    // Check 50-agent limit in JS first
-    const countRes = await query("SELECT count(*) FROM agents;");
+    // Check 50-agent limit
+    const countRes = await this.dbAdapter.query("SELECT count(*) FROM agents;");
     const count = parseInt(countRes.rows[0].count, 10);
     if (count >= 50) {
       throw new Error("AGENT_CAP_REACHED");
     }
 
     try {
-      const res = await query(
+      const res = await this.dbAdapter.query(
         "INSERT INTO agents (id, name, namespace, enabled) VALUES ($1, $2, $3, $4) RETURNING *;",
         [agent.id, agent.name, agent.namespace, agent.enabled !== false]
       );
@@ -434,8 +446,12 @@ export class AgentRepository {
 // 7. Job Repository
 // ----------------------------------------------------
 export class JobRepository {
+  constructor(adapter = dbAdapter) {
+    this.dbAdapter = adapter;
+  }
+
   async create(job) {
-    const res = await query(
+    const res = await this.dbAdapter.query(
       `INSERT INTO jobs (id, agent_id, capability, idempotency_key, status, priority, attempts, max_attempts, payload)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *;`,
       [
@@ -454,7 +470,7 @@ export class JobRepository {
   }
 
   async get(id) {
-    const res = await query("SELECT * FROM jobs WHERE id = $1;", [id]);
+    const res = await this.dbAdapter.query("SELECT * FROM jobs WHERE id = $1;", [id]);
     if (!res.rows[0]) return null;
     const row = res.rows[0];
     return {
@@ -472,7 +488,7 @@ export class JobRepository {
 
   async claimLease(agentId, capability, leaseOwner, leaseExpiresAt) {
     // Acquire a lease on a claimable job
-    const res = await query(
+    const res = await this.dbAdapter.query(
       `UPDATE jobs
        SET status = 'leased', lease_owner = $3, lease_expires_at = $4, attempts = attempts + 1, updated_at = now()
        WHERE id = (
@@ -492,12 +508,12 @@ export class JobRepository {
 
   async updateStatus(id, status, attempts = null) {
     if (attempts !== null) {
-      await query(
+      await this.dbAdapter.query(
         "UPDATE jobs SET status = $2, attempts = $3, updated_at = now() WHERE id = $1;",
         [id, status, attempts]
       );
     } else {
-      await query(
+      await this.dbAdapter.query(
         "UPDATE jobs SET status = $2, updated_at = now() WHERE id = $1;",
         [id, status]
       );
@@ -509,8 +525,12 @@ export class JobRepository {
 // 8. Provider Attempt Repository
 // ----------------------------------------------------
 export class ProviderAttemptRepository {
+  constructor(adapter = dbAdapter) {
+    this.dbAdapter = adapter;
+  }
+
   async record(attempt) {
-    const res = await query(
+    const res = await this.dbAdapter.query(
       `INSERT INTO provider_attempts (id, job_id, agent_id, slot, provider, outcome, provider_response_id, error_code, started_at, finished_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *;`,
       [
@@ -534,8 +554,12 @@ export class ProviderAttemptRepository {
 // 9. Campaign & Promotion Repository
 // ----------------------------------------------------
 export class PromotionRepository {
+  constructor(adapter = dbAdapter) {
+    this.dbAdapter = adapter;
+  }
+
   async findOrCreateProductIdentity(canonicalIdentity, sha256) {
-    return await transaction(async (client) => {
+    return await this.dbAdapter.withTransaction(async (client) => {
       const existing = await client.query("SELECT * FROM product_identities WHERE identity_sha256 = $1;", [sha256]);
       if (existing.rows[0]) {
         return existing.rows[0];
@@ -549,7 +573,7 @@ export class PromotionRepository {
   }
 
   async createCampaign(campaign) {
-    const res = await query(
+    const res = await this.dbAdapter.query(
       `INSERT INTO promo_campaigns (id, product_identity_id, owner_agent_id, duplicate_authorized_by, include_in_main_video, target_episode_id, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *;`,
       [
@@ -566,13 +590,13 @@ export class PromotionRepository {
   }
 
   async hasCampaignForProduct(productIdentityId) {
-    const res = await query("SELECT 1 FROM promo_campaigns WHERE product_identity_id = $1;", [productIdentityId]);
+    const res = await this.dbAdapter.query("SELECT 1 FROM promo_campaigns WHERE product_identity_id = $1;", [productIdentityId]);
     return res.rows.length > 0;
   }
 
   async reserveReel(reel) {
     try {
-      const res = await query(
+      const res = await this.dbAdapter.query(
         `INSERT INTO promo_reels (id, product_identity_id, campaign_id, owner_agent_id, status)
          VALUES ($1, $2, $3, $4, $5) RETURNING *;`,
         [
@@ -593,7 +617,7 @@ export class PromotionRepository {
   }
 
   async getReelByProduct(productIdentityId) {
-    const res = await query("SELECT * FROM promo_reels WHERE product_identity_id = $1;", [productIdentityId]);
+    const res = await this.dbAdapter.query("SELECT * FROM promo_reels WHERE product_identity_id = $1;", [productIdentityId]);
     return res.rows[0] || null;
   }
 }
@@ -602,8 +626,12 @@ export class PromotionRepository {
 // 10. Publishing Request/Receipt Repository
 // ----------------------------------------------------
 export class PublishingRepository {
+  constructor(adapter = dbAdapter) {
+    this.dbAdapter = adapter;
+  }
+
   async createRequest(req) {
-    const res = await query(
+    const res = await this.dbAdapter.query(
       `INSERT INTO publishing_requests (id, artifact_id, destination, caption_snapshot, mode, status, approved_by, approval_expires_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *;`,
       [
@@ -621,7 +649,7 @@ export class PublishingRepository {
   }
 
   async approveRequest(requestId, ownerId, expiresAt) {
-    const res = await query(
+    const res = await this.dbAdapter.query(
       "UPDATE publishing_requests SET status = 'approved', approved_by = $2, approval_expires_at = $3 WHERE id = $1 RETURNING *;",
       [requestId, ownerId, expiresAt]
     );
@@ -629,12 +657,12 @@ export class PublishingRepository {
   }
 
   async findRequest(requestId) {
-    const res = await query("SELECT * FROM publishing_requests WHERE id = $1;", [requestId]);
+    const res = await this.dbAdapter.query("SELECT * FROM publishing_requests WHERE id = $1;", [requestId]);
     return res.rows[0] || null;
   }
 
   async createReceipt(receipt) {
-    const res = await query(
+    const res = await this.dbAdapter.query(
       `INSERT INTO publishing_receipts (id, publishing_request_id, platform_post_id, platform_url, provider_response_sha256)
        VALUES ($1, $2, $3, $4, $5) RETURNING *;`,
       [
@@ -653,6 +681,10 @@ export class PublishingRepository {
 // 11. Evidence Ledger Repository (Append-Only Hash Chain)
 // ----------------------------------------------------
 export class EvidenceLedgerRepository {
+  constructor(adapter = dbAdapter) {
+    this.dbAdapter = adapter;
+  }
+
   async append(event) {
     if (!event?.subjectId || !event?.kind || !event?.classification) {
       throw new Error("INCOMPLETE_EVIDENCE_EVENT");
@@ -669,7 +701,7 @@ export class EvidenceLedgerRepository {
       throw new Error("FFPROBE_VERIFICATION_EVIDENCE_REQUIRED");
     }
 
-    return await transaction(async (client) => {
+    return await this.dbAdapter.withTransaction(async (client) => {
       // Find previous event to establish chain integrity
       const prevRes = await client.query(
         "SELECT event_hash FROM evidence_events ORDER BY occurred_at DESC, id DESC LIMIT 1;"
@@ -679,7 +711,6 @@ export class EvidenceLedgerRepository {
       const recordId = randomUUID();
       const occurredAt = new Date().toISOString();
 
-      // Construct payload copy
       const payload = event.payload || {};
 
       const record = {
@@ -726,7 +757,7 @@ export class EvidenceLedgerRepository {
   }
 
   async list() {
-    const res = await query("SELECT * FROM evidence_events ORDER BY occurred_at ASC, id ASC;");
+    const res = await this.dbAdapter.query("SELECT * FROM evidence_events ORDER BY occurred_at ASC, id ASC;");
     return res.rows.map((row) => {
       const payload = typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
       return Object.freeze({

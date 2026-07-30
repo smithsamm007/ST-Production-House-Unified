@@ -3,6 +3,7 @@ process.env.USE_IN_MEMORY_STUB = "true";
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { randomBytes, createHash } from "node:crypto";
 import {
   normalizeEmail,
   validatePasswordStrength,
@@ -27,9 +28,190 @@ import {
   requireOwnerRole,
   recordAuditEvent,
   listAuditEvents,
-  resetOwnerAuthenticationRegistry
+  resetOwnerAuthenticationRegistry,
+  injectRepositories
 } from "../src/catalog/ownerAuthentication.js";
 import { retrieveActiveApprovedBlueprint } from "../src/catalog/ownerAgentCommunicationStudio.js";
+
+// In-memory Maps for explicitly injected repositories
+const dbOwners = new Map();
+const dbSessions = new Map();
+const dbTotpEnrollments = new Map();
+const dbRecoveryCodes = new Map();
+const dbPasskeys = new Map();
+const dbChallenges = new Map();
+const dbCsrfTokens = new Map();
+const dbAuditEvents = new Map();
+
+function randomUUID() {
+  return randomBytes(16).toString("hex");
+}
+function computeTokenHash(token) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+class InMemoryOwnerRepository {
+  async findById(id) {
+    const owner = dbOwners.get(id);
+    return owner ? { ...owner } : null;
+  }
+  async findByEmail(email) {
+    const norm = email.toLowerCase().trim();
+    for (const o of dbOwners.values()) {
+      if (o.email === norm) return { ...o };
+    }
+    return null;
+  }
+  async create(owner) {
+    dbOwners.set(owner.id, { ...owner });
+    return { ...owner };
+  }
+  async update(owner) {
+    dbOwners.set(owner.id, { ...owner });
+    return { ...owner };
+  }
+}
+
+class InMemorySessionRepository {
+  async create(session) {
+    dbSessions.set(session.id, { ...session });
+    return { ...session };
+  }
+  async findByTokenHash(tokenHash) {
+    for (const s of dbSessions.values()) {
+      if (s.tokenHash === tokenHash && s.revokedAt === null) {
+        return { ...s };
+      }
+    }
+    return null;
+  }
+  async updateLastSeen(id, lastSeenAt, idleExpiresAt) {
+    const s = dbSessions.get(id);
+    if (s) {
+      s.lastSeenAt = lastSeenAt;
+      s.idleExpiresAt = idleExpiresAt;
+    }
+  }
+  async revoke(id) {
+    const s = dbSessions.get(id);
+    if (s) s.revokedAt = new Date().toISOString();
+  }
+  async revokeAllForOwner(ownerId) {
+    for (const s of dbSessions.values()) {
+      if (s.ownerId === ownerId && s.revokedAt === null) {
+        s.revokedAt = new Date().toISOString();
+      }
+    }
+  }
+  async revokeAllOtherSessions(ownerId, keepSessionId) {
+    for (const s of dbSessions.values()) {
+      if (s.ownerId === ownerId && s.id !== keepSessionId && s.revokedAt === null) {
+        s.revokedAt = new Date().toISOString();
+      }
+    }
+  }
+  async listActive(ownerId) {
+    const list = [];
+    for (const s of dbSessions.values()) {
+      if (s.ownerId === ownerId && s.revokedAt === null && new Date(s.absoluteExpiresAt) > new Date() && new Date(s.idleExpiresAt) > new Date()) {
+        list.push({ ...s });
+      }
+    }
+    return list;
+  }
+}
+
+class InMemoryMfaRepository {
+  async createTotpEnrollment(enrollment) {
+    dbTotpEnrollments.set(enrollment.id, { ...enrollment });
+    return { ...enrollment };
+  }
+  async findTotpEnrollment(id) {
+    const e = dbTotpEnrollments.get(id);
+    return e ? { ...e } : null;
+  }
+  async findConfirmedTotpEnrollment(ownerId) {
+    for (const e of dbTotpEnrollments.values()) {
+      if (e.ownerId === ownerId && e.isConfirmed) {
+        return { ...e };
+      }
+    }
+    return null;
+  }
+  async confirmTotpMfa(id, ownerId) {
+    const e = dbTotpEnrollments.get(id);
+    if (e) e.isConfirmed = true;
+    const owner = dbOwners.get(ownerId);
+    if (owner) {
+      owner.mfaEnabled = true;
+      owner.status = "authenticated";
+    }
+  }
+  async saveRecoveryCodes(codes) {
+    for (const c of codes) {
+      dbRecoveryCodes.set(c.id, { ...c });
+    }
+  }
+  async verifyAndUseRecoveryCode(ownerId, codeHash) {
+    for (const rc of dbRecoveryCodes.values()) {
+      if (rc.ownerId === ownerId && rc.codeHash === codeHash && !rc.isUsed) {
+        rc.isUsed = true;
+        rc.usedAt = new Date().toISOString();
+        return true;
+      }
+    }
+    return false;
+  }
+  async recordUsedTotpCode(ownerId, totpCode, timeStep) {
+    // No-op mock
+  }
+  async savePasskeyCredential(id, ownerId, credentialId, publicKey, signCounter) {
+    const cred = { id, ownerId, credentialId, publicKey, signCounter };
+    dbPasskeys.set(credentialId, cred);
+  }
+  async findPasskeyCredential(credentialId) {
+    return dbPasskeys.get(credentialId) || null;
+  }
+  async createChallenge(challengeToken, expiresAt) {
+    dbChallenges.set(challengeToken, { challengeToken, expiresAt, isUsed: false });
+  }
+  async findChallenge(challengeToken) {
+    return dbChallenges.get(challengeToken) || null;
+  }
+  async useChallenge(challengeToken) {
+    const ch = dbChallenges.get(challengeToken);
+    if (ch) ch.isUsed = true;
+  }
+}
+
+class InMemoryCsrfRepository {
+  async createToken(sessionId, tokenValue) {
+    dbCsrfTokens.set(sessionId, tokenValue);
+  }
+  async verifyToken(sessionId, tokenValue) {
+    return dbCsrfTokens.get(sessionId) === tokenValue;
+  }
+}
+
+class InMemoryAuditRepository {
+  async recordEvent(ownerId, eventType, payload) {
+    const event = { id: randomUUID(), ownerId, eventType, payload, occurredAt: new Date().toISOString() };
+    dbAuditEvents.set(event.id, event);
+    return event;
+  }
+  async listEvents() {
+    return Array.from(dbAuditEvents.values()).map(e => ({ ...e }));
+  }
+}
+
+// Inject in-memory repositories explicitly
+injectRepositories({
+  ownersRepo: new InMemoryOwnerRepository(),
+  sessionsRepo: new InMemorySessionRepository(),
+  mfaRepo: new InMemoryMfaRepository(),
+  csrfRepo: new InMemoryCsrfRepository(),
+  auditRepo: new InMemoryAuditRepository(),
+});
 
 // Helper to simulate mock routes to test HTTP-like response expectations
 async function simulateOwnerRoute(sessionToken, targetOwnerId = null, role = "owner", mfaRequired = false) {
@@ -58,6 +240,7 @@ test("1. Email normalization works", () => {
 
 test("2. Duplicate normalized owner emails are rejected", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   await registerOwner("owner@st.com", "PasswordSecure123");
   await assert.rejects(async () => {
     await registerOwner(" OWNER@st.com  ", "AnotherPasswordSecure123");
@@ -66,30 +249,35 @@ test("2. Duplicate normalized owner emails are rejected", async () => {
 
 test("3. Passwords are stored only as Argon2id hashes", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   const owner = await registerOwner("owner@st.com", "PasswordSecure123");
   assert.ok(owner.passwordHash.startsWith("$argon2id$v=19$m=65536"));
 });
 
 test("4. Plaintext passwords never appear in stored records", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   const owner = await registerOwner("owner@st.com", "PasswordSecure123");
   assert.equal(JSON.stringify(owner).includes("PasswordSecure123"), false);
 });
 
 test("5. Correct password verification succeeds", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   const owner = await registerOwner("owner@st.com", "PasswordSecure123");
   assert.ok(await verifyPassword("PasswordSecure123", owner.passwordHash));
 });
 
 test("6. Incorrect password verification fails generically", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   const owner = await registerOwner("owner@st.com", "PasswordSecure123");
   assert.equal(await verifyPassword("WrongPassword123", owner.passwordHash), false);
 });
 
 test("7. Unknown email and wrong password produce equivalent public errors", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   await registerOwner("owner@st.com", "PasswordSecure123");
 
   // Unknown email
@@ -105,6 +293,7 @@ test("7. Unknown email and wrong password produce equivalent public errors", asy
 
 test("8. Repeated failures trigger bounded lockout", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   await registerOwner("owner@st.com", "PasswordSecure123");
 
   // Fail 5 times
@@ -122,6 +311,7 @@ test("8. Repeated failures trigger bounded lockout", async () => {
 
 test("9. Successful authentication resets appropriate failure counters", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   await registerOwner("owner@st.com", "PasswordSecure123");
 
   try { await loginOwner("owner@st.com", "WrongPassword123"); } catch {}
@@ -133,6 +323,7 @@ test("9. Successful authentication resets appropriate failure counters", async (
 
 test("10. Session tokens are cryptographically random", async () => {
   resetOwnerAuthenticationRegistry();
+  dbSessions.clear();
   const r1 = await createSessionToken("owner-id-1");
   const r2 = await createSessionToken("owner-id-2");
   assert.notEqual(r1.token, r2.token);
@@ -141,12 +332,15 @@ test("10. Session tokens are cryptographically random", async () => {
 
 test("11. Only session-token hashes are stored", async () => {
   resetOwnerAuthenticationRegistry();
+  dbSessions.clear();
   const result = await createSessionToken("owner-id-1");
   assert.equal(JSON.stringify(result.session).includes(result.token), false);
 });
 
 test("12. Login rotates/replaces any pre-authentication session", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
+  dbSessions.clear();
   const owner = await registerOwner("owner@st.com", "PasswordSecure123");
 
   const s1 = await createSessionToken(owner.id);
@@ -160,6 +354,8 @@ test("12. Login rotates/replaces any pre-authentication session", async () => {
 
 test("13. MFA completion rotates the session", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
+  dbSessions.clear();
   const owner = await registerOwner("owner@st.com", "PasswordSecure123");
   const s1 = await createSessionToken(owner.id, "password_only");
 
@@ -182,12 +378,14 @@ test("13. MFA completion rotates the session", async () => {
 
 test("14. Idle-expired sessions are rejected", async () => {
   resetOwnerAuthenticationRegistry();
+  dbSessions.clear();
   const result = await createSessionToken("owner-id-1");
   const sessionObj = result.session;
 
   // Manually force idle expired state
   sessionObj.idleExpiresAt = new Date(Date.now() - 1000).toISOString();
   resetOwnerAuthenticationRegistry();
+  dbSessions.clear();
   await createSessionToken("owner-id-1");
 
   await assert.rejects(async () => {
@@ -204,6 +402,7 @@ test("15. Absolute-expired sessions are rejected", async () => {
 
 test("16. Revoked sessions are rejected", async () => {
   resetOwnerAuthenticationRegistry();
+  dbSessions.clear();
   const ownerId = "owner-1";
   const result = await createSessionToken(ownerId);
   await logoutSession(result.token);
@@ -215,6 +414,7 @@ test("16. Revoked sessions are rejected", async () => {
 
 test("17. Logout revokes the session", async () => {
   resetOwnerAuthenticationRegistry();
+  dbSessions.clear();
   const ownerId = "owner-1";
   const result = await createSessionToken(ownerId);
   const status = await logoutSession(result.token);
@@ -223,6 +423,8 @@ test("17. Logout revokes the session", async () => {
 
 test("18. Password change revokes older sessions", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
+  dbSessions.clear();
   const owner = await registerOwner("owner@st.com", "PasswordSecure123");
   const s1 = await createSessionToken(owner.id);
 
@@ -237,6 +439,7 @@ test("18. Password change revokes older sessions", async () => {
 
 test("19. CSRF token is required for mutations", async () => {
   resetOwnerAuthenticationRegistry();
+  dbCsrfTokens.clear();
   const result = await createSessionToken("owner-id-1");
   await assert.rejects(async () => {
     await verifyCsrfToken(result.session.id, null);
@@ -245,6 +448,7 @@ test("19. CSRF token is required for mutations", async () => {
 
 test("20. Invalid CSRF token is rejected", async () => {
   resetOwnerAuthenticationRegistry();
+  dbCsrfTokens.clear();
   const result = await createSessionToken("owner-id-1");
   await assert.rejects(async () => {
     await verifyCsrfToken(result.session.id, "invalid-csrf-token");
@@ -253,6 +457,7 @@ test("20. Invalid CSRF token is rejected", async () => {
 
 test("21. CSRF token is bound to the correct session", async () => {
   resetOwnerAuthenticationRegistry();
+  dbCsrfTokens.clear();
   const s1 = await createSessionToken("owner-id-1");
   const s2 = await createSessionToken("owner-id-2");
 
@@ -273,6 +478,7 @@ test("22. Anonymous owner routes return 401", async () => {
 
 test("23. Wrong-owner access returns 403", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   const owner1 = await registerOwner("owner1@st.com", "PasswordSecure123");
   const owner2 = await registerOwner("owner2@st.com", "PasswordSecure123");
 
@@ -290,6 +496,7 @@ test("24. No route falls back to the first owner", async () => {
 
 test("25. Client-supplied ownerId cannot impersonate another owner", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   const owner1 = await registerOwner("owner1@st.com", "PasswordSecure123");
   const owner2 = await registerOwner("owner2@st.com", "PasswordSecure123");
 
@@ -301,6 +508,7 @@ test("25. Client-supplied ownerId cannot impersonate another owner", async () =>
 
 test("26. Client-supplied role or MFA status is ignored", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   const owner = await registerOwner("owner@st.com", "PasswordSecure123", "owner");
   const s1 = await createSessionToken(owner.id, "password_only");
 
@@ -312,6 +520,7 @@ test("26. Client-supplied role or MFA status is ignored", async () => {
 
 test("27. MFA-required operations reject password-only sessions", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   const owner = await registerOwner("owner@st.com", "PasswordSecure123");
   const s1 = await createSessionToken(owner.id, "password_only");
 
@@ -322,6 +531,7 @@ test("27. MFA-required operations reject password-only sessions", async () => {
 
 test("28. Valid TOTP completes MFA", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   const owner = await registerOwner("owner@st.com", "PasswordSecure123");
   const s1 = await createSessionToken(owner.id, "password_only");
 
@@ -332,6 +542,7 @@ test("28. Valid TOTP completes MFA", async () => {
 
 test("29. Replayed TOTP is rejected", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   const owner = await registerOwner("owner@st.com", "PasswordSecure123");
   const s1 = await createSessionToken(owner.id, "password_only");
 
@@ -345,6 +556,7 @@ test("29. Replayed TOTP is rejected", async () => {
 
 test("30. Recovery codes are hashed and one-time-use", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   const owner = await registerOwner("owner@st.com", "PasswordSecure123");
   const s1 = await createSessionToken(owner.id, "password_only");
 
@@ -374,6 +586,7 @@ test("31. Passkey challenge expiry and replay rules are enforced in contracts", 
 
 test("32. Security audit events contain no secrets", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   const owner = await registerOwner("owner@st.com", "PasswordSecure123");
   await recordAuditEvent(owner.id, "test_action", { password: "SecretPasswordValue", apiKey: "leak-key-123" });
 
@@ -385,6 +598,7 @@ test("32. Security audit events contain no secrets", async () => {
 
 test("33. Failed actions do not create success evidence", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   const owner = await registerOwner("owner@st.com", "PasswordSecure123");
   await assert.rejects(async () => {
     await loginOwner("owner@st.com", "WrongPassword123");
@@ -396,6 +610,7 @@ test("33. Failed actions do not create success evidence", async () => {
 
 test("34. Task 8 Charter approval remains owner-controlled", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   const owner = await registerOwner("owner@st.com", "PasswordSecure123");
   const s1 = await createSessionToken(owner.id, "high_assurance");
 
@@ -406,6 +621,7 @@ test("34. Task 8 Charter approval remains owner-controlled", async () => {
 
 test("35. Charter approval does not activate autopilot or publishing", async () => {
   resetOwnerAuthenticationRegistry();
+  dbOwners.clear();
   const owner = await registerOwner("owner@st.com", "PasswordSecure123");
   const s1 = await createSessionToken(owner.id, "high_assurance");
 

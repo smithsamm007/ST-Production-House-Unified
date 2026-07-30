@@ -34,11 +34,19 @@ export function resetOwnerAuthenticationRegistry() {
   usedTotpCodes.clear();
 }
 
-const ownersRepo = new OwnerRepository();
-const sessionsRepo = new SessionRepository();
-const mfaRepo = new MfaRepository();
-const csrfRepo = new CsrfRepository();
-const auditRepo = new AuditRepository();
+let ownersRepo = new OwnerRepository();
+let sessionsRepo = new SessionRepository();
+let mfaRepo = new MfaRepository();
+let csrfRepo = new CsrfRepository();
+let auditRepo = new AuditRepository();
+
+export function injectRepositories(customRepos) {
+  if (customRepos.ownersRepo) ownersRepo = customRepos.ownersRepo;
+  if (customRepos.sessionsRepo) sessionsRepo = customRepos.sessionsRepo;
+  if (customRepos.mfaRepo) mfaRepo = customRepos.mfaRepo;
+  if (customRepos.csrfRepo) csrfRepo = customRepos.csrfRepo;
+  if (customRepos.auditRepo) auditRepo = customRepos.auditRepo;
+}
 
 // Any test-only in-memory implementation must be explicitly injected via USE_IN_MEMORY_STUB=true
 // and must NOT be automatically selected because DATABASE_URL is missing.
@@ -62,6 +70,9 @@ function getEncryptionKey() {
   const keyHex = process.env.MFA_ENCRYPTION_KEY;
   if (!keyHex) {
     throw new Error("MFA_ENCRYPTION_KEY_NOT_CONFIGURED");
+  }
+  if (keyHex.length !== 64) {
+    throw new Error("INVALID_MFA_ENCRYPTION_KEY_LENGTH_MUST_BE_64_HEX");
   }
   return Buffer.from(keyHex, "hex");
 }
@@ -528,10 +539,18 @@ export async function confirmTotpMfa(ownerId, enrollmentId, totpCode) {
   const decryptedSecret = usePg() ? decryptMfaSecret(enrollment.encrypted_totp_secret || enrollment.encryptedTotpSecret) : enrollment.rawSecret;
 
   let isVerified = false;
+  let matchedStepOffset = 0;
   if (!usePg() && totpCode === "123456") {
     isVerified = true;
   } else {
-    isVerified = verifyTotp(decryptedSecret, totpCode);
+    const epoch = Math.floor(Date.now() / 1000);
+    for (let i = -1; i <= 1; i++) {
+      if (generateTotp(decryptedSecret, i) === totpCode) {
+        isVerified = true;
+        matchedStepOffset = i;
+        break;
+      }
+    }
   }
 
   if (!isVerified) {
@@ -539,6 +558,16 @@ export async function confirmTotpMfa(ownerId, enrollmentId, totpCode) {
   }
 
   if (usePg()) {
+    const epoch = Math.floor(Date.now() / 1000);
+    const timeStep = String(Math.floor(epoch / 30) + matchedStepOffset);
+    try {
+      await mfaRepo.recordUsedTotpCode(ownerId, totpCode, timeStep);
+    } catch (err) {
+      if (err.message.includes("unique") || err.code === "23505") {
+        throw new Error("REPLAYED_TOTP_CODE_REJECTED");
+      }
+      throw err;
+    }
     await mfaRepo.confirmTotpEnrollment(enrollmentId, ownerId);
   } else {
     enrollment.isConfirmed = true;
@@ -596,19 +625,21 @@ export async function verifyTotpAndElevateSession(ownerId, sessionToken, totpCod
 
   if (!enrollment) throw new Error("MFA_NOT_ENROLLED");
 
-  // Replay Protection Check
-  const replayKey = `${ownerId}:${totpCode}:${Math.floor(Date.now() / 30000)}`;
-  if (usePg() && usedTotpCodes.has(replayKey)) {
-    throw new Error("REPLAYED_TOTP_CODE_REJECTED");
-  }
-
   const decryptedSecret = usePg() ? decryptMfaSecret(enrollment.encrypted_totp_secret || enrollment.encryptedTotpSecret) : enrollment.rawSecret;
 
   let isVerified = false;
+  let matchedStepOffset = 0;
   if (!usePg() && (totpCode === "123456" || totpCode === "888888")) {
     isVerified = true;
   } else {
-    isVerified = verifyTotp(decryptedSecret, totpCode);
+    const epoch = Math.floor(Date.now() / 1000);
+    for (let i = -1; i <= 1; i++) {
+      if (generateTotp(decryptedSecret, i) === totpCode) {
+        isVerified = true;
+        matchedStepOffset = i;
+        break;
+      }
+    }
   }
 
   if (!isVerified) {
@@ -621,7 +652,16 @@ export async function verifyTotpAndElevateSession(ownerId, sessionToken, totpCod
   }
 
   if (usePg()) {
-    usedTotpCodes.add(replayKey);
+    const epoch = Math.floor(Date.now() / 1000);
+    const timeStep = String(Math.floor(epoch / 30) + matchedStepOffset);
+    try {
+      await mfaRepo.recordUsedTotpCode(ownerId, totpCode, timeStep);
+    } catch (err) {
+      if (err.message.includes("unique") || err.code === "23505") {
+        throw new Error("REPLAYED_TOTP_CODE_REJECTED");
+      }
+      throw err;
+    }
   }
 
   // Elevate and rotate token

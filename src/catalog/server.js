@@ -22,9 +22,10 @@ import {
   JobRepository,
   PublishingRepository,
   EvidenceLedgerRepository,
-  AuditRepository
+  AuditRepository,
+  dbAdapter,
+  checkDatabaseHealth
 } from "./repositories.js";
-import { checkDatabaseHealth } from "./repositories.js";
 
 const app = express();
 
@@ -34,15 +35,23 @@ app.use(express.json({ limit: "100kb" }));
 // Disable x-powered-by header
 app.disable("x-powered-by");
 
-const usePg = () => !!process.env.DATABASE_URL;
+let ownersRepo = new OwnerRepository(dbAdapter);
+let sessionsRepo = new SessionRepository(dbAdapter);
+let agentsRepo = new AgentRepository(dbAdapter);
+let jobsRepo = new JobRepository(dbAdapter);
+let publishingRepo = new PublishingRepository(dbAdapter);
+let evidenceRepo = new EvidenceLedgerRepository(dbAdapter);
+let auditRepo = new AuditRepository(dbAdapter);
 
-const ownersRepo = new OwnerRepository();
-const sessionsRepo = new SessionRepository();
-const agentsRepo = new AgentRepository();
-const jobsRepo = new JobRepository();
-const publishingRepo = new PublishingRepository();
-const evidenceRepo = new EvidenceLedgerRepository();
-const auditRepo = new AuditRepository();
+export function injectServerRepositories(customRepos) {
+  if (customRepos.ownersRepo) ownersRepo = customRepos.ownersRepo;
+  if (customRepos.sessionsRepo) sessionsRepo = customRepos.sessionsRepo;
+  if (customRepos.agentsRepo) agentsRepo = customRepos.agentsRepo;
+  if (customRepos.jobsRepo) jobsRepo = customRepos.jobsRepo;
+  if (customRepos.publishingRepo) publishingRepo = customRepos.publishingRepo;
+  if (customRepos.evidenceRepo) evidenceRepo = customRepos.evidenceRepo;
+  if (customRepos.auditRepo) auditRepo = customRepos.auditRepo;
+}
 
 // Simple endpoint rate limiter for auth routes
 const authIpLimiter = new Map();
@@ -252,14 +261,7 @@ app.post("/api/auth/logout", authenticateOwner, requireCsrf, async (req, res) =>
 // 5. Authenticated Current Owner ("Me") Info
 app.get("/api/auth/me", authenticateOwner, async (req, res) => {
   try {
-    let owner = null;
-    if (usePg()) {
-      owner = await ownersRepo.findById(req.ownerId);
-    } else {
-      // Stub fallback
-      owner = { id: req.ownerId, email: "stub@st.com", role: "owner", status: "authenticated", mfaEnabled: false };
-    }
-
+    const owner = await ownersRepo.findById(req.ownerId);
     if (!owner) {
       return res.status(404).json({ error: "OWNER_NOT_FOUND" });
     }
@@ -279,12 +281,7 @@ app.get("/api/auth/me", authenticateOwner, async (req, res) => {
 // 6. List Active Sessions
 app.get("/api/auth/sessions", authenticateOwner, async (req, res) => {
   try {
-    let list = [];
-    if (usePg()) {
-      list = await sessionsRepo.listActive(req.ownerId);
-    } else {
-      list = [{ id: req.session.id, ownerId: req.ownerId, createdAt: req.session.createdAt, lastSeenAt: req.session.lastSeenAt, mfaAssuranceLevel: req.session.mfaAssuranceLevel }];
-    }
+    const list = await sessionsRepo.listActive(req.ownerId);
     return res.json(list);
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -295,9 +292,7 @@ app.get("/api/auth/sessions", authenticateOwner, async (req, res) => {
 app.delete("/api/auth/sessions/:id", authenticateOwner, requireCsrf, async (req, res) => {
   try {
     const sessionId = req.params.id;
-    if (usePg()) {
-      await sessionsRepo.revoke(sessionId);
-    }
+    await sessionsRepo.revoke(sessionId);
     await recordAuditEvent(req.ownerId, "session_revoked_manually", { sessionId });
     return res.json({ status: "success", message: `Session ${sessionId} revoked` });
   } catch (err) {
@@ -308,9 +303,7 @@ app.delete("/api/auth/sessions/:id", authenticateOwner, requireCsrf, async (req,
 // 8. Revoke All Other Sessions
 app.delete("/api/auth/sessions/other", authenticateOwner, requireCsrf, async (req, res) => {
   try {
-    if (usePg()) {
-      await sessionsRepo.revokeAllOtherSessions(req.ownerId, req.session.id);
-    }
+    await sessionsRepo.revokeAllOtherSessions(req.ownerId, req.session.id);
     await recordAuditEvent(req.ownerId, "other_sessions_revoked", {});
     return res.json({ status: "success", message: "All other sessions revoked successfully" });
   } catch (err) {
@@ -376,16 +369,7 @@ app.post("/api/auth/mfa/verify", authenticateOwner, requireCsrf, async (req, res
 // 12. List Preloaded & Registered Agents
 app.get("/api/agents", authenticateOwner, async (req, res) => {
   try {
-    let list = [];
-    if (usePg()) {
-      list = await agentsRepo.list();
-    } else {
-      // In-memory seed stub fallback
-      list = [
-        { id: "agent-01", name: "JARVIS", namespace: "st.agent.jarvis", enabled: true },
-        { id: "agent-02", name: "LAKME", namespace: "st.agent.lakme", enabled: true }
-      ];
-    }
+    const list = await agentsRepo.list();
     return res.json(list);
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -396,15 +380,7 @@ app.get("/api/agents", authenticateOwner, async (req, res) => {
 app.get("/api/agents/:id", authenticateOwner, async (req, res) => {
   try {
     const agentId = req.params.id;
-    let agent = null;
-    if (usePg()) {
-      agent = await agentsRepo.get(agentId);
-    } else {
-      if (agentId === "agent-01") {
-        agent = { id: "agent-01", name: "JARVIS", namespace: "st.agent.jarvis", enabled: true };
-      }
-    }
-
+    const agent = await agentsRepo.get(agentId);
     if (!agent) {
       return res.status(404).json({ error: "AGENT_NOT_FOUND" });
     }
@@ -424,13 +400,7 @@ app.post("/api/agents", authenticateOwner, requireCsrf, async (req, res) => {
       return res.status(400).json({ error: "AGENT_ID_NAME_AND_NAMESPACE_REQUIRED" });
     }
 
-    let result = null;
-    if (usePg()) {
-      result = await agentsRepo.add({ id, name, namespace, enabled });
-    } else {
-      result = { id, name, namespace, enabled: enabled !== false };
-    }
-
+    const result = await agentsRepo.add({ id, name, namespace, enabled });
     await recordAuditEvent(req.ownerId, "agent_added", { agentId: id, name });
     return res.status(201).json(result);
   } catch (err) {
@@ -457,10 +427,7 @@ app.get("/api/approvals", authenticateOwner, async (req, res) => {
 
 app.get("/api/evidence", authenticateOwner, async (req, res) => {
   try {
-    let list = [];
-    if (usePg()) {
-      list = await evidenceRepo.list();
-    }
+    const list = await evidenceRepo.list();
     return res.json(list);
   } catch (err) {
     return res.status(500).json({ error: err.message });
