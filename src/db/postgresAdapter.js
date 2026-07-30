@@ -13,7 +13,7 @@ export function sanitizeError(error) {
   if (!error) return new Error('Unknown database error');
 
   const rawMessage = typeof error === 'string' ? error : error.message || String(error);
-  const rawStack = error.stack || '';
+  const rawStack = typeof error === 'object' && error !== null && error.stack ? error.stack : '';
 
   // Regexp patterns to redact passwords in URIs (postgresql://user:pass@host) and env vars
   const uriPasswordRegex = /(postgres(?:ql)?:\/\/[^:]+:)([^@]+)(@)/gi;
@@ -29,18 +29,16 @@ export function sanitizeError(error) {
   };
 
   const sanitizedMessage = sanitizeText(rawMessage);
-  const sanitizedError = new Error(sanitizedMessage);
 
-  if (error.code) sanitizedError.code = error.code;
-  if (error.severity) sanitizedError.severity = error.severity;
-  if (error.detail) sanitizedError.detail = sanitizeText(error.detail);
-  if (error.hint) sanitizedError.hint = sanitizeText(error.hint);
-
-  if (rawStack) {
-    sanitizedError.stack = sanitizeText(rawStack);
+  if (typeof error === 'object' && error !== null) {
+    error.message = sanitizedMessage;
+    if (error.stack) error.stack = sanitizeText(rawStack);
+    if (error.detail) error.detail = sanitizeText(error.detail);
+    if (error.hint) error.hint = sanitizeText(error.hint);
+    return error;
   }
 
-  return sanitizedError;
+  return new Error(sanitizedMessage);
 }
 
 /**

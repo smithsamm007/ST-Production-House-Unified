@@ -6,21 +6,24 @@ import { MigrationRunner } from '../src/db/migrationRunner.js';
 
 test('PostgreSQL Live Integration Test Suite', async (t) => {
   const dbUrl = process.env.POSTGRES_TEST_URL || process.env.DATABASE_URL;
+  const isCI = !!process.env.CI;
+  const expectPG = isCI || !!dbUrl;
 
   // Probe live PG connection
   let pgAvailable = false;
   let testPool = null;
+  let lastConnectError = null;
 
-  if (dbUrl || process.env.PGHOST) {
+  if (dbUrl || process.env.PGHOST || isCI) {
     try {
       testPool = new pg.Pool({
-        connectionString: dbUrl,
+        connectionString: dbUrl || 'postgresql://st_app:st_test_password@localhost:5432/st_production_test',
         host: process.env.PGHOST,
         port: process.env.PGPORT ? parseInt(process.env.PGPORT, 10) : undefined,
         user: process.env.PGUSER,
         password: process.env.PGPASSWORD,
         database: process.env.PGDATABASE,
-        connectionTimeoutMillis: 2000,
+        connectionTimeoutMillis: 5000,
       });
       const client = await testPool.connect();
       await client.query('SELECT 1');
@@ -28,6 +31,7 @@ test('PostgreSQL Live Integration Test Suite', async (t) => {
       pgAvailable = true;
     } catch (err) {
       pgAvailable = false;
+      lastConnectError = err;
       if (testPool) {
         await testPool.end().catch(() => {});
         testPool = null;
@@ -36,11 +40,17 @@ test('PostgreSQL Live Integration Test Suite', async (t) => {
   }
 
   if (!pgAvailable) {
-    t.diagnostic(
-      '[POSTGRESQL_INTEGRATION_TEST] NOTICE: Live PostgreSQL 15+ instance is not available in local environment. ' +
-      'Unit tests passed. Integration test command added (npm run test:integration) and GitHub Actions CI configured with PostgreSQL 15+ service.'
-    );
-    return;
+    if (expectPG) {
+      assert.fail(
+        `PostgreSQL 15 instance was expected in CI/integration test environment but could not be reached: ${lastConnectError ? lastConnectError.message : 'Connection failed'}`
+      );
+    } else {
+      t.diagnostic(
+        '[POSTGRESQL_INTEGRATION_TEST] NOTICE: Live PostgreSQL 15+ instance is not configured locally. ' +
+        'Unit tests passed. Run with POSTGRES_TEST_URL=... to execute live integration tests.'
+      );
+      return;
+    }
   }
 
   // Live PostgreSQL integration verification

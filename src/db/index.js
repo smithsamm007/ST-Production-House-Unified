@@ -10,6 +10,7 @@ export {
   MigrationChecksumMismatchError,
   MigrationExecutionError,
   calculateChecksum,
+  stripOuterTransactionWrapper,
   runMigrations,
   getMigrationStatus,
 } from './migrationRunner.js';

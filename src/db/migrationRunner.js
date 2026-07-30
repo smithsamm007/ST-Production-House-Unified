@@ -42,6 +42,34 @@ export function calculateChecksum(content) {
   return crypto.createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
+/**
+ * Strips exact leading outer `BEGIN;` / `BEGIN TRANSACTION;` and trailing outer `COMMIT;` / `COMMIT TRANSACTION;`
+ * commands from migration SQL content so MigrationRunner retains single transaction ownership.
+ * Checks original raw content for checksum calculations while stripping outer transaction wrappers for execution.
+ * 
+ * @param {string} sqlContent
+ * @returns {string} Executable SQL content
+ */
+export function stripOuterTransactionWrapper(sqlContent) {
+  if (!sqlContent) return '';
+
+  let executionSql = sqlContent;
+
+  // Match leading outer BEGIN; / BEGIN TRANSACTION; ignoring leading comments/whitespace
+  executionSql = executionSql.replace(/^\s*(?:--(?:[^\n]*\n|\n)|\/\*[\s\S]*?\*\/\s*)*\bBEGIN(?:\s+TRANSACTION)?\s*;/i, (match) => {
+    const commentsOnly = match.replace(/\bBEGIN(?:\s+TRANSACTION)?\s*;/i, '');
+    return commentsOnly;
+  });
+
+  // Match trailing outer COMMIT; / COMMIT TRANSACTION; ignoring trailing comments/whitespace
+  executionSql = executionSql.replace(/\s*\b(?:COMMIT|COMMIT\s+TRANSACTION)\s*;\s*(?:--(?:[^\n]*\n|\n)|\/\*[\s\S]*?\*\/\s*)*$/i, (match) => {
+    const commentsOnly = match.replace(/\s*\b(?:COMMIT|COMMIT\s+TRANSACTION)\s*;/i, '');
+    return commentsOnly;
+  });
+
+  return executionSql;
+}
+
 export class MigrationRunner {
   /**
    * @param {Object} adapter - PostgresAdapter instance or compatible interface
@@ -139,7 +167,7 @@ export class MigrationRunner {
   }
 
   /**
-   * Runs all pending migrations sequentially inside a transaction with advisory locking.
+   * Runs all pending migrations sequentially inside a single transaction with advisory locking.
    * 
    * @returns {Promise<{appliedCount: number, status: Array<Object>}>}
    */
@@ -181,8 +209,9 @@ export class MigrationRunner {
         // Apply new migration
         const startTime = Date.now();
         try {
-          // Execute the migration SQL
-          await client.query(mig.content);
+          // Strip outer transaction wrappers so MigrationRunner retains transaction ownership
+          const executionContent = stripOuterTransactionWrapper(mig.content);
+          await client.query(executionContent);
 
           const executionTimeMs = Date.now() - startTime;
 

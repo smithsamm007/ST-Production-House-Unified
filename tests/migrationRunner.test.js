@@ -5,9 +5,11 @@ import fs from 'node:fs/promises';
 import {
   MigrationRunner,
   calculateChecksum,
+  stripOuterTransactionWrapper,
   MigrationChecksumMismatchError,
   MigrationExecutionError,
 } from '../src/db/migrationRunner.js';
+import { sanitizeError } from '../src/db/postgresAdapter.js';
 
 class MockPostgresAdapter {
   constructor() {
@@ -76,6 +78,57 @@ class MockPostgresAdapter {
   }
 }
 
+test('MigrationRunner - Transaction Stripping & Safety', async (t) => {
+  await t.test('strips top-level BEGIN and COMMIT while preserving PL/pgSQL function blocks', () => {
+    const rawSql = `BEGIN;\nCREATE OR REPLACE FUNCTION test_func() RETURNS void AS $$\nBEGIN\n  NULL;\nEND;\n$$ LANGUAGE plpgsql;\nCOMMIT;`;
+    const stripped = stripOuterTransactionWrapper(rawSql);
+
+    assert.ok(!stripped.startsWith('BEGIN;'));
+    assert.ok(!stripped.endsWith('COMMIT;'));
+    assert.ok(stripped.includes('BEGIN\n  NULL;\nEND;'));
+  });
+
+  await t.test('preserves raw file SHA-256 checksum despite outer transaction stripping', async () => {
+    const rawSql = `BEGIN;\nCREATE TABLE t (id int);\nCOMMIT;`;
+    const expectedChecksum = calculateChecksum(rawSql);
+    const stripped = stripOuterTransactionWrapper(rawSql);
+
+    // Checksum of raw file on disk matches calculateChecksum(rawSql)
+    assert.equal(calculateChecksum(rawSql), expectedChecksum);
+    assert.notEqual(calculateChecksum(stripped), expectedChecksum);
+  });
+});
+
+test('MigrationRunner - Custom Error Type Integrity', async (t) => {
+  await t.test('MigrationChecksumMismatchError retains class type and properties after sanitization', () => {
+    const origErr = new MigrationChecksumMismatchError(
+      '001_core.sql',
+      'abc_expected_hash',
+      'xyz_recorded_hash_password=secret123'
+    );
+    const sanitized = sanitizeError(origErr);
+
+    assert.ok(sanitized instanceof MigrationChecksumMismatchError);
+    assert.equal(sanitized.filename, '001_core.sql');
+    assert.equal(sanitized.expectedChecksum, 'abc_expected_hash');
+    assert.ok(!sanitized.message.includes('secret123'));
+    assert.ok(sanitized.message.includes('[REDACTED]'));
+  });
+
+  await t.test('MigrationExecutionError retains class type and properties after sanitization', () => {
+    const origErr = new MigrationExecutionError(
+      '008_owner_auth.sql',
+      new Error('Failed connection postgresql://user:pass123@host:5432/db')
+    );
+    const sanitized = sanitizeError(origErr);
+
+    assert.ok(sanitized instanceof MigrationExecutionError);
+    assert.equal(sanitized.filename, '008_owner_auth.sql');
+    assert.ok(!sanitized.message.includes('pass123'));
+    assert.ok(sanitized.message.includes('[REDACTED]'));
+  });
+});
+
 test('MigrationRunner - Discovery & Ordering', async (t) => {
   await t.test('discovers migration files in deterministic alphabetical order', async () => {
     const adapter = new MockPostgresAdapter();
@@ -85,7 +138,7 @@ test('MigrationRunner - Discovery & Ordering', async (t) => {
 
     const discovered = await runner.discoverMigrations();
     assert.ok(discovered.length >= 8);
-    
+
     const filenames = discovered.map((m) => m.filename);
     const sorted = [...filenames].sort();
     assert.deepEqual(filenames, sorted);
@@ -108,6 +161,13 @@ test('MigrationRunner - Execution, Idempotency & Locking', async (t) => {
     const rows = adapter.tables.get('schema_migrations');
     assert.equal(rows.length, result.appliedCount);
     assert.equal(rows[0].filename, '001_core.sql');
+
+    // Verify outer BEGIN/COMMIT from SQL file 001_core.sql were stripped so client did not receive extra BEGIN/COMMIT
+    const clientQueries = adapter.executedQueries.map((q) => q.text);
+    const beginCount = clientQueries.filter((q) => q === 'BEGIN').length;
+    const commitCount = clientQueries.filter((q) => q === 'COMMIT').length;
+    assert.equal(beginCount, 1);
+    assert.equal(commitCount, 1);
   });
 
   await t.test('repeated migration run is idempotent (0 newly applied)', async () => {
