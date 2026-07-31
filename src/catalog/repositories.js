@@ -4,21 +4,6 @@ import { createPostgresAdapter } from "../db/index.js";
 // Canonical database adapter instance singleton
 export const dbAdapter = createPostgresAdapter();
 
-// Mock query handler for testing
-let mockQueryHandler = null;
-export function setMockQueryHandler(handler) {
-  mockQueryHandler = handler;
-}
-
-// Intercept queries on the canonical adapter when a mock is set for unit/integration testing
-const originalQuery = dbAdapter.query.bind(dbAdapter);
-dbAdapter.query = async function (text, params) {
-  if (mockQueryHandler) {
-    return await mockQueryHandler(text, params);
-  }
-  return await originalQuery(text, params);
-};
-
 // Helper function to sort and normalize object fields for deterministic hashing
 function stable(value) {
   if (Array.isArray(value)) return value.map(stable);
@@ -193,6 +178,14 @@ export class SessionRepository {
 
   async revoke(id) {
     await this.dbAdapter.query("UPDATE owner_sessions SET revoked_at = now() WHERE id = $1;", [id]);
+  }
+
+  async revokeWithOwner(id, ownerId) {
+    const res = await this.dbAdapter.query(
+      "UPDATE owner_sessions SET revoked_at = now() WHERE id = $1 AND owner_id = $2 RETURNING *;",
+      [id, ownerId]
+    );
+    return res.rows[0] || null;
   }
 
   async revokeAllForOwner(ownerId) {
