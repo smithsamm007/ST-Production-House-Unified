@@ -12,10 +12,226 @@ import {
 } from "../src/catalog/ownerAuthentication.js";
 import { retrieveActiveApprovedBlueprint } from "../src/catalog/ownerAgentCommunicationStudio.js";
 
+// Helper function to strictly classify SQL queries based on prefix to prevent substring-matching errors (Blocker #2)
+function mockQueryHandler(text, params, parent) {
+  const normalized = text.trim().replace(/\s+/g, ' ');
+  const uppercase = normalized.toUpperCase();
+
+  // 1. Prefix classification (Do not classify using substrings!)
+  let statementType = null;
+  if (uppercase.startsWith("SELECT")) {
+    statementType = "SELECT";
+  } else if (uppercase.startsWith("UPDATE")) {
+    statementType = "UPDATE";
+  } else if (uppercase.startsWith("INSERT")) {
+    statementType = "INSERT";
+  } else if (uppercase.startsWith("DELETE")) {
+    statementType = "DELETE";
+  }
+
+  if (!statementType) {
+    throw new Error(`Unsupported SQL statement verb (unsupported SQL failing loudly): ${text}`);
+  }
+
+  // 2. Target classification
+  let targetTable = null;
+  if (uppercase.includes("OWNER_TOTP_ENROLLMENTS")) {
+    targetTable = "owner_totp_enrollments";
+  } else if (uppercase.includes("OWNERS")) {
+    targetTable = "owners";
+  } else if (uppercase.includes("OWNER_SESSIONS")) {
+    targetTable = "owner_sessions";
+  } else if (uppercase.includes("OWNER_RECOVERY_CODES")) {
+    targetTable = "owner_recovery_codes";
+  } else if (uppercase.includes("USED_TOTP_CODES")) {
+    targetTable = "used_totp_codes";
+  } else if (uppercase.includes("AUTHENTICATION_AUDIT_EVENTS")) {
+    targetTable = "authentication_audit_events";
+  } else if (uppercase.includes("PG_ADVISORY_XACT_LOCK")) {
+    targetTable = "advisory_lock";
+  }
+
+  if (!targetTable) {
+    throw new Error(`Unsupported SQL target table/function (unsupported SQL failing loudly): ${text}`);
+  }
+
+  // 3. Execution routing
+  if (statementType === "SELECT") {
+    if (targetTable === "owner_totp_enrollments") {
+      const id = params[0];
+      if (parent.mfaRepo) {
+        const enroll = parent.mfaRepo.db.get(id);
+        const rows = enroll ? [{
+          id: enroll.id,
+          owner_id: enroll.ownerId,
+          encrypted_totp_secret: enroll.encryptedTotpSecret,
+          is_confirmed: enroll.isConfirmed
+        }] : [];
+        return { rows, rowCount: rows.length };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+
+    if (targetTable === "owners") {
+      if (uppercase.includes("COUNT(*)")) {
+        const count = parent.db.size;
+        return { rows: [{ count }], rowCount: 1 };
+      }
+      const email = params[0];
+      let owner = null;
+      if (email) {
+        const norm = email.toLowerCase().trim();
+        for (const o of parent.db.values()) {
+          if (o.email === norm) {
+            owner = o;
+            break;
+          }
+        }
+      }
+      const rows = owner ? [{
+        id: owner.id,
+        email: owner.email,
+        password_hash: owner.passwordHash,
+        status: owner.status,
+        role: owner.role,
+        mfa_enabled: owner.mfaEnabled,
+        failed_login_attempts: owner.failedLoginAttempts ?? 0,
+        lockout_until: owner.lockoutUntil ?? null,
+        last_success_at: owner.lastSuccessAt ?? null,
+        password_changed_at: owner.passwordChangedAt,
+        session_revocation_epoch: owner.sessionRevocationEpoch,
+        created_at: owner.createdAt
+      }] : [];
+      return { rows, rowCount: rows.length };
+    }
+
+    if (targetTable === "advisory_lock") {
+      return { rows: [], rowCount: 1 };
+    }
+
+    throw new Error(`Unsupported SELECT query target: ${targetTable}`);
+  }
+
+  if (statementType === "UPDATE") {
+    if (targetTable === "owner_totp_enrollments") {
+      const id = params[0];
+      if (parent.mfaRepo) {
+        const enroll = parent.mfaRepo.db.get(id);
+        if (enroll) {
+          enroll.isConfirmed = true;
+        }
+      }
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (targetTable === "owners") {
+      const id = params[0];
+      const owner = parent.db.get(id);
+      if (!owner) {
+        return { rows: [], rowCount: 0 };
+      }
+
+      if (uppercase.includes("FAILED_LOGIN_ATTEMPTS = $2") && uppercase.includes("LOCKOUT_UNTIL = $3")) {
+        owner.failedLoginAttempts = params[1];
+        owner.lockoutUntil = params[2];
+      } else if (uppercase.includes("FAILED_LOGIN_ATTEMPTS = 0") && uppercase.includes("LAST_SUCCESS_AT = $2")) {
+        owner.failedLoginAttempts = 0;
+        owner.lastSuccessAt = params[1];
+        owner.status = params[2];
+        owner.lockoutUntil = null;
+      } else if (uppercase.includes("FAILED_LOGIN_ATTEMPTS = 0") && uppercase.includes("LOCKOUT_UNTIL = NULL")) {
+        owner.failedLoginAttempts = 0;
+        owner.lockoutUntil = null;
+      } else if (uppercase.includes("MFA_ENABLED = TRUE")) {
+        owner.mfaEnabled = true;
+        owner.status = 'authenticated';
+      }
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (targetTable === "owner_sessions") {
+      const hash = params[0];
+      const ownerId = params[1];
+      if (parent.sessionsDb) {
+        for (const s of parent.sessionsDb.values()) {
+          if (s.tokenHash === hash && s.ownerId === ownerId) {
+            s.revokedAt = new Date().toISOString();
+          }
+        }
+      }
+      return { rows: [], rowCount: 1 };
+    }
+
+    throw new Error(`Unsupported UPDATE query target: ${targetTable}`);
+  }
+
+  if (statementType === "INSERT") {
+    if (targetTable === "owners") {
+      const [id, email, passwordHash, role, status, mfaEnabled, passwordChangedAt, sessionRevocationEpoch] = params;
+      parent.db.set(id, {
+        id,
+        email,
+        passwordHash,
+        role,
+        status,
+        mfaEnabled,
+        failedLoginAttempts: 0,
+        lockoutUntil: null,
+        passwordChangedAt,
+        sessionRevocationEpoch,
+        createdAt: new Date().toISOString()
+      });
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (targetTable === "owner_recovery_codes") {
+      const [id, ownerId, codeHash] = params;
+      if (parent.mfaRepo) {
+        parent.mfaRepo.dbRecoveryCodes.set(id, { id, ownerId, codeHash, isUsed: false });
+      }
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (targetTable === "used_totp_codes") {
+      const [ownerId, totpCode, timeStep] = params;
+      if (parent.mfaRepo) {
+        parent.mfaRepo.recordUsedTotpCode(ownerId, totpCode, timeStep);
+      }
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (targetTable === "authentication_audit_events") {
+      const [id, ownerId, eventType, payload] = params;
+      if (parent.auditRepo) {
+        parent.auditRepo.db.set(id, { id, ownerId, eventType, payload });
+      }
+      return { rows: [], rowCount: 1 };
+    }
+
+    throw new Error(`Unsupported INSERT query target: ${targetTable}`);
+  }
+
+  throw new Error(`Unhandled statement type: ${statementType} for table: ${targetTable}`);
+}
+
 // In-memory persistent database mocks defined EXCLUSIVELY inside test code (Blocker #2)
 class InMemoryOwnerRepository {
-  constructor() {
+  constructor(sessionsDb = null, mfaRepo = null, auditRepo = null) {
     this.db = new Map();
+    this.sessionsDb = sessionsDb;
+    this.mfaRepo = mfaRepo;
+    this.auditRepo = auditRepo;
+    const parent = this;
+    this.dbAdapter = {
+      withTransaction: async (callback) => {
+        const mockClient = {
+          query: async (text, params) => {
+            return mockQueryHandler(text, params, parent);
+          }
+        };
+        return await callback(mockClient);
+      }
+    };
   }
   async findById(id) {
     const owner = this.db.get(id);
@@ -39,8 +255,8 @@ class InMemoryOwnerRepository {
 }
 
 class InMemorySessionRepository {
-  constructor() {
-    this.db = new Map();
+  constructor(db = new Map()) {
+    this.db = db;
   }
   async create(session) {
     this.db.set(session.id, { ...session });
@@ -163,10 +379,15 @@ class InMemoryCsrfRepository {
     this.db = new Map();
   }
   async createToken(sessionId, tokenValue) {
-    this.db.set(sessionId, tokenValue);
+    this.db.set(sessionId, { tokenValue, createdAt: new Date().toISOString() });
   }
   async verifyToken(sessionId, tokenValue) {
-    return this.db.get(sessionId) === tokenValue;
+    const record = this.db.get(sessionId);
+    if (!record || record.tokenValue !== tokenValue) return null;
+    return record.createdAt;
+  }
+  async deleteTokensForSession(sessionId) {
+    this.db.delete(sessionId);
   }
 }
 
@@ -186,12 +407,17 @@ class InMemoryAuditRepository {
 
 // Generate a clean explicit authentication service instance for every test run
 function createTestAuthService() {
+  const sessionsDb = new Map();
+  const mfaRepo = new InMemoryMfaRepository();
+  const auditRepo = new InMemoryAuditRepository();
+  const sessionsRepo = new InMemorySessionRepository(sessionsDb);
+  const ownersRepo = new InMemoryOwnerRepository(sessionsDb, mfaRepo, auditRepo);
   return new OwnerAuthenticationService({
-    ownersRepo: new InMemoryOwnerRepository(),
-    sessionsRepo: new InMemorySessionRepository(),
-    mfaRepo: new InMemoryMfaRepository(),
+    ownersRepo,
+    sessionsRepo,
+    mfaRepo,
     csrfRepo: new InMemoryCsrfRepository(),
-    auditRepo: new InMemoryAuditRepository()
+    auditRepo
   });
 }
 
@@ -222,39 +448,39 @@ test("1. Email normalization works", () => {
 
 test("2. Duplicate normalized owner emails are rejected", async () => {
   const auth = createTestAuthService();
-  await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   await assert.rejects(async () => {
-    await auth.registerOwner(" OWNER@st.com  ", "AnotherPasswordSecure123");
+    await auth.registerOwner(" OWNER@st.com  ", "AnotherPasswordSecure123", { isAuthorizedAdmin: true });
   }, /DUPLICATE_OWNER_EMAIL_REJECTED/);
 });
 
 test("3. Passwords are stored only as Argon2id hashes", async () => {
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   assert.ok(owner.passwordHash.startsWith("$argon2id$v=19$m=65536"));
 });
 
 test("4. Plaintext passwords never appear in stored records", async () => {
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   assert.equal(JSON.stringify(owner).includes("PasswordSecure123"), false);
 });
 
 test("5. Correct password verification succeeds", async () => {
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   assert.ok(await verifyPassword("PasswordSecure123", owner.passwordHash));
 });
 
 test("6. Incorrect password verification fails generically", async () => {
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   assert.equal(await verifyPassword("WrongPassword123", owner.passwordHash), false);
 });
 
 test("7. Unknown email and wrong password produce equivalent public errors", async () => {
   const auth = createTestAuthService();
-  await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
 
   // Unknown email
   await assert.rejects(async () => {
@@ -269,7 +495,7 @@ test("7. Unknown email and wrong password produce equivalent public errors", asy
 
 test("8. Repeated failures trigger bounded lockout", async () => {
   const auth = createTestAuthService();
-  await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
 
   // Fail 5 times
   for (let i = 0; i < 5; i++) {
@@ -286,7 +512,7 @@ test("8. Repeated failures trigger bounded lockout", async () => {
 
 test("9. Successful authentication resets failures and handles timing", async () => {
   const auth = createTestAuthService();
-  await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
 
   try { await auth.loginOwner("owner@st.com", "WrongPassword123"); } catch {}
   try { await auth.loginOwner("owner@st.com", "WrongPassword123"); } catch {}
@@ -311,10 +537,10 @@ test("11. Only session-token hashes are stored", async () => {
 
 test("12. Login rotates/replaces any pre-authentication session", async () => {
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
 
   const s1 = await auth.createSessionToken(owner.id);
-  await auth.loginOwner("owner@st.com", "PasswordSecure123");
+  await auth.loginOwner("owner@st.com", "PasswordSecure123", s1.token);
 
   // Pre-auth session s1 is now revoked/replaced
   await assert.rejects(async () => {
@@ -327,7 +553,7 @@ test("13. MFA completion rotates the session", async () => {
   process.env.MFA_ENCRYPTION_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   const s1 = await auth.createSessionToken(owner.id, "password_only");
 
   // Enroll and confirm MFA
@@ -378,7 +604,7 @@ test("15. Absolute-expired sessions are rejected", async () => {
 
 test("16. Revoked sessions are rejected", async () => {
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   const result = await auth.createSessionToken(owner.id);
   await auth.logoutSession(result.token);
 
@@ -389,7 +615,7 @@ test("16. Revoked sessions are rejected", async () => {
 
 test("17. Logout revokes the session", async () => {
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   const result = await auth.createSessionToken(owner.id);
   const status = await auth.logoutSession(result.token);
   assert.equal(status, true);
@@ -397,7 +623,7 @@ test("17. Logout revokes the session", async () => {
 
 test("18. Password change revokes older sessions", async () => {
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   const s1 = await auth.createSessionToken(owner.id);
 
   // Change password
@@ -447,8 +673,8 @@ test("22. Anonymous owner routes return 401", async () => {
 
 test("23. Wrong-owner access returns 403", async () => {
   const auth = createTestAuthService();
-  const owner1 = await auth.registerOwner("owner1@st.com", "PasswordSecure123");
-  const owner2 = await auth.registerOwner("owner2@st.com", "PasswordSecure123");
+  const owner1 = await auth.registerOwner("owner1@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
+  const owner2 = await auth.registerOwner("owner2@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
 
   const s1 = await auth.createSessionToken(owner1.id);
   const response = await simulateOwnerRoute(auth, s1.token, owner2.id); // owner1 tries to access owner2's resource
@@ -464,8 +690,8 @@ test("24. No route falls back to the first owner", async () => {
 
 test("25. Client-supplied ownerId cannot impersonate another owner", async () => {
   const auth = createTestAuthService();
-  const owner1 = await auth.registerOwner("owner1@st.com", "PasswordSecure123");
-  const owner2 = await auth.registerOwner("owner2@st.com", "PasswordSecure123");
+  const owner1 = await auth.registerOwner("owner1@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
+  const owner2 = await auth.registerOwner("owner2@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
 
   const s1 = await auth.createSessionToken(owner1.id);
   const response = await simulateOwnerRoute(auth, s1.token, owner2.id);
@@ -474,7 +700,7 @@ test("25. Client-supplied ownerId cannot impersonate another owner", async () =>
 
 test("26. Client-supplied role or MFA status is ignored", async () => {
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   const s1 = await auth.createSessionToken(owner.id, "password_only");
 
   const response = await simulateOwnerRoute(auth, s1.token, owner.id, "owner", true);
@@ -484,7 +710,7 @@ test("26. Client-supplied role or MFA status is ignored", async () => {
 
 test("27. MFA-required operations reject password-only sessions", async () => {
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   const s1 = await auth.createSessionToken(owner.id, "password_only");
 
   await assert.rejects(async () => {
@@ -494,7 +720,7 @@ test("27. MFA-required operations reject password-only sessions", async () => {
 
 test("28. Valid TOTP completes MFA", async () => {
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   const s1 = await auth.createSessionToken(owner.id, "password_only");
 
   const enroll = await auth.enrollTotpMfa(owner.id, s1.token);
@@ -506,7 +732,7 @@ test("28. Valid TOTP completes MFA", async () => {
 
 test("29. Replayed TOTP is rejected", async () => {
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   const s1 = await auth.createSessionToken(owner.id, "password_only");
 
   const enroll = await auth.enrollTotpMfa(owner.id, s1.token);
@@ -521,7 +747,7 @@ test("29. Replayed TOTP is rejected", async () => {
 
 test("30. Recovery codes are hashed and one-time-use", async () => {
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   const s1 = await auth.createSessionToken(owner.id, "password_only");
 
   const enroll = await auth.enrollTotpMfa(owner.id, s1.token);
@@ -552,7 +778,7 @@ test("31. Passkey challenge expiry and replay rules are enforced in contracts", 
 
 test("32. Security audit events contain no secrets", async () => {
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   await auth.recordAuditEvent(owner.id, "test_action", { password: "SecretPasswordValue", apiKey: "leak-key-123" });
 
   const events = await auth.listAuditEvents();
@@ -563,7 +789,7 @@ test("32. Security audit events contain no secrets", async () => {
 
 test("33. Failed actions do not create success evidence", async () => {
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   await assert.rejects(async () => {
     await auth.loginOwner("owner@st.com", "WrongPassword123");
   }, /INVALID_EMAIL_OR_PASSWORD/);
@@ -574,7 +800,7 @@ test("33. Failed actions do not create success evidence", async () => {
 
 test("34. Task 8 Charter approval remains owner-controlled", async () => {
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   const s1 = await auth.createSessionToken(owner.id, "high_assurance");
 
   // Confirms route requireAuthenticatedOwner correctly derives owner identity
@@ -584,9 +810,106 @@ test("34. Task 8 Charter approval remains owner-controlled", async () => {
 
 test("35. Charter approval does not activate autopilot or publishing", async () => {
   const auth = createTestAuthService();
-  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123");
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
   const s1 = await auth.createSessionToken(owner.id, "high_assurance");
 
   const response = await simulateOwnerRoute(auth, s1.token, owner.id, "owner", true);
   assert.equal(response.status, 200);
+});
+
+// Target SQL and statement prefix classification regression tests (Task 2 / Blocker #2)
+test("36. Regression: SELECT ... FOR UPDATE is classified as SELECT and retrieves records", async () => {
+  const repo = new InMemoryOwnerRepository();
+  repo.db.set("owner-1", {
+    id: "owner-1",
+    email: "owner@st.com",
+    passwordHash: "some-hash",
+    status: "anonymous",
+    role: "owner"
+  });
+  const res = await repo.dbAdapter.withTransaction(async (client) => {
+    return await client.query("SELECT * FROM owners WHERE email = $1 FOR UPDATE;", ["owner@st.com"]);
+  });
+  assert.equal(res.rows.length, 1);
+  assert.equal(res.rows[0].id, "owner-1");
+});
+
+test("37. Regression: SELECT containing names such as updated_at is classified as SELECT", async () => {
+  const repo = new InMemoryOwnerRepository();
+  repo.db.set("owner-1", {
+    id: "owner-1",
+    email: "owner@st.com",
+    passwordHash: "some-hash",
+    status: "anonymous",
+    role: "owner"
+  });
+  const res = await repo.dbAdapter.withTransaction(async (client) => {
+    return await client.query("SELECT id, updated_at FROM owners WHERE email = $1;", ["owner@st.com"]);
+  });
+  assert.equal(res.rows.length, 1);
+  assert.equal(res.rows[0].id, "owner-1");
+});
+
+test("38. Regression: Genuine UPDATE is classified as UPDATE and modifies the state", async () => {
+  const repo = new InMemoryOwnerRepository();
+  repo.db.set("owner-1", {
+    id: "owner-1",
+    email: "owner@st.com",
+    passwordHash: "some-hash",
+    status: "anonymous",
+    role: "owner",
+    failedLoginAttempts: 2
+  });
+  const res = await repo.dbAdapter.withTransaction(async (client) => {
+    return await client.query("UPDATE owners SET failed_login_attempts = 0, lockout_until = null WHERE id = $1;", ["owner-1"]);
+  });
+  assert.equal(res.rowCount, 1);
+  const updatedOwner = repo.db.get("owner-1");
+  assert.equal(updatedOwner.failedLoginAttempts, 0);
+});
+
+test("39. Regression: Unsupported SQL verb or target throws loudly", async () => {
+  const repo = new InMemoryOwnerRepository();
+  await assert.rejects(async () => {
+    await repo.dbAdapter.withTransaction(async (client) => {
+      await client.query("DROP TABLE owners;");
+    });
+  }, /Unsupported SQL statement verb/);
+
+  await assert.rejects(async () => {
+    await repo.dbAdapter.withTransaction(async (client) => {
+      await client.query("SELECT * FROM non_existent_table;");
+    });
+  }, /Unsupported SQL target table/);
+});
+
+test("40. Regression: TOTP confirmation behaves correctly", async () => {
+  const auth = createTestAuthService();
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
+  const s1 = await auth.createSessionToken(owner.id, "password_only");
+
+  const enroll = await auth.enrollTotpMfa(owner.id, s1.token);
+  const totpCode = generateTotp(enroll.secret, 0);
+
+  const confirm = await auth.confirmTotpMfa(owner.id, enroll.enrollmentId, totpCode);
+  assert.ok(confirm.recoveryCodes.length === 8);
+});
+
+test("41. Regression: Atomic recovery-code consumption is correctly executed", async () => {
+  const auth = createTestAuthService();
+  const owner = await auth.registerOwner("owner@st.com", "PasswordSecure123", { isAuthorizedAdmin: true });
+  const s1 = await auth.createSessionToken(owner.id, "password_only");
+
+  const enroll = await auth.enrollTotpMfa(owner.id, s1.token);
+  const totpCode = generateTotp(enroll.secret, 0);
+
+  const confirm = await auth.confirmTotpMfa(owner.id, enroll.enrollmentId, totpCode);
+  const code = confirm.recoveryCodes[0];
+
+  const success = await auth.useRecoveryCode(owner.id, code);
+  assert.equal(success, true);
+
+  await assert.rejects(async () => {
+    await auth.useRecoveryCode(owner.id, code);
+  }, /INVALID_OR_ALREADY_USED_RECOVERY_CODE/);
 });

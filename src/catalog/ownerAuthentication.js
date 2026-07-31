@@ -184,55 +184,94 @@ export class OwnerAuthenticationService {
 
   async loginOwner(email, password) {
     const normEmail = normalizeEmail(email);
-    const matchedOwner = await this.ownersRepo.findByEmail(normEmail);
+    const dummyHash = "$argon2id$v=19$m=65536,p=4,t=3$dJjhGG82mqpeg5YghmrRVw$neSWfmTe2m/FvlazTaLzJ60Z/zM9kKsJoyXNutKIYq0";
 
-    // Blocker #8: Equivalent logic for existing & nonexistent accounts via a dummy Argon2id verification path!
-    let dummyHash = "$argon2id$v=19$m=65536,t=3,p=4$62026dummyhashfornonexistentusers";
-    let hashToVerify = matchedOwner ? matchedOwner.passwordHash : dummyHash;
+    // Run the entire check and updates inside a concurrency-safe, transaction-locked FOR UPDATE block (Blocker #4)
+    return await this.ownersRepo.dbAdapter.withTransaction(async (client) => {
+      const res = await client.query("SELECT * FROM owners WHERE email = $1 FOR UPDATE;", [normEmail]);
+      const matchedOwnerRow = res.rows[0];
 
-    // Perform Argon2id check in both cases to avoid timing side-channels
-    const isVerified = await verifyPassword(password, hashToVerify);
-
-    if (!matchedOwner) {
-      // Log event generically without leaking account non-existence
-      await this.recordAuditEvent(null, "login_failed", { attemptedEmail: normEmail });
-      throw new Error("INVALID_EMAIL_OR_PASSWORD");
-    }
-
-    // Account Lockout check
-    if (matchedOwner.lockoutUntil) {
-      if (new Date(matchedOwner.lockoutUntil) > new Date()) {
-        await this.recordAuditEvent(matchedOwner.id, "account_locked", { reason: "lockout_active" });
-        throw new Error("ACCOUNT_TEMPORARILY_LOCKED");
-      } else {
-        matchedOwner.lockoutUntil = null;
-        await this.ownersRepo.update(matchedOwner);
+      let matchedOwner = null;
+      if (matchedOwnerRow) {
+        matchedOwner = {
+          id: matchedOwnerRow.id,
+          email: matchedOwnerRow.email,
+          passwordHash: matchedOwnerRow.password_hash,
+          status: matchedOwnerRow.status,
+          role: matchedOwnerRow.role,
+          mfaEnabled: matchedOwnerRow.mfa_enabled,
+          failedLoginAttempts: matchedOwnerRow.failed_login_attempts,
+          lockoutUntil: matchedOwnerRow.lockout_until ? new Date(matchedOwnerRow.lockout_until).toISOString() : null,
+          lastSuccessAt: matchedOwnerRow.last_success_at ? new Date(matchedOwnerRow.last_success_at).toISOString() : null,
+          passwordChangedAt: new Date(matchedOwnerRow.password_changed_at).toISOString(),
+          sessionRevocationEpoch: matchedOwnerRow.session_revocation_epoch,
+          createdAt: new Date(matchedOwnerRow.created_at).toISOString(),
+        };
       }
-    }
 
-    if (!isVerified) {
-      matchedOwner.failedLoginAttempts += 1;
-      await this.recordAuditEvent(matchedOwner.id, "login_failed", {});
-      if (matchedOwner.failedLoginAttempts >= 5) {
-        matchedOwner.lockoutUntil = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-        await this.recordAuditEvent(matchedOwner.id, "account_locked", { reason: "consecutive_failures" });
+      const hashToVerify = matchedOwner ? matchedOwner.passwordHash : dummyHash;
+
+      // Always execute a genuine Argon2 verification to prevent timing leaks (Blocker #5/8)
+      const isVerified = await verifyPassword(password, hashToVerify);
+
+      if (!matchedOwner) {
+        await this.recordAuditEvent(null, "login_failed", { attemptedEmail: normEmail });
+        throw new Error("INVALID_EMAIL_OR_PASSWORD");
       }
-      await this.ownersRepo.update(matchedOwner);
-      throw new Error("INVALID_EMAIL_OR_PASSWORD");
-    }
 
-    // Success resets failure counters
-    matchedOwner.failedLoginAttempts = 0;
-    matchedOwner.lastSuccessAt = new Date().toISOString();
-    matchedOwner.status = matchedOwner.mfaEnabled ? "password_verified_mfa_pending" : "authenticated";
+      // Concurrency-safe lockout check
+      if (matchedOwner.lockoutUntil) {
+        if (new Date(matchedOwner.lockoutUntil) > new Date()) {
+          await this.recordAuditEvent(matchedOwner.id, "account_locked", { reason: "lockout_active" });
+          throw new Error("ACCOUNT_TEMPORARILY_LOCKED");
+        } else {
+          matchedOwner.lockoutUntil = null;
+          matchedOwner.failedLoginAttempts = 0;
+          await client.query(
+            "UPDATE owners SET failed_login_attempts = 0, lockout_until = null, updated_at = now() WHERE id = $1;",
+            [matchedOwner.id]
+          );
+        }
+      }
 
-    await this.ownersRepo.update(matchedOwner);
-    await this.recordAuditEvent(matchedOwner.id, "login_succeeded", {});
+      if (!isVerified) {
+        matchedOwner.failedLoginAttempts += 1;
+        let lockoutUntil = null;
+        if (matchedOwner.failedLoginAttempts >= 5) {
+          lockoutUntil = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+        }
 
-    const mfaAssurance = matchedOwner.mfaEnabled ? "password_only" : "high_assurance";
-    const sessionResult = await this.createSessionToken(matchedOwner.id, mfaAssurance);
+        await client.query(
+          "UPDATE owners SET failed_login_attempts = $2, lockout_until = $3, updated_at = now() WHERE id = $1;",
+          [matchedOwner.id, matchedOwner.failedLoginAttempts, lockoutUntil]
+        );
 
-    return { owner: deepCopy(matchedOwner), session: sessionResult };
+        await this.recordAuditEvent(matchedOwner.id, "login_failed", {});
+        if (lockoutUntil) {
+          await this.recordAuditEvent(matchedOwner.id, "account_locked", { reason: "consecutive_failures" });
+        }
+        throw new Error("INVALID_EMAIL_OR_PASSWORD");
+      }
+
+      // Success: Reset failure counters atomically inside transaction (Blocker #4)
+      matchedOwner.failedLoginAttempts = 0;
+      matchedOwner.lastSuccessAt = new Date().toISOString();
+      matchedOwner.status = matchedOwner.mfaEnabled ? "password_verified_mfa_pending" : "authenticated";
+
+      await client.query(
+        `UPDATE owners
+         SET failed_login_attempts = 0, last_success_at = $2, status = $3, lockout_until = null, updated_at = now()
+         WHERE id = $1;`,
+        [matchedOwner.id, matchedOwner.lastSuccessAt, matchedOwner.status]
+      );
+
+      await this.recordAuditEvent(matchedOwner.id, "login_succeeded", {});
+
+      const mfaAssurance = matchedOwner.mfaEnabled ? "password_only" : "high_assurance";
+      const sessionResult = await this.createSessionToken(matchedOwner.id, mfaAssurance);
+
+      return { owner: deepCopy(matchedOwner), session: sessionResult };
+    });
   }
 
   async createSessionToken(ownerId, mfaAssuranceLevel = "password_only") {

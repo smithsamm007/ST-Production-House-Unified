@@ -12,6 +12,46 @@ const mockOwners = new Map();
 const mockSessions = new Map();
 
 const mockOwnersRepo = {
+  dbAdapter: {
+    withTransaction: async (callback) => {
+      const mockClient = {
+        query: async (text, params) => {
+          const uppercase = text.toUpperCase();
+          if (uppercase.includes("SELECT") && uppercase.includes("OWNERS")) {
+            const email = params[0];
+            const norm = email.toLowerCase().trim();
+            let owner = null;
+            for (const o of mockOwners.values()) {
+              if (o.email === norm) {
+                owner = o;
+                break;
+              }
+            }
+            const rows = owner ? [{
+              id: owner.id,
+              email: owner.email,
+              password_hash: owner.passwordHash,
+              status: owner.status,
+              role: owner.role,
+              mfa_enabled: owner.mfaEnabled,
+              failed_login_attempts: owner.failedLoginAttempts ?? 0,
+              lockout_until: owner.lockoutUntil ?? null,
+              last_success_at: owner.lastSuccessAt ?? null,
+              password_changed_at: owner.passwordChangedAt,
+              session_revocation_epoch: owner.sessionRevocationEpoch,
+              created_at: owner.createdAt
+            }] : [];
+            return { rows, rowCount: rows.length };
+          }
+          if (uppercase.includes("UPDATE") && uppercase.includes("OWNERS")) {
+            return { rows: [], rowCount: 1 };
+          }
+          return { rows: [], rowCount: 0 };
+        }
+      };
+      return await callback(mockClient);
+    }
+  },
   findByEmail: async (email) => {
     const norm = email.toLowerCase().trim();
     for (const owner of mockOwners.values()) {
