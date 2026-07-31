@@ -134,6 +134,19 @@ export function createApp(repos = {}, customAuthService = null) {
     next();
   }
 
+  // High MFA assurance middleware (Blocker #7)
+  async function requireMfaIfEnabled(req, res, next) {
+    try {
+      const owner = await ownersRepo.findById(req.ownerId);
+      if (owner && owner.mfaEnabled && req.session.mfaAssuranceLevel !== "high_assurance") {
+        return res.status(403).json({ error: "MFA_ELEVATION_REQUIRED" });
+      }
+      next();
+    } catch (err) {
+      return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
+    }
+  }
+
   // Authentication Middleware
   async function authenticateOwner(req, res, next) {
     try {
@@ -259,8 +272,16 @@ export function createApp(repos = {}, customAuthService = null) {
         return res.status(400).json({ error: "INVALID_CREDENTIALS" });
       }
 
-      const { owner, session } = await auth.loginOwner(email, password);
-      const csrfToken = await auth.generateCsrfToken(session.session.id);
+      // Check if we have pre-authentication session to rotate
+      let preAuthSessionToken = null;
+      if (req.headers.cookie) {
+        const cookies = parseCookies(req.headers.cookie);
+        if (cookies.session_token) {
+          preAuthSessionToken = cookies.session_token;
+        }
+      }
+
+      const { owner, session, csrfToken } = await auth.loginOwner(email, password, preAuthSessionToken);
 
       res.setHeader(
         "Set-Cookie",
@@ -324,7 +345,7 @@ export function createApp(repos = {}, customAuthService = null) {
   });
 
   // 6. List Active Sessions
-  app.get("/api/auth/sessions", authenticateOwner, async (req, res) => {
+  app.get("/api/auth/sessions", authenticateOwner, requireMfaIfEnabled, async (req, res) => {
     try {
       const list = await sessionsRepo.listActive(req.ownerId);
       return res.json(list);
@@ -334,7 +355,7 @@ export function createApp(repos = {}, customAuthService = null) {
   });
 
   // 7. Revoke Specific Session (Blocker #5: Requires matching owner_id!)
-  app.delete("/api/auth/sessions/:id", authenticateOwner, requireCsrf, async (req, res) => {
+  app.delete("/api/auth/sessions/:id", authenticateOwner, requireCsrf, requireMfaIfEnabled, async (req, res) => {
     try {
       const sessionId = req.params.id;
       const revoked = await sessionsRepo.revokeWithOwner(sessionId, req.ownerId);
@@ -349,7 +370,7 @@ export function createApp(repos = {}, customAuthService = null) {
   });
 
   // 8. Revoke All Other Sessions
-  app.delete("/api/auth/sessions/other", authenticateOwner, requireCsrf, async (req, res) => {
+  app.delete("/api/auth/sessions/other", authenticateOwner, requireCsrf, requireMfaIfEnabled, async (req, res) => {
     try {
       await sessionsRepo.revokeAllOtherSessions(req.ownerId, req.session.id);
       await auth.recordAuditEvent(req.ownerId, "other_sessions_revoked", {});
@@ -401,7 +422,6 @@ export function createApp(repos = {}, customAuthService = null) {
 
       return res.json({
         status: "success",
-        csrfToken: elevated.csrfToken,
         session: {
           id: elevated.session.id,
           mfaAssuranceLevel: elevated.session.mfaAssuranceLevel,
@@ -415,9 +435,9 @@ export function createApp(repos = {}, customAuthService = null) {
   });
 
   // 12. List Preloaded & Registered Agents
-  app.get("/api/agents", authenticateOwner, async (req, res) => {
+  app.get("/api/agents", authenticateOwner, requireMfaIfEnabled, async (req, res) => {
     try {
-      const list = await agentsRepo.list();
+      const list = await agentsRepo.list(req.ownerId);
       return res.json(list);
     } catch (err) {
       return res.status(500).json({ error: getPublicErrorCode(err) });
@@ -425,12 +445,12 @@ export function createApp(repos = {}, customAuthService = null) {
   });
 
   // 13. Retrieve Specific Agent
-  app.get("/api/agents/:id", authenticateOwner, async (req, res) => {
+  app.get("/api/agents/:id", authenticateOwner, requireMfaIfEnabled, async (req, res) => {
     try {
       const agentId = req.params.id;
-      const agent = await agentsRepo.get(agentId);
+      const agent = await agentsRepo.get(agentId, req.ownerId);
       if (!agent) {
-        return res.status(404).json({ error: "AGENT_LIMIT_EXCEEDED" });
+        return res.status(404).json({ error: "UNAUTHORIZED" });
       }
       return res.json(agent);
     } catch (err) {
@@ -439,7 +459,7 @@ export function createApp(repos = {}, customAuthService = null) {
   });
 
   // 14. Administer/Add New Agent (Max 50-Agent Hard Limit Check)
-  app.post("/api/agents", authenticateOwner, requireCsrf, async (req, res) => {
+  app.post("/api/agents", authenticateOwner, requireCsrf, requireMfaIfEnabled, async (req, res) => {
     try {
       await auth.requireOwnerRole(req.ownerId, "owner"); // Only owners can add agents
 
@@ -448,7 +468,7 @@ export function createApp(repos = {}, customAuthService = null) {
         return res.status(400).json({ error: "AGENT_LIMIT_EXCEEDED" });
       }
 
-      const result = await agentsRepo.add({ id, name, namespace, enabled });
+      const result = await agentsRepo.add({ id, name, namespace, enabled }, req.ownerId);
       await auth.recordAuditEvent(req.ownerId, "agent_added", { agentId: id, name });
       return res.status(201).json(result);
     } catch (err) {
@@ -457,9 +477,9 @@ export function createApp(repos = {}, customAuthService = null) {
   });
 
   // 15. Evidence Ledger Route
-  app.get("/api/evidence", authenticateOwner, async (req, res) => {
+  app.get("/api/evidence", authenticateOwner, requireMfaIfEnabled, async (req, res) => {
     try {
-      const list = await evidenceRepo.list();
+      const list = await evidenceRepo.list(req.ownerId);
       return res.json(list);
     } catch (err) {
       return res.status(500).json({ error: getPublicErrorCode(err) });
@@ -468,12 +488,9 @@ export function createApp(repos = {}, customAuthService = null) {
 
   // Secure Error Handling Middleware to prevent leaks (Blocker #6)
   app.use((err, req, res, next) => {
-    const correlationId = randomBytes(16).toString("hex");
-    const eventCode = "UNHANDLED_SERVER_ERROR";
-    console.error(`[${eventCode}] correlation_id=${correlationId}`);
+    console.error("Unhandled API error:", err);
     res.status(500).json({
-      error: "INTERNAL_SERVER_ERROR",
-      correlationId
+      error: "INTERNAL_SERVER_ERROR"
     });
   });
 

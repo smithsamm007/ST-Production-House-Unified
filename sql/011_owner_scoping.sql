@@ -1,0 +1,6 @@
+BEGIN;
+
+ALTER TABLE agents ADD COLUMN owner_id uuid REFERENCES owners(id) ON DELETE CASCADE;
+ALTER TABLE evidence_events ADD COLUMN owner_id uuid REFERENCES owners(id) ON DELETE CASCADE;
+
+COMMIT;

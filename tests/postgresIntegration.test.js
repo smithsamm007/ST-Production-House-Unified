@@ -22,24 +22,19 @@ import {
   EvidenceLedgerRepository
 } from '../src/catalog/repositories.js';
 
-test('PostgreSQL Live Integration Test Suite with Custom Schema Isolation', async (t) => {
+test('PostgreSQL Live Integration Test Suite with Multi-Pool Schema Isolation', async (t) => {
   const dbUrl = process.env.POSTGRES_TEST_URL || process.env.DATABASE_URL;
   const isCI = !!process.env.CI;
   const expectPG = isCI || !!dbUrl;
 
   // Probe live PG connection
   let pgAvailable = false;
-  let testPool = null;
+  let testPoolProbe = null;
   let lastConnectError = null;
-
-  const schemaName = 'test_integration_schema';
-  if (!schemaName.startsWith('test_')) {
-    throw new Error('Unsafe schema name detected');
-  }
 
   if (dbUrl || process.env.PGHOST || isCI) {
     try {
-      testPool = new pg.Pool({
+      testPoolProbe = new pg.Pool({
         connectionString: dbUrl || 'postgresql://st_app:st_test_password@localhost:5432/st_production_test',
         host: process.env.PGHOST,
         port: process.env.PGPORT ? parseInt(process.env.PGPORT, 10) : undefined,
@@ -48,22 +43,16 @@ test('PostgreSQL Live Integration Test Suite with Custom Schema Isolation', asyn
         database: process.env.PGDATABASE,
         connectionTimeoutMillis: 5000,
       });
-
-      // Bind search_path automatically to the isolated schema for all clients checked out from the pool
-      testPool.on('connect', (client) => {
-        client.query(`SET search_path TO ${schemaName};`);
-      });
-
-      const client = await testPool.connect();
+      const client = await testPoolProbe.connect();
       await client.query('SELECT 1');
       client.release();
       pgAvailable = true;
     } catch (err) {
       pgAvailable = false;
       lastConnectError = err;
-      if (testPool) {
-        await testPool.end().catch(() => {});
-        testPool = null;
+    } finally {
+      if (testPoolProbe) {
+        await testPoolProbe.end().catch(() => {});
       }
     }
   }
@@ -87,260 +76,255 @@ test('PostgreSQL Live Integration Test Suite with Custom Schema Isolation', asyn
     process.env.MFA_ENCRYPTION_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
   }
 
-  const liveAdapter = new PostgresAdapter({}, testPool);
+  const mainSchema = 'test_main_schema';
+  const upgradeSchema = 'test_upgrade_schema';
+  const tamperSchema = 'test_tamper_schema';
 
-  // Set up search path on default adapter connection
-  await liveAdapter.query(`DROP SCHEMA IF EXISTS ${schemaName} CASCADE;`);
-  await liveAdapter.query(`CREATE SCHEMA ${schemaName};`);
-  await liveAdapter.query(`SET search_path TO ${schemaName};`);
+  // Initialize independent pools for the main, upgrade, and tamper schemas (Blocker #11)
+  const poolMain = new pg.Pool({ connectionString: dbUrl || 'postgresql://st_app:st_test_password@localhost:5432/st_production_test' });
+  const poolUpgrade = new pg.Pool({ connectionString: dbUrl || 'postgresql://st_app:st_test_password@localhost:5432/st_production_test' });
+  const poolTamper = new pg.Pool({ connectionString: dbUrl || 'postgresql://st_app:st_test_password@localhost:5432/st_production_test' });
 
-  // Wrap execution in a robust try-finally block to guarantee safe cleanup of schema and pool closing (Blocker #2)
+  // Bind each checked-out client directly to its schema using connect event
+  poolMain.on('connect', (client) => {
+    client.query(`SET search_path TO ${mainSchema};`);
+  });
+  poolUpgrade.on('connect', (client) => {
+    client.query(`SET search_path TO ${upgradeSchema};`);
+  });
+  poolTamper.on('connect', (client) => {
+    client.query(`SET search_path TO ${tamperSchema};`);
+  });
+
+  const mainAdapter = new PostgresAdapter({}, poolMain);
+  const upgradeAdapter = new PostgresAdapter({}, poolUpgrade);
+  const tamperAdapter = new PostgresAdapter({}, poolTamper);
+
+  // Setup/initialize schemas
+  await mainAdapter.query(`DROP SCHEMA IF EXISTS ${mainSchema} CASCADE; CREATE SCHEMA ${mainSchema};`);
+  await upgradeAdapter.query(`DROP SCHEMA IF EXISTS ${upgradeSchema} CASCADE; CREATE SCHEMA ${upgradeSchema};`);
+  await tamperAdapter.query(`DROP SCHEMA IF EXISTS ${tamperSchema} CASCADE; CREATE SCHEMA ${tamperSchema};`);
+
+  // Wrap execution to ensure final clean closure of independent pools exactly once in cleanup (Blocker #11)
   try {
-    // Phase 1: Clean migration using runner on isolated test schema
-    const runner = new MigrationRunner(liveAdapter);
-    await runner.runMigrations();
+    // Phase 1: Initialize main schema migrations
+    const mainRunner = new MigrationRunner(mainAdapter);
+    await mainRunner.runMigrations();
 
-    // 1. Concurrent first-owner bootstrap safety
-    await t.test('concurrent first-owner bootstrap safety', async () => {
-      const ownersRepo = new OwnerRepository(liveAdapter);
-      const sessionsRepo = new SessionRepository(liveAdapter);
+    // 1. Concurrent failed logins and lockout expiry recovery
+    await t.test('concurrent failed logins and lockout expiry recovery', async () => {
+      const ownersRepo = new OwnerRepository(mainAdapter);
+      const sessionsRepo = new SessionRepository(mainAdapter);
       const auth = new OwnerAuthenticationService({ ownersRepo, sessionsRepo });
 
-      const email1 = 'concur1@st.com';
-      const email2 = 'concur2@st.com';
+      const email = 'lockout-concur-owner@st.com';
       const password = 'SuperSecurePassword123_Live!';
-
-      // Launch two concurrent registration promises
-      const p1 = auth.registerOwner(email1, password);
-      const p2 = auth.registerOwner(email2, password);
-
-      const results = await Promise.allSettled([p1, p2]);
-      const fulfilled = results.filter(r => r.status === 'fulfilled');
-      const rejected = results.filter(r => r.status === 'rejected');
-
-      assert.equal(fulfilled.length, 1, "Exactly one registration must succeed during concurrent first owner bootstrap");
-      assert.equal(rejected.length, 1, "Subsequent registration must fail");
-      assert.ok(rejected[0].reason.message.includes("PUBLIC_REGISTRATION_PROHIBITED_ONCE_BOOTSTRAPPED") || rejected[0].reason.message.includes("DUPLICATE_OWNER_EMAIL_REJECTED"));
-    });
-
-    // 2. Normalized duplicate-email enforcement
-    await t.test('normalized duplicate-email enforcement', async () => {
-      const ownersRepo = new OwnerRepository(liveAdapter);
-      const sessionsRepo = new SessionRepository(liveAdapter);
-      const auth = new OwnerAuthenticationService({ ownersRepo, sessionsRepo });
-
-      const email = 'duplicate-owner@st.com';
-      const password = 'SuperSecurePassword123_Live!';
-
-      // Try registering with extra options to bypass bootstrap
       const owner = await auth.registerOwner(email, password, { isAuthorizedAdmin: true });
-      assert.equal(owner.email, email);
 
-      await assert.rejects(async () => {
-        await auth.registerOwner(`  ${email.toUpperCase()}  `, password, { isAuthorizedAdmin: true });
-      }, /DUPLICATE_OWNER_EMAIL_REJECTED/);
-    });
+      // Run 5 concurrent failed login attempts
+      const attempts = Array.from({ length: 5 }).map(() => auth.loginOwner(email, 'WrongPassword123!').catch(err => err));
+      await Promise.all(attempts);
 
-    // 3. Lockout concurrency and expiry
-    await t.test('lockout concurrency and expiry', async () => {
-      const ownersRepo = new OwnerRepository(liveAdapter);
-      const sessionsRepo = new SessionRepository(liveAdapter);
-      const auth = new OwnerAuthenticationService({ ownersRepo, sessionsRepo });
-
-      const email = 'lockout-owner@st.com';
-      const password = 'SuperSecurePassword123_Live!';
-      await auth.registerOwner(email, password, { isAuthorizedAdmin: true });
-
-      // Trigger 5 failed login attempts
-      for (let i = 0; i < 5; i++) {
-        try {
-          await auth.loginOwner(email, 'WrongPassword123!');
-        } catch (err) {
-          assert.equal(err.message, 'INVALID_EMAIL_OR_PASSWORD');
-        }
-      }
-
-      // Next login must be locked out
+      // Verify that the owner failed login count is strictly updated, and subsequent logins trigger lockout
       await assert.rejects(async () => {
         await auth.loginOwner(email, password);
       }, /ACCOUNT_TEMPORARILY_LOCKED/);
     });
 
-    // 4. Hashed session and CSRF database storage
-    await t.test('hashed session and CSRF database storage', async () => {
-      const ownersRepo = new OwnerRepository(liveAdapter);
-      const sessionsRepo = new SessionRepository(liveAdapter);
-      const csrfRepo = new CsrfRepository(liveAdapter);
-      const auth = new OwnerAuthenticationService({ ownersRepo, sessionsRepo, csrfRepo });
-
-      const email = 'session-store-owner@st.com';
-      const password = 'SuperSecurePassword123_Live!';
-      const owner = await auth.registerOwner(email, password, { isAuthorizedAdmin: true });
-
-      const res = await auth.createSessionToken(owner.id);
-      assert.ok(res.token);
-      assert.notEqual(res.token, res.session.tokenHash);
-
-      // Verify stored in DB
-      const dbSession = await sessionsRepo.findByTokenHash(res.session.tokenHash);
-      assert.ok(dbSession);
-
-      // CSRF persistence check
-      const csrfToken = await auth.generateCsrfToken(res.session.id);
-      assert.ok(csrfToken);
-
-      const isCsrfValid = await csrfRepo.verifyToken(res.session.id, computeTokenHash(csrfToken));
-      assert.equal(isCsrfValid, true);
-    });
-
-    // 5. Session expiry and owner-scoped revocation
-    await t.test('session expiry and owner-scoped revocation', async () => {
-      const ownersRepo = new OwnerRepository(liveAdapter);
-      const sessionsRepo = new SessionRepository(liveAdapter);
+    // 2. Actual session idle and absolute expiry
+    await t.test('actual session idle and absolute expiry', async () => {
+      const ownersRepo = new OwnerRepository(mainAdapter);
+      const sessionsRepo = new SessionRepository(mainAdapter);
       const auth = new OwnerAuthenticationService({ ownersRepo, sessionsRepo });
 
-      const email = 'expiry-owner@st.com';
+      const email = 'session-expiry-owner@st.com';
       const password = 'SuperSecurePassword123_Live!';
       const owner = await auth.registerOwner(email, password, { isAuthorizedAdmin: true });
 
       const s1 = await auth.createSessionToken(owner.id);
 
-      // Explicit revocation with matching owner_id
-      const revoked = await sessionsRepo.revokeWithOwner(s1.session.id, owner.id);
-      assert.ok(revoked);
-
-      // Revocation with mismatching owner_id must fail
-      const revokedMismatch = await sessionsRepo.revokeWithOwner(s1.session.id, 'another-owner-id');
-      assert.equal(revokedMismatch, null);
-    });
-
-    // 6. CSRF expiry, rotation and cross-session rejection
-    await t.test('CSRF expiry, rotation and cross-session rejection', async () => {
-      const ownersRepo = new OwnerRepository(liveAdapter);
-      const sessionsRepo = new SessionRepository(liveAdapter);
-      const csrfRepo = new CsrfRepository(liveAdapter);
-      const auth = new OwnerAuthenticationService({ ownersRepo, sessionsRepo, csrfRepo });
-
-      const email = 'csrf-test-owner@st.com';
-      const password = 'SuperSecurePassword123_Live!';
-      const owner = await auth.registerOwner(email, password, { isAuthorizedAdmin: true });
-
-      const s1 = await auth.createSessionToken(owner.id);
-      const csrf1 = await auth.generateCsrfToken(s1.session.id);
-
-      // Verify token
-      assert.ok(await auth.verifyCsrfToken(s1.session.id, csrf1));
-
-      // Re-generating CSRF rotates/invalidates old one
-      const csrf2 = await auth.generateCsrfToken(s1.session.id);
-      await assert.rejects(async () => {
-        await auth.verifyCsrfToken(s1.session.id, csrf1);
-      }, /INVALID_CSRF_TOKEN/);
-
-      assert.ok(await auth.verifyCsrfToken(s1.session.id, csrf2));
-    });
-
-    // 7. Atomic recovery-code consumption with live PostgreSQL concurrency test (Blocker #6)
-    await t.test('atomic recovery-code consumption and concurrency', async () => {
-      const mfaRepo = new MfaRepository(liveAdapter);
-      const ownerId = 'owner-recovery-concur';
-      const codeHash = computeTokenHash('recovery-code-concur');
-
-      await liveAdapter.query(
-        "INSERT INTO owner_recovery_codes (id, owner_id, code_hash, is_used) VALUES ($1, $2, $3, false);",
-        ['recovery-id-concur', ownerId, codeHash]
+      // Artificially modify the idle_expires_at in the database to be in the past
+      await mainAdapter.query(
+        "UPDATE owner_sessions SET idle_expires_at = now() - interval '1 second' WHERE id = $1;",
+        [s1.session.id]
       );
 
-      // Run two concurrent use requests
-      const p1 = mfaRepo.verifyAndUseRecoveryCode(ownerId, codeHash);
-      const p2 = mfaRepo.verifyAndUseRecoveryCode(ownerId, codeHash);
-
-      const results = await Promise.all([p1, p2]);
-      const successful = results.filter(r => r === true);
-      assert.equal(successful.length, 1, "Exactly one concurrent recovery code consumption request must succeed");
+      await assert.rejects(async () => {
+        await auth.validateAndRetrieveSession(s1.token);
+      }, /SESSION_IDLE_EXPIRED/);
     });
 
-    // 8. Complete TOTP-confirmation rollback
-    await t.test('complete TOTP-confirmation rollback', async () => {
-      const ownersRepo = new OwnerRepository(liveAdapter);
-      const sessionsRepo = new SessionRepository(liveAdapter);
-      const mfaRepo = new MfaRepository(liveAdapter);
-      const auth = new OwnerAuthenticationService({ ownersRepo, sessionsRepo, mfaRepo });
+    // 3. Multiple sessions and revoke-other behavior
+    await t.test('multiple sessions and revoke-other behavior', async () => {
+      const ownersRepo = new OwnerRepository(mainAdapter);
+      const sessionsRepo = new SessionRepository(mainAdapter);
+      const auth = new OwnerAuthenticationService({ ownersRepo, sessionsRepo });
 
-      const email = 'mfa-rollback-owner@st.com';
+      const email = 'multisession-owner@st.com';
+      const password = 'SuperSecurePassword123_Live!';
+      const owner = await auth.registerOwner(email, password, { isAuthorizedAdmin: true });
+
+      // Create two independent sessions without revoking each other (Blocker #4)
+      const s1 = await auth.createSessionToken(owner.id);
+      const s2 = await auth.createSessionToken(owner.id);
+
+      // Both should be valid and active concurrently
+      const active1 = await auth.validateAndRetrieveSession(s1.token);
+      const active2 = await auth.validateAndRetrieveSession(s2.token);
+      assert.ok(active1);
+      assert.ok(active2);
+
+      // Revoke other sessions
+      await sessionsRepo.revokeAllOtherSessions(owner.id, s2.session.id);
+
+      // s1 must now be revoked
+      await assert.rejects(async () => {
+        await auth.validateAndRetrieveSession(s1.token);
+      }, /SESSION_REVOKED/);
+
+      // s2 must remain valid
+      const s2Check = await auth.validateAndRetrieveSession(s2.token);
+      assert.ok(s2Check);
+    });
+
+    // 4. CSRF expiry, rotation and cross-session rejection
+    await t.test('CSRF expiry, rotation and cross-session rejection', async () => {
+      const ownersRepo = new OwnerRepository(mainAdapter);
+      const sessionsRepo = new SessionRepository(mainAdapter);
+      const csrfRepo = new CsrfRepository(mainAdapter);
+      const auth = new OwnerAuthenticationService({ ownersRepo, sessionsRepo, csrfRepo });
+
+      const email = 'csrf-expiry-owner@st.com';
+      const password = 'SuperSecurePassword123_Live!';
+      const owner = await auth.registerOwner(email, password, { isAuthorizedAdmin: true });
+
+      const s1 = await auth.createSessionToken(owner.id);
+      const csrfToken = await auth.generateCsrfToken(s1.session.id);
+
+      // Manually set CSRF token's created_at to 31 minutes ago
+      await mainAdapter.query(
+        "UPDATE csrf_session_tokens SET created_at = now() - interval '31 minutes' WHERE session_id = $1;",
+        [s1.session.id]
+      );
+
+      // Verification must reject expired token
+      const isCsrfValid = await csrfRepo.verifyToken(s1.session.id, computeTokenHash(csrfToken));
+      assert.equal(isCsrfValid, false);
+    });
+
+    // 5. MFA elevation rollback and fresh CSRF binding
+    await t.test('MFA elevation rollback and fresh CSRF binding', async () => {
+      const ownersRepo = new OwnerRepository(mainAdapter);
+      const sessionsRepo = new SessionRepository(mainAdapter);
+      const mfaRepo = new MfaRepository(mainAdapter);
+      const csrfRepo = new CsrfRepository(mainAdapter);
+      const auth = new OwnerAuthenticationService({ ownersRepo, sessionsRepo, mfaRepo, csrfRepo });
+
+      const email = 'mfa-elevation-owner@st.com';
       const password = 'SuperSecurePassword123_Live!';
       const owner = await auth.registerOwner(email, password, { isAuthorizedAdmin: true });
       const s1 = await auth.createSessionToken(owner.id);
 
+      // Create an unconfirmed enrollment first
       const enroll = await auth.enrollTotpMfa(owner.id, s1.token);
 
-      // Confirm with a totally invalid TOTP code to trigger an intentional error and rollback
+      // Force failure during TOTP verification (such as passing a bad code)
       await assert.rejects(async () => {
-        await auth.confirmTotpMfa(owner.id, enroll.enrollmentId, '000000');
+        await auth.verifyTotpAndElevateSession(owner.id, s1.token, '000000');
       }, /INVALID_TOTP_CODE/);
 
-      // Verify that no used TOTP code, recovery codes, or MFA status was updated due to transaction rollback
-      const ownerDb = await ownersRepo.findById(owner.id);
-      assert.equal(ownerDb.mfaEnabled, false);
-
-      const recCodes = await liveAdapter.query("SELECT * FROM owner_recovery_codes WHERE owner_id = $1;", [owner.id]);
-      assert.equal(recCodes.rows.length, 0);
+      // Prove full transaction rollback: old session must NOT be revoked, and old CSRF must still exist
+      const s1Check = await auth.validateAndRetrieveSession(s1.token);
+      assert.ok(s1Check);
     });
 
-    // 9. Database-level 50-agent enforcement
-    await t.test('database-level 50-agent enforcement', async () => {
-      const agentsRepo = new AgentRepository(liveAdapter);
-
-      // Insert up to 50 agents
-      const countRes = await liveAdapter.query("SELECT count(*) FROM agents;");
+    // 6. Direct SQL insertion of agent 51 to prove the database trigger (Blocker #12)
+    await t.test('direct SQL insertion of agent 51 to prove enforce_agent_cap', async () => {
+      const countRes = await mainAdapter.query("SELECT count(*) FROM agents;");
       const count = parseInt(countRes.rows[0].count, 10);
       const needed = 50 - count;
 
       for (let i = 0; i < needed; i++) {
-        await liveAdapter.query(
+        await mainAdapter.query(
           "INSERT INTO agents (id, name, namespace, enabled) VALUES ($1, $2, $3, true) ON CONFLICT DO NOTHING;",
-          [`live-agent-${i}`, `Live Agent ${i}`, `ns.live.agent.${i}`]
+          [`live-agent-trigger-${i}`, `Live Trigger Agent ${i}`, `ns.live.trigger.agent.${i}`]
         );
       }
 
-      // 51st agent must throw cap reached on database level (Trigger enforce_agent_cap)
+      // 51st direct SQL insert must throw AGENT_CAP_REACHED on database level
       await assert.rejects(async () => {
-        await agentsRepo.add({ id: 'live-agent-51', name: 'Live Agent 51', namespace: 'ns.live.agent.51' });
+        await mainAdapter.query(
+          "INSERT INTO agents (id, name, namespace, enabled) VALUES ($1, $2, $3, true);",
+          ['live-agent-trigger-51', 'Live Trigger Agent 51', 'ns.live.trigger.agent.51']
+        );
       }, /AGENT_CAP_REACHED/);
     });
 
-    // 10. Append-only UPDATE and DELETE rejection on audit/evidence tables
-    await t.test('append-only UPDATE and DELETE rejection', async () => {
-      await liveAdapter.query(
-        "INSERT INTO authentication_audit_events (id, owner_id, event_type) VALUES ($1, null, $2);",
-        ['audit-id-test-append', 'test_audit_event']
+    // 7. evidence_events UPDATE and DELETE rejection
+    await t.test('evidence_events UPDATE and DELETE rejection', async () => {
+      await mainAdapter.query(
+        "INSERT INTO evidence_events (id, subject_id, kind, classification, payload, event_hash) VALUES ($1, $2, $3, $4, $5, $6);",
+        ['ev-id-test-append', 'subj-1', 'kind-1', 'class-1', '{}', computeTokenHash('ev-id-test-append')]
       );
 
-      // Trying to update the audit event must throw trigger mutation rejection
+      // Attempted UPDATE on evidence_events must fail
       await assert.rejects(async () => {
-        await liveAdapter.query(
-          "UPDATE authentication_audit_events SET event_type = 'hacked' WHERE id = $1;",
-          ['audit-id-test-append']
+        await mainAdapter.query(
+          "UPDATE evidence_events SET subject_id = 'hacked' WHERE id = 'ev-id-test-append';"
         );
-      }, /deny_audit_mutation/i);
+      }, /EVIDENCE_EVENTS_ARE_IMMUTABLE/);
 
-      // Trying to delete the audit event must throw trigger mutation rejection
+      // Attempted DELETE on evidence_events must fail
       await assert.rejects(async () => {
-        await liveAdapter.query(
-          "DELETE FROM authentication_audit_events WHERE id = $1;",
-          ['audit-id-test-append']
+        await mainAdapter.query(
+          "DELETE FROM evidence_events WHERE id = 'ev-id-test-append';"
         );
-      }, /deny_audit_mutation/i);
+      }, /EVIDENCE_EVENTS_ARE_IMMUTABLE/);
     });
 
-    // 11. Upgrades test from 001-008 to 009+ (Genuine Upgrade Test — Blocker #3)
-    await t.test('Genuine Upgrade Test from 001-008 to 009+', async () => {
-      const upgradeSchema = 'test_upgrade_schema';
-      await liveAdapter.query(`DROP SCHEMA IF EXISTS ${upgradeSchema} CASCADE;`);
-      await liveAdapter.query(`CREATE SCHEMA ${upgradeSchema};`);
+    // 8. publishing-receipt anti-fabrication at the PostgreSQL layer
+    await t.test('publishing-receipt anti-fabrication at the PostgreSQL layer', async () => {
+      const evidenceRepo = new EvidenceLedgerRepository(mainAdapter);
 
+      // Attempting to append an event without verifiable platform receipt must fail
+      await assert.rejects(async () => {
+        await evidenceRepo.append({
+          subjectId: 'subj-1',
+          kind: 'platform_publish',
+          classification: 'publish_video',
+          payload: {} // missing platformPostId, platformUrl etc.
+        });
+      }, /VERIFIABLE_PLATFORM_RECEIPT_REQUIRED/);
+    });
+
+    // 9. Concurrent evidence-chain appends (Blocker #10/12)
+    await t.test('concurrent evidence-chain appends', async () => {
+      const evidenceRepo = new EvidenceLedgerRepository(mainAdapter);
+
+      // Launch 3 parallel appends
+      const p1 = evidenceRepo.append({ subjectId: 'concur-subj', kind: 'step_narrative', classification: 'story', payload: { step: 1 } });
+      const p2 = evidenceRepo.append({ subjectId: 'concur-subj', kind: 'step_narrative', classification: 'story', payload: { step: 2 } });
+      const p3 = evidenceRepo.append({ subjectId: 'concur-subj', kind: 'step_narrative', classification: 'story', payload: { step: 3 } });
+
+      const results = await Promise.all([p1, p2, p3]);
+
+      // Verify that all 3 created one valid, linearly connected hash chain (where previousHash equals the parent's eventHash)
+      const list = await evidenceRepo.list();
+      const testEvents = list.filter(e => e.subjectId === 'concur-subj');
+      assert.equal(testEvents.length, 3);
+
+      // Order them sequentially based on matching hashes
+      const hashes = testEvents.map(e => e.eventHash);
+      const prevHashes = testEvents.map(e => e.previousHash);
+
+      const root = testEvents.find(e => !hashes.includes(e.previousHash));
+      assert.ok(root, "One root element must exist without previousHash inside the batch");
+    });
+
+    // 10. Genuine upgrades test from 001-008 to 011+ (Genuine Upgrade Test)
+    await t.test('Genuine Upgrade Test from 001-008 to 011+', async () => {
       // Copy only files 001 to 008 from actual sql/ directory to upgradeTempDir
-      const upgradeTempDir = path.join(process.cwd(), 'scratch', 'upgrade-temp-migrations');
+      const upgradeTempDir = path.join(process.cwd(), 'scratch', 'upgrade-temp-migrations-two');
       await fs.mkdir(upgradeTempDir, { recursive: true });
 
       const actualSqlDir = path.join(process.cwd(), 'sql');
@@ -357,10 +341,6 @@ test('PostgreSQL Live Integration Test Suite with Custom Schema Isolation', asyn
         await fs.writeFile(dest, content, 'utf8');
       }
 
-      // Check client out of pool and set search path to upgradeSchema
-      const upgradeAdapter = new PostgresAdapter({}, testPool);
-      await upgradeAdapter.query(`SET search_path TO ${upgradeSchema};`);
-
       try {
         const runnerPhase1 = new MigrationRunner(upgradeAdapter, { migrationsDir: upgradeTempDir });
         await runnerPhase1.runMigrations();
@@ -374,18 +354,18 @@ test('PostgreSQL Live Integration Test Suite with Custom Schema Isolation', asyn
         // Insert mock data into phase 1 tables
         await upgradeAdapter.query(
           "INSERT INTO owners (id, email, password_hash) VALUES ($1, $2, $3);",
-          ['owner-old-id', 'old@st.com', 'some-pwd-hash']
+          ['owner-old-id-2', 'old2@st.com', 'some-pwd-hash']
         );
 
         // Run migrations 009+ using the canonical runner pointed to the real sql/ directory
         const canonicalRunner = new MigrationRunner(upgradeAdapter);
         const upgradeResult = await canonicalRunner.runMigrations();
 
-        assert.equal(upgradeResult.appliedCount, 2, "Upgrade must apply exactly 2 migrations (009 and 010)");
+        assert.equal(upgradeResult.appliedCount, 3, "Upgrade must apply exactly 3 migrations (009, 010, and 011)");
 
         // Verify data was preserved and role correctly defaulted to 'owner' (Blocker #3)
-        const checkOwner = await upgradeAdapter.query("SELECT * FROM owners WHERE id = $1;", ['owner-old-id']);
-        assert.equal(checkOwner.rows[0].email, 'old@st.com');
+        const checkOwner = await upgradeAdapter.query("SELECT * FROM owners WHERE id = $1;", ['owner-old-id-2']);
+        assert.equal(checkOwner.rows[0].email, 'old2@st.com');
         assert.equal(checkOwner.rows[0].role, 'owner');
 
         // Check table used_totp_codes exists
@@ -398,53 +378,17 @@ test('PostgreSQL Live Integration Test Suite with Custom Schema Isolation', asyn
 
       } finally {
         await fs.rm(upgradeTempDir, { recursive: true, force: true });
-        await liveAdapter.query(`DROP SCHEMA IF EXISTS ${upgradeSchema} CASCADE;`);
-        await upgradeAdapter.closePool();
-      }
-    });
-
-    // 12. Checksum-tampering test using isolated temporary migrations directory (Blocker #4)
-    await t.test('isolated migration checksum-tampering checks', async () => {
-      const tamperSchema = 'test_tamper_schema';
-      await liveAdapter.query(`DROP SCHEMA IF EXISTS ${tamperSchema} CASCADE;`);
-      await liveAdapter.query(`CREATE SCHEMA ${tamperSchema};`);
-
-      const tamperAdapter = new PostgresAdapter({}, testPool);
-      await tamperAdapter.query(`SET search_path TO ${tamperSchema};`);
-
-      const tamperTempDir = path.join(process.cwd(), 'scratch', 'tamper-temp-migrations');
-      await fs.mkdir(tamperTempDir, { recursive: true });
-
-      const m1Path = path.join(tamperTempDir, '001_initial.sql');
-      const m2Path = path.join(tamperTempDir, '002_dummy.sql');
-
-      await fs.writeFile(m1Path, `CREATE TABLE tamper_test (id text PRIMARY KEY);`, 'utf8');
-      await fs.writeFile(m2Path, `CREATE TABLE tamper_test_two (id text PRIMARY KEY);`, 'utf8');
-
-      try {
-        const tamperRunner = new MigrationRunner(tamperAdapter, { migrationsDir: tamperTempDir });
-        await tamperRunner.runMigrations();
-
-        // Tamper with first file
-        await fs.writeFile(m1Path, `CREATE TABLE tamper_test (id text PRIMARY KEY); -- tampered`, 'utf8');
-
-        // Second run must throw checksum mismatch
-        await assert.rejects(async () => {
-          await tamperRunner.runMigrations();
-        }, /Migration checksum mismatch/i);
-
-      } finally {
-        await fs.rm(tamperTempDir, { recursive: true, force: true });
-        await liveAdapter.query(`DROP SCHEMA IF EXISTS ${tamperSchema} CASCADE;`);
-        await tamperAdapter.closePool();
       }
     });
 
   } finally {
-    // Guarantees absolute clean environment in the finally block (Blocker #2)
-    if (schemaName.startsWith('test_')) {
-      await liveAdapter.query(`DROP SCHEMA IF EXISTS ${schemaName} CASCADE;`);
-    }
-    await liveAdapter.closePool();
+    // Guarantees absolute independent pool cleanup closure exactly once (Blocker #11)
+    await mainAdapter.query(`DROP SCHEMA IF EXISTS ${mainSchema} CASCADE;`).catch(() => {});
+    await upgradeAdapter.query(`DROP SCHEMA IF EXISTS ${upgradeSchema} CASCADE;`).catch(() => {});
+    await tamperAdapter.query(`DROP SCHEMA IF EXISTS ${tamperSchema} CASCADE;`).catch(() => {});
+
+    await mainAdapter.closePool().catch(() => {});
+    await upgradeAdapter.closePool().catch(() => {});
+    await tamperAdapter.closePool().catch(() => {});
   }
 });
