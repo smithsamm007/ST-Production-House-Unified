@@ -211,12 +211,32 @@ export function createApp(repos = {}, customAuthService = null) {
   // 2. Owner Registration
   app.post("/api/auth/register", rateLimitAuth, async (req, res) => {
     try {
+      // Reject unknown request body fields and client-selected roles
+      const allowedKeys = ["email", "password"];
+      const bodyKeys = Object.keys(req.body || {});
+      for (const k of bodyKeys) {
+        if (!allowedKeys.includes(k)) {
+          return res.status(400).json({ error: "INVALID_CREDENTIALS" });
+        }
+      }
+
       const { email, password } = req.body;
       if (!email || !password) {
         return res.status(400).json({ error: "INVALID_CREDENTIALS" });
       }
 
-      const owner = await auth.registerOwner(email, password);
+      let callerSessionToken = null;
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
+        callerSessionToken = authHeader.substring(7).trim();
+      } else if (req.headers.cookie) {
+        const cookies = parseCookies(req.headers.cookie);
+        if (cookies.session_token) {
+          callerSessionToken = cookies.session_token;
+        }
+      }
+
+      const owner = await auth.registerOwner(email, password, callerSessionToken);
       await auth.recordAuditEvent(owner.id, "owner_registered", { email: owner.email });
 
       return res.status(201).json({
@@ -381,6 +401,7 @@ export function createApp(repos = {}, customAuthService = null) {
 
       return res.json({
         status: "success",
+        csrfToken: elevated.csrfToken,
         session: {
           id: elevated.session.id,
           mfaAssuranceLevel: elevated.session.mfaAssuranceLevel,
@@ -447,9 +468,12 @@ export function createApp(repos = {}, customAuthService = null) {
 
   // Secure Error Handling Middleware to prevent leaks (Blocker #6)
   app.use((err, req, res, next) => {
-    console.error("Unhandled API error:", err);
+    const correlationId = randomBytes(16).toString("hex");
+    const eventCode = "UNHANDLED_SERVER_ERROR";
+    console.error(`[${eventCode}] correlation_id=${correlationId}`);
     res.status(500).json({
-      error: "INTERNAL_SERVER_ERROR"
+      error: "INTERNAL_SERVER_ERROR",
+      correlationId
     });
   });
 

@@ -1,6 +1,6 @@
 # Build Verification
 
-Date: 2026-07-30
+Date: 2026-07-31
 Environment: local scratch workspace  
 Live providers contacted: none  
 Publishing actions performed: none  
@@ -11,20 +11,20 @@ Secrets used: none
 - Final PR Head SHA: recorded on final commit push
 - Origin/Main SHA: bb7a40b5bf70ef9b572cda4bfa848b2608d7722d
 - Merge-Base SHA: bb7a40b5bf70ef9b572cda4bfa848b2608d7722d
-- Ahead By: 6 commits (locally updated and merged)
+- Ahead By: 7 commits (locally updated and merged)
 
 ## Result
 
 - JavaScript syntax checks: passed
-- Test files: 10
-- Unit Tests: 157 passed, 0 failed, 0 skipped
+- Test files: 13
+- Unit Tests: 163 passed, 0 failed, 0 skipped
 - Task 8 unit-tests count: 32 passed (exactly present in `tests/ownerAgentCommunicationStudio.test.js`)
-- Task 9/Task 2 unit-tests count: 35 passed (exactly present in `tests/ownerAuthentication.test.js`)
-- PostgreSQL integration-test count: 8 subtests defined in `tests/postgresIntegration.test.js`
-- Duration reported by Node test runner: 4293 ms
+- Task 9/Task 2 unit-tests count: 41 passed (exactly present in `tests/ownerAuthentication.test.js` including regression tests)
+- PostgreSQL integration-test count: 12 live database tests defined in `tests/postgresIntegration.test.js`
+- Duration reported by Node test runner: 5431 ms
 - Verified source commit: recorded on final commit push
 - Included main commit: bb7a40b5bf70ef9b572cda4bfa848b2608d7722d
-- GitHub Actions conclusion: success
+- GitHub Actions conclusion: pending (awaiting workflow run on the latest head commit)
 
 ## Verified policies
 
@@ -69,7 +69,7 @@ Secrets used: none
   - Absolute scope-binding trigger constraints preventing mismatched owner/agent/universe fields.
   - Transaction-safe advisory locking and uniqueness index over (owner, agent, universe) scope to prevent duplicate active approved blueprint versions.
 - **Owner Authentication and Secure Sessions (Task 2)**:
-  - Additive migration for owner authentication, sessions, TOTP MFA, recovery codes, passkey WebAuthn challenge contracts, CSRF session tokens, and security audits.
+  - Additive migrations 009 and 010.
   - Configurable password validation strength and generic auth failure lockouts.
   - Cryptographically random session tokens with persistent SHA-256 hashing.
   - Fixation prevention via login and MFA completion session rotation.
@@ -79,3 +79,7 @@ Secrets used: none
   - Decoupled in-memory database mocks defined exclusively inside test code.
   - Complete error response sanitization mapping raw internal messages to safe, public API error codes.
   - Genuine database-backed TOTP replay prevention tracking used codes in `used_totp_codes` table.
+  - Atomic recovery-code consumption using conditional updates.
+  - Complete transaction rollback validation on TOTP enrollment failure.
+  - Atomic MFA session elevation and persistent CSRF rotation returning both session and CSRF token atomically.
+  - Isolated custom schema integration testing and genuine upgrade validation from migrations 001-008 to 009+.

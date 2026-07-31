@@ -4,13 +4,17 @@ This repository is the verified secure foundation, not a claim that every live p
 
 ## Phase 1 — Foundation (included)
 
-- Canonical 20-agent registry with 50-agent cap.
-- Three private remote providers plus local emergency policy.
-- One-Reel product identity policy and independent main-video placement.
-- **Agent Digital Identity and Connection Isolation**:
-  - `agent_public_profiles`, `agent_email_connections`, and `agent_social_accounts` schema definitions.
-  - Seeds 5 unconfigured slots (1 email, 4 social) for all 20 preloaded agents without fake credentials or addresses.
-  - **Important Notice**: No real email addresses, live OAuth connections, or live social accounts are active yet. Live OAuth, SMTP, and social publishing remain pending.
+- **Owner Authentication and Secure Control Plane API (Task 2)**:
+  - Additive migrations 009 and 010.
+  - Asynchronous, native Argon2id password authentication with timing leak protections.
+  - Opake, database-hashed secure session tokens.
+  - Multi-tier state machines, fixation prevention, sliding idle and absolute expiration.
+  - Strict 30-minute CSRF token persistence, rotation, and revocation.
+  - Direct database-backed TOTP MFA enrollment and elevation with anti-replay used code reservation.
+  - Atomic single-use recovery code consumption.
+  - Complete, transaction-safe API endpoints with explicit repository dependency injection.
+  - Sanitize unhandled API errors returning Generic Error Code with Correlation IDs.
+  - Complete live PostgreSQL 15 integration lifecycle test suite under a custom schema.
 - **Agent Creative Charter and Channel Universe System**:
   - Relational schema tables added for `creative_universes`, `creative_charters`, `creative_charter_versions`, `agent_charter_assignments`, and hierarchy/entity registries.
   - Dynamic snapshot validation, immutable version control, and owner-approval state machine.
@@ -28,16 +32,21 @@ This repository is the verified secure foundation, not a claim that every live p
   - Automated 22-section validation and brand safety scanning (blocking words like 'unsafe' or 'unfiltered').
   - Recursive secret-leak sanitization on generated blueprint version snapshots.
   - Immutable Owner approvals that permanently lock the blueprint and deactivate edits.
+- Canonical 20-agent registry with 50-agent cap.
+- Three private remote providers plus local emergency policy.
+- One-Reel product identity policy and independent main-video placement.
+- **Agent Digital Identity and Connection Isolation**:
+  - `agent_public_profiles`, `agent_email_connections`, and `agent_social_accounts` schema definitions.
+  - Seeds 5 unconfigured slots (1 email, 4 social) for all 20 preloaded agents without fake credentials or addresses.
+  - **Important Notice**: No real email addresses, live OAuth connections, or live social accounts are active yet. Live OAuth, SMTP, and social publishing remain pending.
 - Affiliate URL/disclosure policy.
 - Owner-approval and non-fabricated publishing receipt policy.
 - PostgreSQL schema for durable jobs, leases, evidence, and receipts.
 - Integration contracts and repository reuse/licensing decisions.
 
-## Phase 2 — Runnable control plane (estimated 3–5 weeks)
+## Phase 2 — Runnable control plane (estimated 2–3 weeks)
 
-- API, owner dashboard, Argon2id/passkey authentication, CSRF, RBAC.
-- PostgreSQL repositories and migrations wired to domain policies, including concrete repository implementations for digital identities, public profiles, email/social connections, creative charters, and long-term universe/reference registries.
-- Redis or PostgreSQL workers with leases, concurrency, and observability.
+- API, owner dashboard, Redis or PostgreSQL workers with leases, concurrency, and observability.
 - Vault/KMS credential broker and per-agent task-provider configuration.
 
 ## Phase 3 — Real media workers (estimated 5–9 weeks)

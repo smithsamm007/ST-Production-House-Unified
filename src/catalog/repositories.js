@@ -276,17 +276,10 @@ export class MfaRepository {
 
   async verifyAndUseRecoveryCode(ownerId, codeHash) {
     const res = await this.dbAdapter.query(
-      "SELECT * FROM owner_recovery_codes WHERE owner_id = $1 AND code_hash = $2 AND is_used = false FOR UPDATE;",
+      "UPDATE owner_recovery_codes SET is_used = true, used_at = now() WHERE owner_id = $1 AND code_hash = $2 AND is_used = false RETURNING id;",
       [ownerId, codeHash]
     );
-    if (!res.rows[0]) return false;
-    const rc = res.rows[0];
-
-    await this.dbAdapter.query(
-      "UPDATE owner_recovery_codes SET is_used = true, used_at = now() WHERE id = $1;",
-      [rc.id]
-    );
-    return true;
+    return res.rows.length > 0;
   }
 
   async recordUsedTotpCode(ownerId, totpCode, timeStep) {
@@ -335,6 +328,11 @@ export class CsrfRepository {
   }
 
   async createToken(sessionId, tokenValue) {
+    // Delete old tokens first to enforce strict rotation
+    await this.dbAdapter.query(
+      "DELETE FROM csrf_session_tokens WHERE session_id = $1;",
+      [sessionId]
+    );
     await this.dbAdapter.query(
       "INSERT INTO csrf_session_tokens (session_id, token_value) VALUES ($1, $2);",
       [sessionId, tokenValue]
@@ -343,10 +341,22 @@ export class CsrfRepository {
 
   async verifyToken(sessionId, tokenValue) {
     const res = await this.dbAdapter.query(
-      "SELECT 1 FROM csrf_session_tokens WHERE session_id = $1 AND token_value = $2;",
+      "SELECT created_at FROM csrf_session_tokens WHERE session_id = $1 AND token_value = $2;",
       [sessionId, tokenValue]
     );
-    return res.rows.length > 0;
+    if (res.rows.length === 0) return false;
+
+    // Strict 30 minutes CSRF expiration
+    const createdAt = new Date(res.rows[0].created_at);
+    const ageMs = Date.now() - createdAt.getTime();
+    return ageMs <= 30 * 60 * 1000;
+  }
+
+  async deleteTokensForSession(sessionId) {
+    await this.dbAdapter.query(
+      "DELETE FROM csrf_session_tokens WHERE session_id = $1;",
+      [sessionId]
+    );
   }
 }
 
