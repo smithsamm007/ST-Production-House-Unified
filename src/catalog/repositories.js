@@ -388,11 +388,8 @@ export class AgentRepository {
     this.dbAdapter = adapter;
   }
 
-  async list(ownerId = null) {
-    const query = ownerId
-      ? ["SELECT * FROM agents WHERE owner_id = $1 ORDER BY id ASC;", [ownerId]]
-      : ["SELECT * FROM agents ORDER BY id ASC;", []];
-    const res = await this.dbAdapter.query(query[0], query[1]);
+  async list() {
+    const res = await this.dbAdapter.query("SELECT * FROM agents ORDER BY id ASC;");
     return res.rows.map((row) => ({
       id: row.id,
       name: row.name,
@@ -401,11 +398,8 @@ export class AgentRepository {
     }));
   }
 
-  async get(id, ownerId = null) {
-    const query = ownerId
-      ? ["SELECT * FROM agents WHERE id = $1 AND owner_id = $2;", [id, ownerId]]
-      : ["SELECT * FROM agents WHERE id = $1;", [id]];
-    const res = await this.dbAdapter.query(query[0], query[1]);
+  async get(id) {
+    const res = await this.dbAdapter.query("SELECT * FROM agents WHERE id = $1;", [id]);
     if (!res.rows[0]) return null;
     return {
       id: res.rows[0].id,
@@ -415,7 +409,7 @@ export class AgentRepository {
     };
   }
 
-  async add(agent, ownerId = null) {
+  async add(agent) {
     // Check 50-agent limit
     const countRes = await this.dbAdapter.query("SELECT count(*) FROM agents;");
     const count = parseInt(countRes.rows[0].count, 10);
@@ -425,8 +419,8 @@ export class AgentRepository {
 
     try {
       const res = await this.dbAdapter.query(
-        "INSERT INTO agents (id, name, namespace, enabled, owner_id) VALUES ($1, $2, $3, $4, $5) RETURNING *;",
-        [agent.id, agent.name, agent.namespace, agent.enabled !== false, ownerId]
+        "INSERT INTO agents (id, name, namespace, enabled) VALUES ($1, $2, $3, $4) RETURNING *;",
+        [agent.id, agent.name, agent.namespace, agent.enabled !== false]
       );
       return res.rows[0];
     } catch (err) {
@@ -684,7 +678,7 @@ export class EvidenceLedgerRepository {
     this.dbAdapter = adapter;
   }
 
-  async append(event, ownerId = null) {
+  async append(event) {
     if (!event?.subjectId || !event?.kind || !event?.classification) {
       throw new Error("INCOMPLETE_EVIDENCE_EVENT");
     }
@@ -701,14 +695,6 @@ export class EvidenceLedgerRepository {
     }
 
     return await this.dbAdapter.withTransaction(async (client) => {
-      // Exclusive table lock to serialize concurrent appends and guarantee a perfectly linear chain (Blocker #10)
-      try {
-        await client.query("LOCK TABLE evidence_events IN EXCLUSIVE MODE;");
-      } catch (err) {
-        // Fallback for mock/query translation test environments
-        await client.query("SELECT pg_advisory_xact_lock(776655);");
-      }
-
       // Find previous event to establish chain integrity
       const prevRes = await client.query(
         "SELECT event_hash FROM evidence_events ORDER BY occurred_at DESC, id DESC LIMIT 1;"
@@ -735,8 +721,8 @@ export class EvidenceLedgerRepository {
         .digest("hex");
 
       const res = await client.query(
-        `INSERT INTO evidence_events (id, subject_id, kind, classification, payload, previous_hash, event_hash, occurred_at, owner_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *;`,
+        `INSERT INTO evidence_events (id, subject_id, kind, classification, payload, previous_hash, event_hash, occurred_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *;`,
         [
           recordId,
           event.subjectId,
@@ -746,7 +732,6 @@ export class EvidenceLedgerRepository {
           previousHash,
           eventHash,
           occurredAt,
-          ownerId,
         ]
       );
 
@@ -764,11 +749,8 @@ export class EvidenceLedgerRepository {
     });
   }
 
-  async list(ownerId = null) {
-    const query = ownerId
-      ? ["SELECT * FROM evidence_events WHERE owner_id = $1 ORDER BY occurred_at ASC, id ASC;", [ownerId]]
-      : ["SELECT * FROM evidence_events ORDER BY occurred_at ASC, id ASC;", []];
-    const res = await this.dbAdapter.query(query[0], query[1]);
+  async list() {
+    const res = await this.dbAdapter.query("SELECT * FROM evidence_events ORDER BY occurred_at ASC, id ASC;");
     return res.rows.map((row) => {
       const payload = typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
       return Object.freeze({

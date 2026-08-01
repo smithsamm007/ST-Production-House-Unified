@@ -49,6 +49,10 @@ function mockQueryHandler(text, params, parent) {
     targetTable = "authentication_audit_events";
   } else if (uppercase.includes("CSRF_SESSION_TOKENS")) {
     targetTable = "csrf_session_tokens";
+  } else if (uppercase.includes("AGENTS")) {
+    targetTable = "agents";
+  } else if (uppercase.includes("EVIDENCE_EVENTS")) {
+    targetTable = "evidence_events";
   } else if (uppercase.includes("PG_ADVISORY_XACT_LOCK")) {
     targetTable = "advisory_lock";
   }
@@ -79,12 +83,12 @@ function mockQueryHandler(text, params, parent) {
         const count = parent.db.size;
         return { rows: [{ count }], rowCount: 1 };
       }
-      const emailOrId = params[0];
+      const email = params[0];
       let owner = null;
-      if (emailOrId) {
-        const norm = emailOrId.toLowerCase().trim();
+      if (email) {
+        const norm = email.toLowerCase().trim();
         for (const o of parent.db.values()) {
-          if (o.email === norm || o.id === emailOrId) {
+          if (o.email === norm) {
             owner = o;
             break;
           }
@@ -105,6 +109,10 @@ function mockQueryHandler(text, params, parent) {
         created_at: owner.createdAt
       }] : [];
       return { rows, rowCount: rows.length };
+    }
+
+    if (targetTable === "advisory_lock") {
+      return { rows: [], rowCount: 1 };
     }
 
     if (targetTable === "owner_sessions") {
@@ -129,10 +137,6 @@ function mockQueryHandler(text, params, parent) {
         session_version: session.sessionVersion
       }] : [];
       return { rows, rowCount: rows.length };
-    }
-
-    if (targetTable === "advisory_lock") {
-      return { rows: [], rowCount: 1 };
     }
 
     throw new Error(`Unsupported SELECT query target: ${targetTable}`);
@@ -176,13 +180,27 @@ function mockQueryHandler(text, params, parent) {
     }
 
     if (targetTable === "owner_sessions") {
-      const id = params[0];
+      const idOrHash = params[0];
       if (parent.sessionsDb) {
-        const s = parent.sessionsDb.get(id);
+        const s = parent.sessionsDb.get(idOrHash);
         if (s) {
           s.revokedAt = new Date().toISOString();
+        } else {
+          for (const sess of parent.sessionsDb.values()) {
+            if (sess.tokenHash === idOrHash) {
+              sess.revokedAt = new Date().toISOString();
+            }
+          }
         }
       }
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (targetTable === "agents") {
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (targetTable === "evidence_events") {
       return { rows: [], rowCount: 1 };
     }
 
@@ -208,15 +226,6 @@ function mockQueryHandler(text, params, parent) {
       return { rows: [], rowCount: 1 };
     }
 
-    if (targetTable === "owner_sessions") {
-      const [id, ownerId, tokenHash, createdAt, lastSeenAt, absoluteExpiresAt, idleExpiresAt, revokedAt, sessionVersion, mfaAssuranceLevel] = params;
-      const session = { id, ownerId, tokenHash, createdAt, lastSeenAt, absoluteExpiresAt, idleExpiresAt, revokedAt, sessionVersion, mfaAssuranceLevel };
-      if (parent.sessionsDb) {
-        parent.sessionsDb.set(id, session);
-      }
-      return { rows: [], rowCount: 1 };
-    }
-
     if (targetTable === "owner_recovery_codes") {
       const [id, ownerId, codeHash] = params;
       if (parent.mfaRepo) {
@@ -237,6 +246,15 @@ function mockQueryHandler(text, params, parent) {
       const [id, ownerId, eventType, payload] = params;
       if (parent.auditRepo) {
         parent.auditRepo.db.set(id, { id, ownerId, eventType, payload });
+      }
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (targetTable === "owner_sessions") {
+      const [id, ownerId, tokenHash, createdAt, lastSeenAt, absoluteExpiresAt, idleExpiresAt, revokedAt, sessionVersion, mfaAssuranceLevel] = params;
+      const session = { id, ownerId, tokenHash, createdAt, lastSeenAt, absoluteExpiresAt, idleExpiresAt, revokedAt, sessionVersion, mfaAssuranceLevel };
+      if (parent.sessionsDb) {
+        parent.sessionsDb.set(id, session);
       }
       return { rows: [], rowCount: 1 };
     }
@@ -449,38 +467,6 @@ class InMemoryAuditRepository {
   }
 }
 
-class TestOwnerAuthenticationService extends OwnerAuthenticationService {
-  async registerOwner(email, password, options = null) {
-    if (options && options.isAuthorizedAdmin === true) {
-      // Direct, test-only registration bypass exclusively inside the test runner (Blocker #2)
-      const normEmail = normalizeEmail(email);
-      const existing = await this.ownersRepo.findByEmail(normEmail);
-      if (existing) {
-        throw new Error("DUPLICATE_OWNER_EMAIL_REJECTED");
-      }
-      const pwdHash = await hashPassword(password);
-      const owner = {
-        id: randomBytes(16).toString("hex"),
-        email: normEmail,
-        passwordHash: pwdHash,
-        status: "anonymous",
-        role: "owner",
-        mfaEnabled: false,
-        failedLoginAttempts: 0,
-        lockoutUntil: null,
-        lastSuccessAt: null,
-        passwordChangedAt: new Date().toISOString(),
-        sessionRevocationEpoch: 1,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      await this.ownersRepo.create(owner);
-      return owner;
-    }
-    return super.registerOwner(email, password, options);
-  }
-}
-
 // Generate a clean explicit authentication service instance for every test run
 function createTestAuthService() {
   const sessionsDb = new Map();
@@ -488,7 +474,7 @@ function createTestAuthService() {
   const auditRepo = new InMemoryAuditRepository();
   const sessionsRepo = new InMemorySessionRepository(sessionsDb);
   const ownersRepo = new InMemoryOwnerRepository(sessionsDb, mfaRepo, auditRepo);
-  return new TestOwnerAuthenticationService({
+  return new OwnerAuthenticationService({
     ownersRepo,
     sessionsRepo,
     mfaRepo,
