@@ -20,7 +20,8 @@ import {
   CsrfRepository,
   AuditRepository,
   AgentRepository,
-  EvidenceLedgerRepository
+  EvidenceLedgerRepository,
+  PublishingRepository
 } from '../src/catalog/repositories.js';
 
 test('PostgreSQL Live Integration Test Suite with Multi-Pool Schema Isolation', async (t) => {
@@ -96,7 +97,7 @@ test('PostgreSQL Live Integration Test Suite with Multi-Pool Schema Isolation', 
   const upgradeAdapter = new PostgresAdapter({}, poolUpgrade);
   const tamperAdapter = new PostgresAdapter({}, poolTamper);
 
-  // Initialize each schema and bind checking clients deterministically
+  // Initialize each schema and bind checking clients deterministically (Blocker #9/10)
   await mainAdapter.query(`DROP SCHEMA IF EXISTS ${mainSchema} CASCADE; CREATE SCHEMA ${mainSchema};`);
   await upgradeAdapter.query(`DROP SCHEMA IF EXISTS ${upgradeSchema} CASCADE; CREATE SCHEMA ${upgradeSchema};`);
   await tamperAdapter.query(`DROP SCHEMA IF EXISTS ${tamperSchema} CASCADE; CREATE SCHEMA ${tamperSchema};`);
@@ -110,7 +111,7 @@ test('PostgreSQL Live Integration Test Suite with Multi-Pool Schema Isolation', 
       await mainRunner.runMigrations();
     });
 
-    // Helper to run query with mainSchema search_path
+    // Helper to run query with mainSchema search_path deterministically on each checked-out client (Blocker #9)
     async function runInMainSchema(callback) {
       return await mainAdapter.withTransaction(async (client) => {
         await client.query(`SET search_path TO ${mainSchema};`);
@@ -131,9 +132,13 @@ test('PostgreSQL Live Integration Test Suite with Multi-Pool Schema Isolation', 
 
         // Run 5 concurrent failed login attempts
         const attempts = Array.from({ length: 5 }).map(() => auth.loginOwner(email, 'WrongPassword123!').catch(err => err));
-        await Promise.all(attempts);
+        const results = await Promise.all(attempts);
 
         // Verify lockout is persisted in the database even on transactions returning success:false
+        const ownerDbAfterAttempts = await ownersRepo.findById(owner.id);
+        assert.equal(ownerDbAfterAttempts.failedLoginAttempts, 5, "Failed attempts count must be exactly 5");
+        assert.ok(ownerDbAfterAttempts.lockoutUntil, "Lockout timestamp must be persisted");
+
         await assert.rejects(async () => {
           await auth.loginOwner(email, password);
         }, /ACCOUNT_TEMPORARILY_LOCKED/);
@@ -247,17 +252,20 @@ test('PostgreSQL Live Integration Test Suite with Multi-Pool Schema Isolation', 
 
         const enroll = await auth.enrollTotpMfa(owner.id, s1.token);
 
-        // Force a failure during verification inside the transaction
+        // Force an intentional failure after writes begin using ROLLBACK_TEST sentinel (Blocker #5)
         await assert.rejects(async () => {
-          await auth.confirmTotpMfa(owner.id, enroll.enrollmentId, '000000');
-        }, /INVALID_TOTP_CODE/);
+          await auth.confirmTotpMfa(owner.id, enroll.enrollmentId, 'ROLLBACK_TEST');
+        }, /FORCED_MID_TRANSACTION_ROLLBACK/);
 
-        // Prove complete transaction rollback: owner mfa_enabled must be false, no recovery codes created
+        // Prove complete transaction rollback: owner mfa_enabled must be false, no recovery codes created, no used_totp_codes inserted
         const ownerDb = await ownersRepo.findById(owner.id);
-        assert.equal(ownerDb.mfaEnabled, false);
+        assert.equal(ownerDb.mfaEnabled, false, "MFA must remain disabled on transaction rollback");
 
         const recRes = await client.query("SELECT * FROM owner_recovery_codes WHERE owner_id = $1;", [owner.id]);
-        assert.equal(recRes.rows.length, 0);
+        assert.equal(recRes.rows.length, 0, "No recovery codes must be committed on rollback");
+
+        const usedTotpRes = await client.query("SELECT * FROM used_totp_codes WHERE owner_id = $1;", [owner.id]);
+        assert.equal(usedTotpRes.rows.length, 0, "No reserved TOTP replay codes must be committed on rollback");
       });
     });
 
@@ -275,7 +283,7 @@ test('PostgreSQL Live Integration Test Suite with Multi-Pool Schema Isolation', 
           );
         }
 
-        // Direct SQL insert must trigger exception
+        // 51st direct SQL insert must throw AGENT_CAP_REACHED on database level
         await assert.rejects(async () => {
           await client.query(
             "INSERT INTO agents (id, name, namespace, enabled) VALUES ($1, $2, $3, true);",
@@ -305,16 +313,25 @@ test('PostgreSQL Live Integration Test Suite with Multi-Pool Schema Isolation', 
 
     // 8. Database-level publishing-receipt enforcement (Blocker #11)
     await t.test('database-level publishing-receipt enforcement', async () => {
-      const evidenceRepo = new EvidenceLedgerRepository(mainAdapter);
+      await runInMainSchema(async (client) => {
+        const publishingRepo = new PublishingRepository(mainAdapter);
 
-      await assert.rejects(async () => {
-        await evidenceRepo.append({
-          subjectId: 'subj-1',
-          kind: 'platform_publish',
-          classification: 'publish_video',
-          payload: {} // missing platformPostId etc.
+        // 1. Create a publishing request in draft mode (non-live)
+        const req = await publishingRepo.createRequest({
+          artifactId: '00000000-0000-0000-0000-000000000000', // dummy artifact UUID
+          destination: 'youtube',
+          captionSnapshot: 'Hello World',
+          mode: 'draft'
         });
-      }, /VERIFIABLE_PLATFORM_RECEIPT_REQUIRED/);
+
+        // 2. Direct SQL insert of receipt bound to draft request must be rejected by database triggers (Blocker #7/11)
+        await assert.rejects(async () => {
+          await client.query(
+            "INSERT INTO publishing_receipts (publishing_request_id, platform_post_id, platform_url, provider_response_sha256) VALUES ($1, $2, $3, $4);",
+            [req.id, 'post-123', 'https://youtube.com/post-123', computeTokenHash('dummy-sha')]
+          );
+        }, /INVALID_PUBLISHING_RECEIPT_FOR_NON_LIVE_REQUEST/);
+      });
     });
 
     // 9. Complete concurrent evidence-chain validation (Blocker #11)

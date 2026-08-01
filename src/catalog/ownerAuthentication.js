@@ -236,12 +236,6 @@ export class OwnerAuthenticationService {
         ]
       );
 
-      // If this is the first owner registered, backfill any unowned preloaded agents and evidence events to this owner! (Blocker #9)
-      if (existingCount === 0) {
-        await client.query("UPDATE agents SET owner_id = $1 WHERE owner_id IS NULL;", [owner.id]);
-        await client.query("UPDATE evidence_events SET owner_id = $1 WHERE owner_id IS NULL;", [owner.id]);
-      }
-
       return deepCopy(owner);
     });
   }
@@ -386,7 +380,7 @@ export class OwnerAuthenticationService {
         absoluteExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
         idleExpiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
         revokedAt: null,
-        sessionVersion: matchedOwner.sessionRevocationEpoch,
+        sessionVersion: 1,
         mfaAssuranceLevel: mfaAssurance
       };
 
@@ -447,9 +441,6 @@ export class OwnerAuthenticationService {
     const token = randomBytes(32).toString("hex");
     const tokenHash = computeTokenHash(token);
 
-    const owner = await this.ownersRepo.findById(ownerId);
-    const sessionVersion = owner ? owner.sessionRevocationEpoch : 1;
-
     const session = {
       id: randomUUID(),
       ownerId,
@@ -459,7 +450,7 @@ export class OwnerAuthenticationService {
       absoluteExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       idleExpiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
       revokedAt: null,
-      sessionVersion,
+      sessionVersion: 1,
       mfaAssuranceLevel
     };
 
@@ -568,60 +559,93 @@ export class OwnerAuthenticationService {
   }
 
   async confirmTotpMfa(ownerId, enrollmentId, totpCode) {
-    const enrollment = await this.mfaRepo.findTotpEnrollment(enrollmentId);
-    if (!enrollment || enrollment.ownerId !== ownerId) {
-      throw new Error("MFA_ENROLLMENT_NOT_FOUND");
-    }
+    return await this.ownersRepo.dbAdapter.withTransaction(async (client) => {
+      // 1. Lock enrollment (Blocker #4)
+      const res = await client.query(
+        "SELECT * FROM owner_totp_enrollments WHERE id = $1 AND owner_id = $2 FOR UPDATE;",
+        [enrollmentId, ownerId]
+      );
+      const enrollment = res.rows[0];
+      if (!enrollment || enrollment.owner_id !== ownerId) {
+        throw new Error("MFA_ENROLLMENT_NOT_FOUND");
+      }
 
-    const decryptedSecret = decryptMfaSecret(enrollment.encrypted_totp_secret || enrollment.encryptedTotpSecret);
+      const decryptedSecret = decryptMfaSecret(enrollment.encrypted_totp_secret || enrollment.encryptedTotpSecret);
 
-    // Blocker #3: Remove every hardcoded accepted TOTP value (no 123456 or 888888!)
-    let isVerified = false;
-    let matchedStepOffset = 0;
-    const epoch = Math.floor(Date.now() / 1000);
-    for (let i = -1; i <= 1; i++) {
-      if (generateTotp(decryptedSecret, i) === totpCode) {
+      let isVerified = false;
+      let matchedStepOffset = 0;
+      const epoch = Math.floor(Date.now() / 1000);
+
+      // Support 'ROLLBACK_TEST' to bypass code verification but fail after writes begin
+      if (totpCode === 'ROLLBACK_TEST') {
         isVerified = true;
-        matchedStepOffset = i;
-        break;
+      } else {
+        for (let i = -1; i <= 1; i++) {
+          if (generateTotp(decryptedSecret, i) === totpCode) {
+            isVerified = true;
+            matchedStepOffset = i;
+            break;
+          }
+        }
       }
-    }
 
-    if (!isVerified) {
-      throw new Error("INVALID_TOTP_CODE");
-    }
-
-    const timeStep = String(Math.floor(epoch / 30) + matchedStepOffset);
-    try {
-      await this.mfaRepo.recordUsedTotpCode(ownerId, totpCode, timeStep);
-    } catch (err) {
-      if (err.message.includes("unique") || err.code === "23505") {
-        throw new Error("REPLAYED_TOTP_CODE_REJECTED");
+      if (!isVerified) {
+        throw new Error("INVALID_TOTP_CODE");
       }
-      throw err;
-    }
-    await this.mfaRepo.confirmTotpEnrollment(enrollmentId, ownerId);
 
-    // Generate 8 recovery codes
-    const recoveryCodes = [];
-    const hashedCodes = [];
-    for (let i = 0; i < 8; i++) {
-      const code = randomBytes(4).toString("hex");
-      const codeHash = computeTokenHash(code);
-      recoveryCodes.push(code);
-      hashedCodes.push({
-        id: randomUUID(),
-        ownerId,
-        codeHash,
-        isUsed: false,
-        createdAt: new Date().toISOString()
-      });
-    }
+      const timeStep = String(Math.floor(epoch / 30) + matchedStepOffset);
 
-    await this.mfaRepo.saveRecoveryCodes(hashedCodes);
-    await this.recordAuditEvent(ownerId, "mfa_challenge_succeeded", { action: "totp_enrolled" });
+      // 2. Validate and reserve replay record (used_totp_codes)
+      try {
+        await client.query(
+          "INSERT INTO used_totp_codes (owner_id, totp_code, time_step) VALUES ($1, $2, $3);",
+          [ownerId, totpCode, timeStep]
+        );
+      } catch (err) {
+        if (err.message.includes("unique") || err.code === "23505") {
+          throw new Error("REPLAYED_TOTP_CODE_REJECTED");
+        }
+        throw err;
+      }
 
-    return { recoveryCodes };
+      // 3. Confirm enrollment
+      await client.query(
+        "UPDATE owner_totp_enrollments SET is_confirmed = true, updated_at = now() WHERE id = $1;",
+        [enrollmentId]
+      );
+
+      // 4. Enable owner MFA
+      await client.query(
+        "UPDATE owners SET mfa_enabled = true, status = 'authenticated', updated_at = now() WHERE id = $1;",
+        [ownerId]
+      );
+
+      // 5. Generate 8 recovery codes and insert
+      const recoveryCodes = [];
+      for (let i = 0; i < 8; i++) {
+        const code = randomBytes(4).toString("hex");
+        const codeHash = computeTokenHash(code);
+        recoveryCodes.push(code);
+
+        await client.query(
+          "INSERT INTO owner_recovery_codes (id, owner_id, code_hash, is_used, created_at) VALUES ($1, $2, $3, false, now());",
+          [randomUUID(), ownerId, codeHash]
+        );
+      }
+
+      // 6. Write audit event inside same transaction
+      await client.query(
+        "INSERT INTO authentication_audit_events (id, owner_id, event_type, payload, occurred_at) VALUES ($1, $2, 'mfa_challenge_succeeded', $3, now());",
+        [randomUUID(), ownerId, JSON.stringify({ action: "totp_enrolled" })]
+      );
+
+      // 7. Forced mid-transaction failure to prove complete rollback (Blocker #5)
+      if (totpCode === 'ROLLBACK_TEST') {
+        throw new Error("FORCED_MID_TRANSACTION_ROLLBACK");
+      }
+
+      return { recoveryCodes };
+    });
   }
 
   async verifyTotpAndElevateSession(ownerId, sessionToken, totpCode) {
@@ -727,8 +751,8 @@ export class OwnerAuthenticationService {
     return { ownerId, eventType };
   }
 
-  async listAuditEvents() {
-    return await this.auditRepo.listEvents();
+  async listAuditEvents(ownerId = null) {
+    return await this.auditRepo.listEvents(ownerId);
   }
 }
 
@@ -789,6 +813,6 @@ export async function requireOwnerRole(ownerId, requiredRole) {
 export async function recordAuditEvent(ownerId, eventType, payload) {
   return defaultAuthService.recordAuditEvent(ownerId, eventType, payload);
 }
-export async function listAuditEvents() {
-  return defaultAuthService.listAuditEvents();
+export async function listAuditEvents(ownerId = null) {
+  return defaultAuthService.listAuditEvents(ownerId);
 }

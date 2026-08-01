@@ -276,17 +276,17 @@ export class MfaRepository {
 
   async verifyAndUseRecoveryCode(ownerId, codeHash) {
     const res = await this.dbAdapter.query(
-      "SELECT * FROM owner_recovery_codes WHERE owner_id = $1 AND code_hash = $2 AND is_used = false FOR UPDATE;",
+      `UPDATE owner_recovery_codes
+       SET is_used = true, used_at = now()
+       WHERE id = (
+         SELECT id FROM owner_recovery_codes
+         WHERE owner_id = $1 AND code_hash = $2 AND is_used = false
+         FOR UPDATE SKIP LOCKED LIMIT 1
+       )
+       RETURNING id;`,
       [ownerId, codeHash]
     );
-    if (!res.rows[0]) return false;
-    const rc = res.rows[0];
-
-    await this.dbAdapter.query(
-      "UPDATE owner_recovery_codes SET is_used = true, used_at = now() WHERE id = $1;",
-      [rc.id]
-    );
-    return true;
+    return res.rows.length > 0;
   }
 
   async recordUsedTotpCode(ownerId, totpCode, timeStep) {
@@ -343,7 +343,7 @@ export class CsrfRepository {
 
   async verifyToken(sessionId, tokenValue) {
     const res = await this.dbAdapter.query(
-      "SELECT 1 FROM csrf_session_tokens WHERE session_id = $1 AND token_value = $2;",
+      "SELECT 1 FROM csrf_session_tokens WHERE session_id = $1 AND token_value = $2 AND created_at >= now() - interval '30 minutes';",
       [sessionId, tokenValue]
     );
     return res.rows.length > 0;
@@ -368,8 +368,11 @@ export class AuditRepository {
     return res.rows[0];
   }
 
-  async listEvents() {
-    const res = await this.dbAdapter.query("SELECT * FROM authentication_audit_events ORDER BY occurred_at DESC;");
+  async listEvents(ownerId = null) {
+    const query = ownerId
+      ? ["SELECT * FROM authentication_audit_events WHERE owner_id = $1 ORDER BY occurred_at DESC;", [ownerId]]
+      : ["SELECT * FROM authentication_audit_events ORDER BY occurred_at DESC;", []];
+    const res = await this.dbAdapter.query(query[0], query[1]);
     return res.rows.map((row) => ({
       id: row.id,
       ownerId: row.owner_id,
@@ -443,10 +446,10 @@ export class JobRepository {
     this.dbAdapter = adapter;
   }
 
-  async create(job) {
+  async create(job, ownerId = null) {
     const res = await this.dbAdapter.query(
-      `INSERT INTO jobs (id, agent_id, capability, idempotency_key, status, priority, attempts, max_attempts, payload)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *;`,
+      `INSERT INTO jobs (id, agent_id, capability, idempotency_key, status, priority, attempts, max_attempts, payload, owner_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *;`,
       [
         job.id || randomUUID(),
         job.agentId,
@@ -457,13 +460,17 @@ export class JobRepository {
         job.attempts || 0,
         job.max_attempts || 3,
         JSON.stringify(job.payload),
+        ownerId,
       ]
     );
     return res.rows[0];
   }
 
-  async get(id) {
-    const res = await this.dbAdapter.query("SELECT * FROM jobs WHERE id = $1;", [id]);
+  async get(id, ownerId = null) {
+    const query = ownerId
+      ? ["SELECT * FROM jobs WHERE id = $1 AND owner_id = $2;", [id, ownerId]]
+      : ["SELECT * FROM jobs WHERE id = $1;", [id]];
+    const res = await this.dbAdapter.query(query[0], query[1]);
     if (!res.rows[0]) return null;
     const row = res.rows[0];
     return {
@@ -623,10 +630,10 @@ export class PublishingRepository {
     this.dbAdapter = adapter;
   }
 
-  async createRequest(req) {
+  async createRequest(req, ownerId = null) {
     const res = await this.dbAdapter.query(
-      `INSERT INTO publishing_requests (id, artifact_id, destination, caption_snapshot, mode, status, approved_by, approval_expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *;`,
+      `INSERT INTO publishing_requests (id, artifact_id, destination, caption_snapshot, mode, status, approved_by, approval_expires_at, owner_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *;`,
       [
         req.id || randomUUID(),
         req.artifactId,
@@ -636,6 +643,7 @@ export class PublishingRepository {
         req.status || "pending",
         req.approvedBy || null,
         req.approvalExpiresAt || null,
+        ownerId,
       ]
     );
     return res.rows[0];
@@ -643,27 +651,31 @@ export class PublishingRepository {
 
   async approveRequest(requestId, ownerId, expiresAt) {
     const res = await this.dbAdapter.query(
-      "UPDATE publishing_requests SET status = 'approved', approved_by = $2, approval_expires_at = $3 WHERE id = $1 RETURNING *;",
+      "UPDATE publishing_requests SET status = 'approved', approved_by = $2, approval_expires_at = $3 WHERE id = $1 AND owner_id = $2 RETURNING *;",
       [requestId, ownerId, expiresAt]
     );
     return res.rows[0];
   }
 
-  async findRequest(requestId) {
-    const res = await this.dbAdapter.query("SELECT * FROM publishing_requests WHERE id = $1;", [requestId]);
+  async findRequest(requestId, ownerId = null) {
+    const query = ownerId
+      ? ["SELECT * FROM publishing_requests WHERE id = $1 AND owner_id = $2;", [requestId, ownerId]]
+      : ["SELECT * FROM publishing_requests WHERE id = $1;", [requestId]];
+    const res = await this.dbAdapter.query(query[0], query[1]);
     return res.rows[0] || null;
   }
 
-  async createReceipt(receipt) {
+  async createReceipt(receipt, ownerId = null) {
     const res = await this.dbAdapter.query(
-      `INSERT INTO publishing_receipts (id, publishing_request_id, platform_post_id, platform_url, provider_response_sha256)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *;`,
+      `INSERT INTO publishing_receipts (id, publishing_request_id, platform_post_id, platform_url, provider_response_sha256, owner_id)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *;`,
       [
         receipt.id || randomUUID(),
         receipt.publishingRequestId,
         receipt.platformPostId,
         receipt.platformUrl,
         receipt.providerResponseSha256,
+        ownerId,
       ]
     );
     return res.rows[0];

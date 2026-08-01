@@ -49,10 +49,6 @@ function mockQueryHandler(text, params, parent) {
     targetTable = "authentication_audit_events";
   } else if (uppercase.includes("CSRF_SESSION_TOKENS")) {
     targetTable = "csrf_session_tokens";
-  } else if (uppercase.includes("AGENTS")) {
-    targetTable = "agents";
-  } else if (uppercase.includes("EVIDENCE_EVENTS")) {
-    targetTable = "evidence_events";
   } else if (uppercase.includes("PG_ADVISORY_XACT_LOCK")) {
     targetTable = "advisory_lock";
   }
@@ -111,32 +107,30 @@ function mockQueryHandler(text, params, parent) {
       return { rows, rowCount: rows.length };
     }
 
-    if (targetTable === "advisory_lock") {
-      return { rows: [], rowCount: 1 };
+    if (targetTable === "owner_sessions") {
+      let filtered = Array.from(parent.sessionsDb.values());
+      if (uppercase.includes("TOKEN_HASH = $1") && uppercase.includes("OWNER_ID = $2")) {
+        filtered = filtered.filter(s => s.tokenHash === params[0] && s.ownerId === params[1]);
+      } else if (uppercase.includes("TOKEN_HASH = $1")) {
+        filtered = filtered.filter(s => s.tokenHash === params[0]);
+      }
+      const rows = filtered.map(s => ({
+        id: s.id,
+        owner_id: s.ownerId,
+        token_hash: s.tokenHash,
+        created_at: s.createdAt,
+        last_seen_at: s.lastSeenAt,
+        absolute_expires_at: s.absoluteExpiresAt,
+        idle_expires_at: s.idleExpiresAt,
+        revoked_at: s.revokedAt,
+        session_version: s.sessionVersion,
+        mfa_assurance_level: s.mfaAssuranceLevel
+      }));
+      return { rows, rowCount: rows.length };
     }
 
-    if (targetTable === "owner_sessions") {
-      const hash = params[0];
-      let session = null;
-      if (parent.sessionsDb) {
-        for (const s of parent.sessionsDb.values()) {
-          if (s.tokenHash === hash) {
-            session = s;
-            break;
-          }
-        }
-      }
-      const rows = session ? [{
-        id: session.id,
-        owner_id: session.ownerId,
-        token_hash: session.tokenHash,
-        mfa_assurance_level: session.mfaAssuranceLevel,
-        absolute_expires_at: session.absoluteExpiresAt,
-        idle_expires_at: session.idleExpiresAt,
-        revoked_at: session.revokedAt,
-        session_version: session.sessionVersion
-      }] : [];
-      return { rows, rowCount: rows.length };
+    if (targetTable === "advisory_lock") {
+      return { rows: [], rowCount: 1 };
     }
 
     throw new Error(`Unsupported SELECT query target: ${targetTable}`);
@@ -180,27 +174,23 @@ function mockQueryHandler(text, params, parent) {
     }
 
     if (targetTable === "owner_sessions") {
-      const idOrHash = params[0];
-      if (parent.sessionsDb) {
-        const s = parent.sessionsDb.get(idOrHash);
+      if (uppercase.includes("REVOKED_AT = NOW()")) {
+        const id = params[0];
+        const s = parent.sessionsDb.get(id);
         if (s) {
           s.revokedAt = new Date().toISOString();
-        } else {
-          for (const sess of parent.sessionsDb.values()) {
-            if (sess.tokenHash === idOrHash) {
-              sess.revokedAt = new Date().toISOString();
+        }
+      } else {
+        const hash = params[0];
+        const ownerId = params[1];
+        if (parent.sessionsDb) {
+          for (const s of parent.sessionsDb.values()) {
+            if (s.tokenHash === hash && s.ownerId === ownerId) {
+              s.revokedAt = new Date().toISOString();
             }
           }
         }
       }
-      return { rows: [], rowCount: 1 };
-    }
-
-    if (targetTable === "agents") {
-      return { rows: [], rowCount: 1 };
-    }
-
-    if (targetTable === "evidence_events") {
       return { rows: [], rowCount: 1 };
     }
 
@@ -209,19 +199,40 @@ function mockQueryHandler(text, params, parent) {
 
   if (statementType === "INSERT") {
     if (targetTable === "owners") {
-      const [id, email, passwordHash, role, status, mfaEnabled, passwordChangedAt, sessionRevocationEpoch] = params;
+      const [id, email, passwordHash, role, status, mfaEnabled, failedLoginAttempts, lockoutUntil, passwordChangedAt, sessionRevocationEpoch] = params;
       parent.db.set(id, {
         id,
         email,
         passwordHash,
         role,
         status,
-        mfaEnabled,
-        failedLoginAttempts: 0,
-        lockoutUntil: null,
+        mfaEnabled: mfaEnabled === true,
+        failedLoginAttempts: failedLoginAttempts ?? 0,
+        lockoutUntil: lockoutUntil ?? null,
         passwordChangedAt,
-        sessionRevocationEpoch,
+        sessionRevocationEpoch: sessionRevocationEpoch ?? 1,
         createdAt: new Date().toISOString()
+      });
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (targetTable === "csrf_session_tokens") {
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (targetTable === "owner_sessions") {
+      const [id, ownerId, tokenHash, createdAt, lastSeenAt, absoluteExpiresAt, idleExpiresAt, revokedAt, sessionVersion, mfaAssuranceLevel] = params;
+      parent.sessionsDb.set(id, {
+        id,
+        ownerId,
+        tokenHash,
+        createdAt,
+        lastSeenAt,
+        absoluteExpiresAt,
+        idleExpiresAt,
+        revokedAt,
+        sessionVersion,
+        mfaAssuranceLevel
       });
       return { rows: [], rowCount: 1 };
     }
@@ -247,19 +258,6 @@ function mockQueryHandler(text, params, parent) {
       if (parent.auditRepo) {
         parent.auditRepo.db.set(id, { id, ownerId, eventType, payload });
       }
-      return { rows: [], rowCount: 1 };
-    }
-
-    if (targetTable === "owner_sessions") {
-      const [id, ownerId, tokenHash, createdAt, lastSeenAt, absoluteExpiresAt, idleExpiresAt, revokedAt, sessionVersion, mfaAssuranceLevel] = params;
-      const session = { id, ownerId, tokenHash, createdAt, lastSeenAt, absoluteExpiresAt, idleExpiresAt, revokedAt, sessionVersion, mfaAssuranceLevel };
-      if (parent.sessionsDb) {
-        parent.sessionsDb.set(id, session);
-      }
-      return { rows: [], rowCount: 1 };
-    }
-
-    if (targetTable === "csrf_session_tokens") {
       return { rows: [], rowCount: 1 };
     }
 
