@@ -86,18 +86,3 @@ Duplicate campaigns are separate business records and require explicit owner aut
 Main-video promotion is a separate placement record. Intake must always ask the owner whether to include it and, if yes, which episode.
 
 Affiliate links are campaign/platform placements, not new videos. Every link requires an allowlisted HTTPS domain, disclosure, redirect/SSRF inspection, malware screening, expiration policy, and owner approval.
-
-## Owner Authentication and Session Security
-
-Secure owner authentication and sessions are implemented using state-of-the-art cryptographic mechanisms:
-- **Genuine Argon2id Password Hashing**: Upgraded from synchronous pbkdf2 to asynchronous native Argon2id hashing (using the `argon2` package) with standard memory and iteration bounds to resist brute force.
-- **Opaque Session Tokens**: Server-side session state tracked in `owner_sessions` table with automatic idle (30 minutes) and absolute (24 hours) expiration checks, sliding idle window, and revocation epoch constraints on password changes.
-- **AES-256-GCM Encryption**: MFA Totp secrets are stored in `owner_totp_enrollments` encrypted using AES-256-GCM. Requires a valid 256-bit hexadecimal `MFA_ENCRYPTION_KEY` and tracks the key version (`v1`), unique initialization vector (IV), and 16-byte authentication tag in the ciphertext payload.
-- **Database-Backed TOTP Replay Prevention**: To prevent replay attacks across multiple nodes or containers, validated TOTP codes are transactionally recorded in the `used_totp_codes` table with a unique composite primary key constraint on `(owner_id, totp_code, time_step)`. Subsequent uses in the same time step are strictly rejected with `REPLAYED_TOTP_CODE_REJECTED`.
-
-## Canonical Database Foundation
-
-src/db/postgresAdapter.js and src/db/migrationRunner.js are the canonical
-PostgreSQL foundation. Future branches, including PR #5, must be rebased or
-adapted to this foundation and must not introduce a competing PostgreSQL
-adapter or migration runner.

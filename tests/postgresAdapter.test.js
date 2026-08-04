@@ -59,6 +59,34 @@ test('PostgresAdapter - Secret Redaction', async (t) => {
     const sanitized = sanitizeError(null);
     assert.equal(sanitized.message, 'Unknown database error');
   });
+
+  await t.test('preserves custom error prototypes and sanitizes custom fields (Correction 5)', () => {
+    class CustomDatabaseError extends Error {
+      constructor(message, customSecretProp) {
+        super(message);
+        this.name = 'CustomDatabaseError';
+        this.customSecretProp = customSecretProp;
+      }
+    }
+
+    const err = new CustomDatabaseError(
+      'Database failed with postgresql://st_user:SuperSecretPassword123@db.example.com/db',
+      'Original secret vault://st/secrets/db-pass'
+    );
+
+    const sanitized = sanitizeError(err);
+
+    // Assert that the prototype is preserved perfectly
+    assert.ok(sanitized instanceof CustomDatabaseError, 'Custom prototype must be preserved');
+    assert.equal(sanitized.name, 'CustomDatabaseError', 'Custom error name must be preserved');
+
+    // Assert that all fields are recursively sanitized
+    assert.ok(!sanitized.message.includes('SuperSecretPassword123'), 'Message must be sanitized');
+    assert.ok(sanitized.message.includes('[REDACTED]'), 'Message password must be redacted');
+
+    assert.ok(!sanitized.customSecretProp.includes('vault://st/secrets/db-pass'), 'Custom property must be sanitized');
+    assert.ok(sanitized.customSecretProp.includes('[REDACTED_LOCATOR]'), 'Custom property secret locator must be redacted');
+  });
 });
 
 test('PostgresAdapter - Query Execution & Parameterized Inputs', async (t) => {

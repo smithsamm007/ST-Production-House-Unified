@@ -5,11 +5,9 @@ const { Pool } = pg;
 /**
  * Safely sanitizes error messages and stack traces to ensure connection strings,
  * passwords, or secret locators are never exposed in logs or test output.
- * Preserves custom error prototypes while redacting sensitive values from all loggable error fields,
- * including relevant custom properties—not only message, stack, detail, and hint.
  *
  * @param {Error|unknown} error - The error to sanitize
- * @returns {Error} The sanitized error (preserving the custom prototype)
+ * @returns {Error} A new error instance with sanitized message and stack trace
  */
 export function sanitizeError(error) {
   if (!error) return new Error('Unknown database error');
@@ -20,90 +18,48 @@ export function sanitizeError(error) {
   const secretLocatorRegex = /(vault:\/\/[^\s'"]+)/gi;
 
   const sanitizeText = (text) => {
-    if (!text) return '';
+    if (!text || typeof text !== 'string') return text;
     return text
       .replace(uriPasswordRegex, '$1[REDACTED]$3')
       .replace(passwordKeyRegex, '$1[REDACTED]$2')
       .replace(secretLocatorRegex, '[REDACTED_LOCATOR]');
   };
 
-  const seen = new Set();
-
-  const sanitizeValue = (val) => {
-    if (!val) return val;
-    if (typeof val === 'string') {
-      return sanitizeText(val);
-    }
-    if (typeof val === 'object' || typeof val === 'function') {
-      if (seen.has(val)) return val;
-
-      if (val instanceof Error) {
-        return sanitizeErrorObject(val);
-      }
-
-      seen.add(val);
-
-      if (Array.isArray(val)) {
-        for (let i = 0; i < val.length; i++) {
-          val[i] = sanitizeValue(val[i]);
-        }
-        return val;
-      }
-      // General object property recursion
-      const keys = Reflect.ownKeys(val);
-      for (const key of keys) {
-        try {
-          const desc = Object.getOwnPropertyDescriptor(val, key);
-          if (!desc || desc.writable || desc.set) {
-            val[key] = sanitizeValue(val[key]);
-          }
-        } catch (e) {
-          // Ignore write/access descriptor errors
-        }
-      }
-    }
-    return val;
-  };
-
-  const sanitizeErrorObject = (err) => {
-    if (!err) return err;
-    if (seen.has(err)) return err;
-    seen.add(err);
-
-    // Standard fields with fallback try/catch
-    if (typeof err.message === 'string') {
-      try {
-        err.message = sanitizeText(err.message);
-      } catch (e) {}
-    }
-    if (typeof err.stack === 'string') {
-      try {
-        err.stack = sanitizeText(err.stack);
-      } catch (e) {}
-    }
-
-    // Traverse all keys (including non-enumerable, symbol keys, etc.)
-    const keys = Reflect.ownKeys(err);
-    for (const key of keys) {
-      if (key === 'message' || key === 'stack') continue;
-      try {
-        const desc = Object.getOwnPropertyDescriptor(err, key);
-        if (!desc || desc.writable || desc.set) {
-          err[key] = sanitizeValue(err[key]);
-        }
-      } catch (e) {
-        // Ignore descriptor/write errors
-      }
-    }
-    return err;
-  };
-
-  if (typeof error === 'object' && error !== null) {
-    return sanitizeErrorObject(error);
+  if (typeof error === 'string') {
+    return new Error(sanitizeText(error));
   }
 
-  // If a primitive string error was passed, return a standard Error with sanitized message
-  return new Error(sanitizeText(String(error)));
+  if (typeof error === 'object' && error !== null) {
+    // Preserve custom error prototypes and recursively redact sensitive values from all properties
+    const visited = new Set();
+
+    const sanitizeObject = (obj) => {
+      if (!obj || typeof obj !== 'object' || visited.has(obj)) return;
+      visited.add(obj);
+
+      const keys = Object.getOwnPropertyNames(obj);
+      for (const key of keys) {
+        try {
+          const val = obj[key];
+          if (typeof val === 'string') {
+            const desc = Object.getOwnPropertyDescriptor(obj, key);
+            if (!desc || desc.writable || desc.set) {
+              obj[key] = sanitizeText(val);
+            }
+          } else if (typeof val === 'object' && val !== null) {
+            sanitizeObject(val);
+          }
+        } catch (e) {
+          // Ignore getter access/mutation errors
+        }
+      }
+    };
+
+    sanitizeObject(error);
+    return error;
+  }
+
+  return new Error('Unknown database error');
 }
 
 /**
