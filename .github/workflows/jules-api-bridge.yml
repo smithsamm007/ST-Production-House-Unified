@@ -1,103 +1,156 @@
-name: Jules API Bridge
+name: Jules-Codex-GitHub Bridge
 
 on:
   workflow_dispatch:
     inputs:
       operation:
-        description: "Create a new Jules session or message an existing session"
+        description: "Bridge action"
         required: true
         type: choice
-        options:
-          - create
-          - message
-        default: message
+        options: [create, message, approve, status]
+      pr_number:
+        description: "GitHub PR coordinated by this session"
+        required: true
+        type: number
+      attempt:
+        description: "Jules attempt (1-3)"
+        required: true
+        default: "1"
+        type: choice
+        options: ["1", "2", "3"]
       session_id:
-        description: "Existing Jules session ID (required for message)"
+        description: "Jules session ID for message, approve, or status"
         required: false
         type: string
       branch:
-        description: "Repository branch for a new session"
+        description: "Starting branch for create"
         required: false
         default: main
         type: string
       prompt:
         description: "Bounded task or correction prompt"
-        required: true
+        required: false
         type: string
 
 permissions:
   contents: read
+  issues: write
+  pull-requests: write
 
+# Session creation is serialized only while allocating a slot. Jules sessions
+# continue asynchronously, so up to three can work in parallel after dispatch.
 concurrency:
-  group: st-jules-single-active-task
+  group: st-jules-bridge-dispatcher
   cancel-in-progress: false
 
 jobs:
-  dispatch:
-    name: Dispatch bounded Jules work
+  bridge:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       JULES_API_BASE: https://jules.googleapis.com/v1alpha
-      REPOSITORY_FULL_NAME: ${{ github.repository }}
       OPERATION: ${{ inputs.operation }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      ATTEMPT: ${{ inputs.attempt }}
       SESSION_ID: ${{ inputs.session_id }}
       TARGET_BRANCH: ${{ inputs.branch }}
       TASK_PROMPT: ${{ inputs.prompt }}
+      GH_TOKEN: ${{ github.token }}
+      JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
     steps:
-      - name: Validate request
+      - name: Validate bridge request
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${TASK_PROMPT}" ]]; then
-            echo "::error::A bounded prompt is required."
-            exit 1
+          [[ "${ATTEMPT}" =~ ^[1-3]$ ]] || { echo "::error::Attempt must be 1, 2, or 3."; exit 1; }
+          [[ -n "${JULES_API_KEY:-}" ]] || { echo "::error::JULES_API_KEY is not configured."; exit 1; }
+          if [[ "${OPERATION}" == "create" ]]; then
+            [[ -n "${TASK_PROMPT}" ]] || { echo "::error::Create requires a bounded prompt."; exit 1; }
+          else
+            [[ -n "${SESSION_ID}" ]] || { echo "::error::${OPERATION} requires session_id."; exit 1; }
           fi
-          if [[ "${OPERATION}" == "message" && -z "${SESSION_ID}" ]]; then
-            echo "::error::session_id is required for message."
-            exit 1
-          fi
-          if [[ "${OPERATION}" != "create" && "${OPERATION}" != "message" ]]; then
-            echo "::error::Unsupported operation."
-            exit 1
-          fi
-
-      - name: Dispatch through Jules API
-        shell: bash
-        env:
-          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${JULES_API_KEY:-}" ]]; then
-            echo "::error::JULES_API_KEY is not configured."
-            exit 1
-          fi
-
-          response_file="${RUNNER_TEMP}/jules-response.json"
-
           if [[ "${OPERATION}" == "message" ]]; then
-            curl --fail-with-body --silent --show-error               -X POST               -H "Content-Type: application/json"               -H "X-Goog-Api-Key: ${JULES_API_KEY}"               --data "$(jq -n --arg prompt "${TASK_PROMPT}" '{prompt: $prompt}')"               "${JULES_API_BASE}/sessions/${SESSION_ID}:sendMessage"               > "${response_file}"
-            echo "Correction message accepted for Jules session ${SESSION_ID}."
+            [[ -n "${TASK_PROMPT}" ]] || { echo "::error::Message requires a correction prompt."; exit 1; }
+          fi
+
+      - name: Enforce PR ownership and attempt sequence
+        if: inputs.operation == 'create' || inputs.operation == 'message'
+        shell: bash
+        run: |
+          set -euo pipefail
+          comments="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" | jq -s 'add')"
+          latest="$(jq -r '[.[] | .body as $body | ($body | capture("st-jules-bridge session=(?<session>[^ ]+) attempt=(?<attempt>[1-3]) state=(?<state>[^ ]+)"; "g")?)] | map(select(. != null)) | last // empty | [.session,.attempt,.state] | @tsv' <<<"${comments}")"
+
+          if [[ -z "${latest}" ]]; then
+            [[ "${OPERATION}" == "create" && "${ATTEMPT}" == "1" ]] || { echo "::error::The first bridge action must create attempt 1."; exit 1; }
             exit 0
           fi
 
-          sources_file="${RUNNER_TEMP}/jules-sources.json"
-          curl --fail-with-body --silent --show-error             -H "X-Goog-Api-Key: ${JULES_API_KEY}"             "${JULES_API_BASE}/sources?pageSize=100"             > "${sources_file}"
+          IFS=$'\t' read -r previous_session previous_attempt previous_state <<<"${latest}"
+          if [[ "${OPERATION}" == "message" ]]; then
+            [[ "${SESSION_ID}" == "${previous_session}" ]] || { echo "::error::Session does not own this PR bridge."; exit 1; }
+            [[ "${ATTEMPT}" -eq $((previous_attempt + 1)) ]] || { echo "::error::Correction attempts must be sequential."; exit 1; }
+          else
+            [[ "${ATTEMPT}" -eq $((previous_attempt + 1)) ]] || { echo "::error::Replacement attempts must be sequential."; exit 1; }
+            [[ "${previous_state}" == "FAILED" || "${previous_state}" == "COMPLETED" ]] || { echo "::error::A writer is already active for this PR."; exit 1; }
+          fi
 
-          owner="${REPOSITORY_FULL_NAME%%/*}"
-          repo="${REPOSITORY_FULL_NAME#*/}"
-          source_name="$(jq -er             --arg owner "${owner}"             --arg repo "${repo}"             '.sources[] | select(.githubRepo.owner == $owner and .githubRepo.repo == $repo) | .name'             "${sources_file}" | head -n 1)"
+      - name: Dispatch Jules operation
+        id: dispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          header=(-H "X-Goog-Api-Key: ${JULES_API_KEY}")
+          response="${RUNNER_TEMP}/jules-response.json"
 
-          jq -n             --arg prompt "${TASK_PROMPT}"             --arg source "${source_name}"             --arg branch "${TARGET_BRANCH}"             '{
-              prompt: $prompt,
-              title: "ST Production House bounded task",
-              requirePlanApproval: true,
-              sourceContext: {
-                source: $source,
-                githubRepoContext: {startingBranch: $branch}
-              }
-            }' > "${RUNNER_TEMP}/jules-request.json"
+          if [[ "${OPERATION}" == "create" ]]; then
+            sessions="${RUNNER_TEMP}/jules-sessions.json"
+            curl --fail-with-body --silent --show-error "${header[@]}" "${JULES_API_BASE}/sessions?pageSize=100" >"${sessions}"
+            active="$(jq '[.sessions[]? | select(.state == "QUEUED" or .state == "PLANNING" or .state == "AWAITING_PLAN_APPROVAL" or .state == "AWAITING_USER_FEEDBACK" or .state == "IN_PROGRESS" or .state == "PAUSED")] | length' "${sessions}")"
+            [[ "${active}" -lt 3 ]] || { echo "::error::Three Jules sessions are already active."; exit 1; }
 
-          curl --fail-with-body --silent --show-error             -X POST             -H "Content-Type: application/json"             -H "X-Goog-Api-Key: ${JULES_API_KEY}"             --data-binary @"${RUNNER_TEMP}/jules-request.json"             "${JULES_API_BASE}/sessions"             > "${response_file}"
+            sources="${RUNNER_TEMP}/jules-sources.json"
+            curl --fail-with-body --silent --show-error "${header[@]}" "${JULES_API_BASE}/sources?pageSize=100" >"${sources}"
+            owner="${GITHUB_REPOSITORY%%/*}"; repo="${GITHUB_REPOSITORY#*/}"
+            source_name="$(jq -er --arg owner "${owner}" --arg repo "${repo}" '.sources[] | select(.githubRepo.owner == $owner and .githubRepo.repo == $repo and .githubRepo.isPrivate == true) | .name' "${sources}" | head -n1)"
 
-          jq -er '{name, state, url}' "${response_file}"
+            jq -n --arg prompt "${TASK_PROMPT}" --arg source "${source_name}" --arg branch "${TARGET_BRANCH}" --arg title "ST PR #${PR_NUMBER} attempt ${ATTEMPT}" '{prompt:$prompt,title:$title,requirePlanApproval:true,sourceContext:{source:$source,githubRepoContext:{startingBranch:$branch}}}' >"${RUNNER_TEMP}/request.json"
+            curl --fail-with-body --silent --show-error -X POST -H "Content-Type: application/json" "${header[@]}" --data-binary @"${RUNNER_TEMP}/request.json" "${JULES_API_BASE}/sessions" >"${response}"
+            session="$(jq -er '.id' "${response}")"; state="$(jq -r '.state // "QUEUED"' "${response}")"
+          elif [[ "${OPERATION}" == "message" ]]; then
+            curl --fail-with-body --silent --show-error -X POST -H "Content-Type: application/json" "${header[@]}" --data "$(jq -n --arg prompt "${TASK_PROMPT}" '{prompt:$prompt}')" "${JULES_API_BASE}/sessions/${SESSION_ID}:sendMessage" >"${response}"
+            session="${SESSION_ID}"; state="IN_PROGRESS"
+          elif [[ "${OPERATION}" == "approve" ]]; then
+            curl --fail-with-body --silent --show-error -X POST -H "Content-Type: application/json" "${header[@]}" "${JULES_API_BASE}/sessions/${SESSION_ID}:approvePlan" >"${response}"
+            session="${SESSION_ID}"; state="IN_PROGRESS"
+          else
+            curl --fail-with-body --silent --show-error "${header[@]}" "${JULES_API_BASE}/sessions/${SESSION_ID}" >"${response}"
+            session="${SESSION_ID}"; state="$(jq -er '.state' "${response}")"
+          fi
+
+          pr_url="$(jq -r '[.outputs[]?.pullRequest.url] | map(select(. != null)) | last // ""' "${response}" 2>/dev/null || true)"
+          echo "session=${session}" >>"${GITHUB_OUTPUT}"
+          echo "state=${state}" >>"${GITHUB_OUTPUT}"
+          echo "pr_url=${pr_url}" >>"${GITHUB_OUTPUT}"
+
+      - name: Record bridge state on GitHub PR
+        shell: bash
+        env:
+          BRIDGE_SESSION: ${{ steps.dispatch.outputs.session }}
+          BRIDGE_STATE: ${{ steps.dispatch.outputs.state }}
+          OUTPUT_PR_URL: ${{ steps.dispatch.outputs.pr_url }}
+        run: |
+          set -euo pipefail
+          if [[ "${ATTEMPT}" == "3" && ( "${BRIDGE_STATE}" == "FAILED" || "${OPERATION}" == "message" ) ]]; then
+            handoff="Attempt limit reached. Jules must stop; Codex takes ownership of the remaining correction."
+          else
+            handoff="Next action: verify the PR and use the next numbered correction only if evidence fails."
+          fi
+          body="<!-- st-jules-bridge session=${BRIDGE_SESSION} attempt=${ATTEMPT} state=${BRIDGE_STATE} -->
+          Jules bridge: operation **${OPERATION}**, session **${BRIDGE_SESSION}**, attempt **${ATTEMPT}/3**, state **${BRIDGE_STATE}**.
+
+          ${handoff}"
+          [[ -z "${OUTPUT_PR_URL}" ]] || body="${body}
+
+          Jules output PR: ${OUTPUT_PR_URL}"
+          gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body "${body}"
