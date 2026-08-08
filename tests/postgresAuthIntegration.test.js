@@ -49,7 +49,6 @@ test("live PostgreSQL authentication, CSRF, MFA and owner isolation", async (t) 
     );
     assert.equal(applied.rowCount, 8);
     for (const row of applied.rows) assert.equal(row.checksum, immutableChecksums.get(row.filename));
-    await adapter.query("DELETE FROM owners");
     const owner = await registerOwner(email, password);
     const storedOwner = await adapter.query(
       "SELECT email, password_hash FROM owners WHERE id = $1",
@@ -125,7 +124,6 @@ test("live PostgreSQL authentication, CSRF, MFA and owner isolation", async (t) 
     );
   } finally {
     await adapter.query("DELETE FROM agents WHERE id LIKE 'task2-cap-%'").catch(() => {});
-    await adapter.query("DELETE FROM owners WHERE email = $1", [email]).catch(() => {});
     await adapter.closePool();
   }
 });

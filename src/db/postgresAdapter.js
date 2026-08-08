@@ -114,9 +114,12 @@ export function sanitizeError(error) {
  * @returns {Object} Clean pg.Pool configuration object
  */
 export function getPoolConfig(configOverride = {}) {
+  const hasExplicitDiscreteConnection = ["host", "port", "user", "password", "database"]
+    .some((key) => Object.prototype.hasOwnProperty.call(configOverride, key));
   const connectionString = configOverride.connectionString ||
-                           process.env.DATABASE_URL ||
-                           process.env.POSTGRES_URL;
+                           (!hasExplicitDiscreteConnection
+                             ? process.env.DATABASE_URL || process.env.POSTGRES_URL
+                             : undefined);
 
   const host = configOverride.host || process.env.PGHOST || process.env.POSTGRES_HOST;
   const port = configOverride.port || (process.env.PGPORT ? parseInt(process.env.PGPORT, 10) : (process.env.POSTGRES_PORT ? parseInt(process.env.POSTGRES_PORT, 10) : undefined));
