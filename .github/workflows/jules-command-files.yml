@@ -1,0 +1,62 @@
+name: Jules Command Files
+
+on:
+  push:
+    branches: [main]
+    paths: ['automation/jules-commands/pr-*.json']
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: st-jules-command-files
+  cancel-in-progress: false
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+      JULES_API_BASE: https://jules.googleapis.com/v1alpha
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start approved Jules session
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${JULES_API_KEY:-}" ]] || { echo "::error::JULES_API_KEY missing"; exit 1; }
+          file="$(git diff-tree --no-commit-id --name-only -r "${GITHUB_SHA}" | grep '^automation/jules-commands/pr-[0-9][0-9]*\.json$' | head -n1)"
+          [[ -n "${file}" ]] || { echo "::error::No command file"; exit 1; }
+          pr_number="$(jq -er '.pr_number' "${file}")"
+          attempt="$(jq -er '.attempt' "${file}")"
+          [[ "${attempt}" == "1" ]] || { echo "::error::Only initial attempt supported"; exit 1; }
+
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")"
+          [[ "$(jq -r '.state' <<<"${pr}")" == "open" && "$(jq -r '.draft' <<<"${pr}")" == "true" ]] || { echo "::error::PR must be open draft"; exit 1; }
+          branch="$(jq -er '.head.ref' <<<"${pr}")"
+          case "${pr_number}:${branch}" in
+            11:task3/slice-33-quota-recovery|12:task3/slice-32-worker-checkpoints|13:task3/slice-31-job-lifecycle) ;;
+            *) echo "::error::Unapproved PR/branch"; exit 1 ;;
+          esac
+
+          comments="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/comments" | jq -s 'add')"
+          [[ "$(jq '[.[] | select(.body | contains("st-jules-bridge session="))] | length' <<<"${comments}")" -eq 0 ]] || { echo "::error::Session already registered"; exit 1; }
+          prompt="$(jq -er '[.[] | select(.body | startswith("## Jules attempt 1 prompt"))] | last | .body' <<<"${comments}")"
+
+          header=(-H "X-Goog-Api-Key: ${JULES_API_KEY}")
+          curl --fail-with-body --silent --show-error "${header[@]}" "${JULES_API_BASE}/sessions?pageSize=100" >"${RUNNER_TEMP}/sessions.json"
+          active="$(jq '[.sessions[]? | select(.state == "QUEUED" or .state == "PLANNING" or .state == "AWAITING_PLAN_APPROVAL" or .state == "AWAITING_USER_FEEDBACK" or .state == "IN_PROGRESS" or .state == "PAUSED")] | length' "${RUNNER_TEMP}/sessions.json")"
+          [[ "${active}" -lt 3 ]] || { echo "::error::Three sessions active"; exit 1; }
+
+          curl --fail-with-body --silent --show-error "${header[@]}" "${JULES_API_BASE}/sources?pageSize=100" >"${RUNNER_TEMP}/sources.json"
+          owner="${GITHUB_REPOSITORY%%/*}"; repo="${GITHUB_REPOSITORY#*/}"
+          source="$(jq -er --arg owner "${owner}" --arg repo "${repo}" '.sources[] | select(.githubRepo.owner == $owner and .githubRepo.repo == $repo) | .name' "${RUNNER_TEMP}/sources.json" | head -n1)"
+          jq -n --arg prompt "${prompt}" --arg source "${source}" --arg branch "${branch}" --arg title "ST Task 3 PR #${pr_number}" '{prompt:$prompt,title:$title,requirePlanApproval:false,sourceContext:{source:$source,githubRepoContext:{startingBranch:$branch}}}' >"${RUNNER_TEMP}/request.json"
+          curl --fail-with-body --silent --show-error -X POST -H "Content-Type: application/json" "${header[@]}" --data-binary @"${RUNNER_TEMP}/request.json" "${JULES_API_BASE}/sessions" >"${RUNNER_TEMP}/response.json"
+          session="$(jq -er '.id' "${RUNNER_TEMP}/response.json")"; state="$(jq -r '.state // "QUEUED"' "${RUNNER_TEMP}/response.json")"
+          gh pr comment "${pr_number}" --repo "${GITHUB_REPOSITORY}" --body "<!-- st-jules-bridge session=${session} attempt=1 state=${state} -->
+          Jules session **${session}** started through the GitHub command bridge; state **${state}**."
