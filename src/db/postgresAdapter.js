@@ -114,9 +114,12 @@ export function sanitizeError(error) {
  * @returns {Object} Clean pg.Pool configuration object
  */
 export function getPoolConfig(configOverride = {}) {
+  const hasExplicitDiscreteConnection = ["host", "port", "user", "password", "database"]
+    .some((key) => Object.prototype.hasOwnProperty.call(configOverride, key));
   const connectionString = configOverride.connectionString ||
-                           process.env.DATABASE_URL ||
-                           process.env.POSTGRES_URL;
+                           (!hasExplicitDiscreteConnection
+                             ? process.env.DATABASE_URL || process.env.POSTGRES_URL
+                             : undefined);
 
   const host = configOverride.host || process.env.PGHOST || process.env.POSTGRES_HOST;
   const port = configOverride.port || (process.env.PGPORT ? parseInt(process.env.PGPORT, 10) : (process.env.POSTGRES_PORT ? parseInt(process.env.POSTGRES_PORT, 10) : undefined));
@@ -179,9 +182,8 @@ export class PostgresAdapter {
     if (this.pool.on && typeof this.pool.on === 'function') {
       this.pool.on('error', (err) => {
         // Log sanitized message if needed; swallow idle connection reset errors
-        const sanitized = sanitizeError(err);
         if (process.env.NODE_ENV === 'development') {
-          console.error('[PostgresAdapter] Idle client error:', sanitized.message);
+          console.warn(JSON.stringify({ code: 'POSTGRES_IDLE_CLIENT_ERROR', errorName: err?.name || 'Error' }));
         }
       });
     }
