@@ -51,9 +51,10 @@ test("live PostgreSQL authentication, CSRF, MFA and owner isolation", async (t) 
     for (const row of applied.rows) assert.equal(row.checksum, immutableChecksums.get(row.filename));
     const owner = await registerOwner(email, password);
     const storedOwner = await adapter.query(
-      "SELECT email, password_hash FROM owners WHERE id = $1",
+      "SELECT id, email, password_hash FROM owners WHERE id = $1",
       [owner.id]
     );
+    assert.equal(storedOwner.rows[0].id, owner.id);
     assert.equal(storedOwner.rows[0].email, email);
     assert.match(storedOwner.rows[0].password_hash, /^\$argon2id\$/);
 

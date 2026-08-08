@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import argon2 from "argon2";
 import { deepFreeze, deepCopy, sanitizeSecrets } from "./creativeReferenceLibrary.js";
 import {
@@ -103,11 +103,6 @@ function verifyTotpCode(secret, candidate, lastUsedStep = null, timestamp = Date
     }
   }
   return null;
-}
-
-// Helper to handle async operations dynamically selecting between pg and in-memory
-function randomUUID() {
-  return randomBytes(16).toString("hex");
 }
 
 function safeOwner(owner) {
