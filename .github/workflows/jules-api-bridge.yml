@@ -1,0 +1,103 @@
+name: Jules API Bridge
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Create a new Jules session or message an existing session"
+        required: true
+        type: choice
+        options:
+          - create
+          - message
+        default: message
+      session_id:
+        description: "Existing Jules session ID (required for message)"
+        required: false
+        type: string
+      branch:
+        description: "Repository branch for a new session"
+        required: false
+        default: main
+        type: string
+      prompt:
+        description: "Bounded task or correction prompt"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: st-jules-single-active-task
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Dispatch bounded Jules work
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      JULES_API_BASE: https://jules.googleapis.com/v1alpha
+      REPOSITORY_FULL_NAME: ${{ github.repository }}
+      OPERATION: ${{ inputs.operation }}
+      SESSION_ID: ${{ inputs.session_id }}
+      TARGET_BRANCH: ${{ inputs.branch }}
+      TASK_PROMPT: ${{ inputs.prompt }}
+    steps:
+      - name: Validate request
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${TASK_PROMPT}" ]]; then
+            echo "::error::A bounded prompt is required."
+            exit 1
+          fi
+          if [[ "${OPERATION}" == "message" && -z "${SESSION_ID}" ]]; then
+            echo "::error::session_id is required for message."
+            exit 1
+          fi
+          if [[ "${OPERATION}" != "create" && "${OPERATION}" != "message" ]]; then
+            echo "::error::Unsupported operation."
+            exit 1
+          fi
+
+      - name: Dispatch through Jules API
+        shell: bash
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${JULES_API_KEY:-}" ]]; then
+            echo "::error::JULES_API_KEY is not configured."
+            exit 1
+          fi
+
+          response_file="${RUNNER_TEMP}/jules-response.json"
+
+          if [[ "${OPERATION}" == "message" ]]; then
+            curl --fail-with-body --silent --show-error               -X POST               -H "Content-Type: application/json"               -H "X-Goog-Api-Key: ${JULES_API_KEY}"               --data "$(jq -n --arg prompt "${TASK_PROMPT}" '{prompt: $prompt}')"               "${JULES_API_BASE}/sessions/${SESSION_ID}:sendMessage"               > "${response_file}"
+            echo "Correction message accepted for Jules session ${SESSION_ID}."
+            exit 0
+          fi
+
+          sources_file="${RUNNER_TEMP}/jules-sources.json"
+          curl --fail-with-body --silent --show-error             -H "X-Goog-Api-Key: ${JULES_API_KEY}"             "${JULES_API_BASE}/sources?pageSize=100"             > "${sources_file}"
+
+          owner="${REPOSITORY_FULL_NAME%%/*}"
+          repo="${REPOSITORY_FULL_NAME#*/}"
+          source_name="$(jq -er             --arg owner "${owner}"             --arg repo "${repo}"             '.sources[] | select(.githubRepo.owner == $owner and .githubRepo.repo == $repo) | .name'             "${sources_file}" | head -n 1)"
+
+          jq -n             --arg prompt "${TASK_PROMPT}"             --arg source "${source_name}"             --arg branch "${TARGET_BRANCH}"             '{
+              prompt: $prompt,
+              title: "ST Production House bounded task",
+              requirePlanApproval: true,
+              sourceContext: {
+                source: $source,
+                githubRepoContext: {startingBranch: $branch}
+              }
+            }' > "${RUNNER_TEMP}/jules-request.json"
+
+          curl --fail-with-body --silent --show-error             -X POST             -H "Content-Type: application/json"             -H "X-Goog-Api-Key: ${JULES_API_KEY}"             --data-binary @"${RUNNER_TEMP}/jules-request.json"             "${JULES_API_BASE}/sessions"             > "${response_file}"
+
+          jq -er '{name, state, url}' "${response_file}"

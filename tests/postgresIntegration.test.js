@@ -4,12 +4,13 @@ import pg from 'pg';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { PostgresAdapter } from '../src/db/postgresAdapter.js';
-import { MigrationRunner, MigrationExecutionError, stripOuterTransactionWrapper, calculateChecksum } from '../src/db/migrationRunner.js';
+import { MigrationRunner, MigrationExecutionError, calculateChecksum } from '../src/db/migrationRunner.js';
 
 test('PostgreSQL Live Integration Test Suite', async (t) => {
   const dbUrl = process.env.POSTGRES_TEST_URL || process.env.DATABASE_URL;
   const isCI = !!process.env.CI;
-  const expectPG = isCI || !!dbUrl;
+  const isIntegrationCmd = process.env.npm_lifecycle_event === 'test:integration';
+  const expectPG = isCI || !!dbUrl || isIntegrationCmd;
 
   // Probe live PG connection
   let pgAvailable = false;
@@ -55,21 +56,6 @@ test('PostgreSQL Live Integration Test Suite', async (t) => {
     }
   }
 
-  // Ensure we can safely reset database tables before we start
-  async function cleanLiveDatabase(adapter) {
-    try {
-      await adapter.query(`
-        DROP SCHEMA IF EXISTS public CASCADE;
-        CREATE SCHEMA public;
-        GRANT ALL ON SCHEMA public TO public;
-        GRANT ALL ON SCHEMA public TO st_app;
-      `);
-    } catch (err) {}
-  }
-
-  const bootstrapAdapter = new PostgresAdapter({}, testPool);
-  await cleanLiveDatabase(bootstrapAdapter);
-
   // Live PostgreSQL integration verification
   await t.test('verifies live PostgreSQL adapter query and migrations 001-008', async () => {
     const adapter = new PostgresAdapter({}, testPool);
@@ -84,20 +70,16 @@ test('PostgreSQL Live Integration Test Suite', async (t) => {
     const agentCount = parseInt(agentRes.rows[0].cnt, 10);
     assert.ok(agentCount >= 20, `Expected at least 20 canonical agents in PG database, got ${agentCount}`);
 
-    // 3. Verify transaction rollback on real PG using a dedicated rollback-probe table (Correction 1)
-    await adapter.query(`
-      CREATE TABLE IF NOT EXISTS test_rollback_probe (
-        id VARCHAR(50) PRIMARY KEY,
-        value VARCHAR(50) NOT NULL
-      );
-    `);
+    // 3. Verify transaction rollback on real PG using a dedicated rollback-probe table
+    await adapter.query("DROP TABLE IF EXISTS test_rollback_probe");
+    await adapter.query("CREATE TABLE test_rollback_probe (val text)");
 
     try {
       await assert.rejects(
         async () => {
           await adapter.withTransaction(async (client) => {
-            // Complete a valid write
-            await client.query("INSERT INTO test_rollback_probe (id, value) VALUES ('probe-1', 'valid_write')");
+            // Complete a valid write inside PostgresAdapter.withTransaction()
+            await client.query("INSERT INTO test_rollback_probe (val) VALUES ('PROBE_VAL')");
             // Throw the intended error only after that write succeeds
             throw new Error('Force rollback on live DB');
           });
@@ -106,153 +88,180 @@ test('PostgreSQL Live Integration Test Suite', async (t) => {
       );
 
       // Verify the write is absent after rollback
-      const probeCheck = await adapter.query("SELECT * FROM test_rollback_probe WHERE id = 'probe-1'");
-      assert.equal(probeCheck.rows.length, 0, "Write must be absent after rollback");
+      const tempCheck = await adapter.query("SELECT COUNT(*) as cnt FROM test_rollback_probe");
+      const cnt = parseInt(tempCheck.rows[0].cnt, 10);
+      assert.equal(cnt, 0, "Write should be rolled back and absent");
     } finally {
       // Clean up its probe table/data safely
-      await adapter.query("DROP TABLE IF EXISTS test_rollback_probe;");
+      await adapter.query("DROP TABLE IF EXISTS test_rollback_probe");
     }
   });
 
-  // Test 2: Live migration rollback test (Correction 2)
-  await t.test('proves a failing migration rolls back previous successful migrations in the same run', async () => {
+  // Teardown pool at the end of the suite
+  t.after(async () => {
+    if (testPool) {
+      await testPool.end().catch(() => {});
+    }
+  });
+
+  await t.test('verifies live PostgreSQL migration transaction rollback', async () => {
     const adapter = new PostgresAdapter({}, testPool);
 
+    // Ensure clean state before starting
+    await adapter.query("DROP TABLE IF EXISTS test_mig_rollback_a_unique");
+    await adapter.query("DELETE FROM schema_migrations WHERE filename IN ('001_mig_a_unique.sql', '002_mig_b_unique.sql')");
+
     // Create temporary migrations directory
-    const tempDir = path.join(process.cwd(), 'scratch', 'migration-rollback-test');
-    await fs.mkdir(tempDir, { recursive: true });
+    const tmpDir = path.join(process.cwd(), 'scratch_mig_rollback_test');
+    await fs.mkdir(tmpDir, { recursive: true });
+
+    // 001_mig_a_unique.sql creates table test_mig_rollback_a_unique
+    await fs.writeFile(
+      path.join(tmpDir, '001_mig_a_unique.sql'),
+      'CREATE TABLE test_mig_rollback_a_unique (val text);'
+    );
+    // 002_mig_b_unique.sql fails intentionally
+    await fs.writeFile(
+      path.join(tmpDir, '002_mig_b_unique.sql'),
+      'SELECT * FROM non_existent_table_for_rollback_test;'
+    );
+
+    const runner = new MigrationRunner(adapter, { migrationsDir: tmpDir });
 
     try {
-      // Migration A: changes database state successfully
-      await fs.writeFile(
-        path.join(tempDir, '001_create_table_a.sql'),
-        'CREATE TABLE migration_rollback_probe_a (id SERIAL PRIMARY KEY);',
-        'utf8'
+      // Run migrations and expect MigrationExecutionError
+      await assert.rejects(
+        async () => {
+          await runner.runMigrations();
+        },
+        (err) => {
+          assert.equal(err.name, 'MigrationExecutionError', "Should retain MigrationExecutionError type");
+          assert.equal(err.filename, '002_mig_b_unique.sql', "Error should point to the failing migration file");
+          return true;
+        }
       );
 
-      // Migration B: fails intentionally due to bad SQL syntax/non-existent table
-      await fs.writeFile(
-        path.join(tempDir, '002_fail_b.sql'),
-        'INSERT INTO non_existent_table_forced_failure VALUES (1);',
-        'utf8'
+      // Verify Migration A's database changes are rolled back (table should not exist)
+      const checkTable = await adapter.query(
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'test_mig_rollback_a_unique') as ex"
       );
+      assert.equal(checkTable.rows[0].ex, false, "Table created by Migration A should be rolled back and not exist");
 
-      const tempRunner = new MigrationRunner(adapter, { migrationsDir: tempDir });
+      // Verify neither migration receives a schema_migrations record
+      const checkRecord = await adapter.query(
+        "SELECT COUNT(*) as cnt FROM schema_migrations WHERE filename IN ('001_mig_a_unique.sql', '002_mig_b_unique.sql')"
+      );
+      assert.equal(parseInt(checkRecord.rows[0].cnt, 10), 0, "No records should exist in schema_migrations for either migration");
 
-      // Run migrations and capture the error using a robust try/catch
-      let error = null;
-      try {
-        await tempRunner.runMigrations();
-      } catch (err) {
-        error = err;
+    } finally {
+      // Clean up files safely
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      await adapter.query("DROP TABLE IF EXISTS test_mig_rollback_a_unique").catch(() => {});
+      await adapter.query("DELETE FROM schema_migrations WHERE filename IN ('001_mig_a_unique.sql', '002_mig_b_unique.sql')").catch(() => {});
+    }
+  });
+
+  await t.test('verifies live advisory lock concurrency protection', async () => {
+    const clientA = await testPool.connect();
+    let clientAActive = true;
+
+    try {
+      // 1. Client A acquires transaction-level advisory lock
+      await clientA.query('BEGIN');
+      await clientA.query('SELECT pg_advisory_xact_lock(889900, 112233)');
+
+      // 2. Concurrently attempt to run migrations using MigrationRunner on Client B
+      const adapterB = new PostgresAdapter({}, testPool);
+      const runnerB = new MigrationRunner(adapterB);
+
+      let runnerBCompleted = false;
+      let runnerBError = null;
+
+      const runnerBPromise = runnerB.runMigrations()
+        .then(() => {
+          runnerBCompleted = true;
+        })
+        .catch((err) => {
+          runnerBError = err;
+          runnerBCompleted = true;
+        });
+
+      // 3. Sleep for 200ms and prove that Client B remains blocked (cannot enter section)
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.equal(runnerBCompleted, false, "Client B migration runner must be blocked while Client A holds advisory lock");
+
+      // 4. Client A releases lock by ending its transaction
+      await clientA.query('ROLLBACK');
+      clientAActive = false;
+
+      // 5. Wait for Client B to unblock and complete successfully
+      await runnerBPromise;
+
+      if (runnerBError) {
+        throw runnerBError;
       }
-
-      assert.ok(error, 'Expected runMigrations to throw an error');
-      // Prove that the error retains MigrationExecutionError type and carries filename
-      assert.ok(error instanceof MigrationExecutionError || error.name === 'MigrationExecutionError', 'Error must be of type MigrationExecutionError');
-      assert.equal(error.name, 'MigrationExecutionError');
-      assert.equal(error.filename, '002_fail_b.sql');
-
-      // Prove that Migration A's database changes are rolled back (table does not exist)
-      const tableCheck = await adapter.query(`
-        SELECT EXISTS (
-          SELECT FROM pg_tables
-          WHERE schemaname = 'public' AND tablename = 'migration_rollback_probe_a'
-        );
-      `);
-      assert.equal(tableCheck.rows[0].exists, false, "Migration A's table must have been rolled back and not exist");
-
-      // Prove that neither migration receives a schema_migrations record
-      const schemaCheck = await adapter.query(
-        "SELECT * FROM schema_migrations WHERE filename IN ($1, $2)",
-        ['001_create_table_a.sql', '002_fail_b.sql']
-      );
-      assert.equal(schemaCheck.rows.length, 0, "No schema_migrations records should exist for rolled back migrations");
+      assert.equal(runnerBCompleted, true, "Client B should successfully complete after lock is released");
 
     } finally {
-      // Clean up temp directory safely
-      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
-      // Drop table if it somehow got created
-      await adapter.query('DROP TABLE IF EXISTS migration_rollback_probe_a;').catch(() => {});
+      if (clientAActive) {
+        await clientA.query('ROLLBACK').catch(() => {});
+      }
+      clientA.release();
     }
   });
 
-  // Test 3: Strengthen advisory-lock verification (Correction 3)
-  await t.test('strengthens advisory-lock verification across independent connections', async () => {
-    const pool1 = new pg.Pool({ connectionString: dbUrl || 'postgresql://st_app:st_test_password@localhost:5432/st_production_test' });
-    const pool2 = new pg.Pool({ connectionString: dbUrl || 'postgresql://st_app:st_test_password@localhost:5432/st_production_test' });
+  await t.test('verifies live transaction-wrapper handling and PL/pgSQL preservation', async () => {
+    const adapter = new PostgresAdapter({}, testPool);
+
+    // Ensure clean state before starting
+    await adapter.query("DROP FUNCTION IF EXISTS test_wrapper_func_preservation_unique()");
+    await adapter.query("DELETE FROM schema_migrations WHERE filename = '001_plpgsql_unique.sql'");
+
+    const tmpDir = path.join(process.cwd(), 'scratch_mig_wrapper_test');
+    await fs.mkdir(tmpDir, { recursive: true });
+
+    // File with outer transaction wrapper, comments, and a PL/pgSQL function with internal BEGIN/END
+    const rawSql = `
+      -- Test Comment
+      BEGIN;
+      CREATE OR REPLACE FUNCTION test_wrapper_func_preservation_unique() RETURNS integer AS $$
+      BEGIN
+        RETURN 42;
+      END;
+      $$ LANGUAGE plpgsql;
+      COMMIT;
+      -- Trailing Comment
+    `;
+
+    const filepath = path.join(tmpDir, '001_plpgsql_unique.sql');
+    await fs.writeFile(filepath, rawSql);
+
+    // Get expected raw file checksum before runner execution
+    const expectedChecksum = calculateChecksum(rawSql);
+
+    const runner = new MigrationRunner(adapter, { migrationsDir: tmpDir });
 
     try {
-      const adapter1 = new PostgresAdapter({}, pool1);
-      const adapter2 = new PostgresAdapter({}, pool2);
+      // Run the migration
+      await runner.runMigrations();
 
-      let lockAcquiredBy1 = false;
-      let lockAcquiredBy2 = false;
-      let time1Released = 0;
-      let time2Acquired = 0;
+      // 1. Prove that the PL/pgSQL function works on live PG (internal BEGIN/END remained intact)
+      const res = await adapter.query("SELECT test_wrapper_func_preservation_unique() as val");
+      assert.equal(parseInt(res.rows[0].val, 10), 42, "PL/pgSQL function should execute and return 42");
 
-      // Start client 1 transaction which acquires the lock and holds it
-      const promise1 = adapter1.withTransaction(async (client1) => {
-        await client1.query('SELECT pg_advisory_xact_lock($1, $2)', [889900, 112233]);
-        lockAcquiredBy1 = true;
-        // Hold the lock for 150ms
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        time1Released = Date.now();
-      });
+      // 2. Prove that raw-file on disk remains completely unchanged (its checksum is unchanged)
+      const rawOnDisk = await fs.readFile(filepath, 'utf8');
+      assert.equal(rawOnDisk, rawSql, "Raw file content on disk must remain identical");
+      assert.equal(calculateChecksum(rawOnDisk), expectedChecksum, "SHA-256 of raw file must remain unchanged");
 
-      // Wait 30ms to ensure Client 1 has acquired the lock, then start Client 2
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      // 3. Clean up database function and migration record
+      await adapter.query("DROP FUNCTION IF EXISTS test_wrapper_func_preservation_unique()");
+      await adapter.query("DELETE FROM schema_migrations WHERE filename = '001_plpgsql_unique.sql'");
 
-      const promise2 = adapter2.withTransaction(async (client2) => {
-        // This should block until client 1 releases the lock (at time1Released)
-        await client2.query('SELECT pg_advisory_xact_lock($1, $2)', [889900, 112233]);
-        lockAcquiredBy2 = true;
-        time2Acquired = Date.now();
-      });
-
-      await Promise.all([promise1, promise2]);
-
-      assert.ok(lockAcquiredBy1, "Client 1 must have acquired the lock");
-      assert.ok(lockAcquiredBy2, "Client 2 must have acquired the lock after Client 1 released it");
-      assert.ok(time2Acquired >= time1Released, "Client 2 must only acquire lock after Client 1 has released/committed");
     } finally {
-      await pool1.end().catch(() => {});
-      await pool2.end().catch(() => {});
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      await adapter.query("DROP FUNCTION IF EXISTS test_wrapper_func_preservation_unique()").catch(() => {});
+      await adapter.query("DELETE FROM schema_migrations WHERE filename = '001_plpgsql_unique.sql'").catch(() => {});
     }
   });
-
-  // Test 4: Verify transaction-wrapper handling (Correction 4)
-  await t.test('verifies transaction-wrapper handling and PL/pgSQL block integrity', async () => {
-    // PL/pgSQL style BEGIN / END block nested inside outer BEGIN / COMMIT
-    const plpgsqlSql = `BEGIN;
-CREATE OR REPLACE FUNCTION test_plpgsql_block() RETURNS integer AS $$
-DECLARE
-  result integer;
-BEGIN
-  result := 42;
-  RETURN result;
-END;
-$$ LANGUAGE plpgsql;
-COMMIT;`;
-
-    const stripped = stripOuterTransactionWrapper(plpgsqlSql);
-
-    // Assert that only the outer BEGIN; and COMMIT; are removed
-    assert.equal(stripped.includes('BEGIN;'), false, "Outer BEGIN; wrapper must be stripped");
-    assert.equal(stripped.includes('COMMIT;'), false, "Outer COMMIT; wrapper must be stripped");
-
-    // Assert that the PL/pgSQL nested BEGIN and END blocks are completely intact
-    assert.ok(stripped.includes('BEGIN\n  result := 42;'), "Nested PL/pgSQL BEGIN block must remain intact");
-    assert.ok(stripped.includes('END;'), "Nested PL/pgSQL END block must remain intact");
-
-    // Prove that original raw-file checksum is computed on the RAW content (unchanged raw checksum)
-    const rawChecksum = calculateChecksum(plpgsqlSql);
-    const strippedChecksum = calculateChecksum(stripped);
-    assert.notEqual(rawChecksum, strippedChecksum, "Checksum of raw SQL must differ from stripped SQL, proving original checksum is preserved");
-  });
-
-  // Ensure pool is closed gracefully at the very end of all tests
-  if (testPool) {
-    await testPool.end().catch(() => {});
-  }
 });

@@ -60,32 +60,79 @@ test('PostgresAdapter - Secret Redaction', async (t) => {
     assert.equal(sanitized.message, 'Unknown database error');
   });
 
-  await t.test('preserves custom error prototypes and sanitizes custom fields (Correction 5)', () => {
+  await t.test('preserves custom error prototype and sanitizes all custom properties', () => {
     class CustomDatabaseError extends Error {
-      constructor(message, customSecretProp) {
-        super(message);
+      constructor(msg, secretVal) {
+        super(msg);
         this.name = 'CustomDatabaseError';
-        this.customSecretProp = customSecretProp;
+        this.secretValue = secretVal;
+        this.someArray = ['safe', 'password=SuperSecretPassword123'];
+        this.nestedObj = {
+          deeperSecret: 'postgresql://st_user:SuperSecretPassword123@db.example.com:5432/st_db',
+        };
       }
     }
 
-    const err = new CustomDatabaseError(
-      'Database failed with postgresql://st_user:SuperSecretPassword123@db.example.com/db',
-      'Original secret vault://st/secrets/db-pass'
-    );
+    const origErr = new CustomDatabaseError('Custom DB error', 'vault://st/secrets/db-pass');
+    const sanitized = sanitizeError(origErr);
 
-    const sanitized = sanitizeError(err);
+    // 1. Check custom error prototype integrity
+    assert.ok(sanitized instanceof CustomDatabaseError);
+    assert.equal(sanitized.name, 'CustomDatabaseError');
 
-    // Assert that the prototype is preserved perfectly
-    assert.ok(sanitized instanceof CustomDatabaseError, 'Custom prototype must be preserved');
-    assert.equal(sanitized.name, 'CustomDatabaseError', 'Custom error name must be preserved');
+    // 2. Check custom properties sanitization
+    assert.ok(!sanitized.secretValue.includes('vault://'));
+    assert.equal(sanitized.secretValue, '[REDACTED_LOCATOR]');
 
-    // Assert that all fields are recursively sanitized
-    assert.ok(!sanitized.message.includes('SuperSecretPassword123'), 'Message must be sanitized');
-    assert.ok(sanitized.message.includes('[REDACTED]'), 'Message password must be redacted');
+    // 3. Check arrays property sanitization
+    assert.equal(sanitized.someArray[0], 'safe');
+    assert.ok(!sanitized.someArray[1].includes('SuperSecretPassword123'));
+    assert.ok(sanitized.someArray[1].includes('[REDACTED]'));
 
-    assert.ok(!sanitized.customSecretProp.includes('vault://st/secrets/db-pass'), 'Custom property must be sanitized');
-    assert.ok(sanitized.customSecretProp.includes('[REDACTED_LOCATOR]'), 'Custom property secret locator must be redacted');
+    // 4. Check nested object property sanitization
+    assert.ok(!sanitized.nestedObj.deeperSecret.includes('SuperSecretPassword123'));
+    assert.ok(sanitized.nestedObj.deeperSecret.includes('[REDACTED]'));
+  });
+
+  await t.test('recursive sanitization handles circular references, custom attributes, error causes, and symbol keys safely', () => {
+    class CustomNestedError extends Error {
+      constructor(msg, cause) {
+        super(msg);
+        this.name = 'CustomNestedError';
+        this.cause = cause;
+      }
+    }
+
+    const causeErr = new Error('Original database failure on postgresql://st_user:SuperSecretPassword123@db.example.com:5432/st_db');
+    const mainErr = new CustomNestedError('Main query failed', causeErr);
+
+    // Custom attribute
+    mainErr.customAttribute = 'password=SuperSecretPassword123';
+
+    // Symbol key
+    const secretSymbol = Symbol('secretSymbol');
+    mainErr[secretSymbol] = 'vault://st/secrets/db-pass';
+
+    // Circular reference
+    mainErr.circularRef = mainErr;
+
+    const sanitized = sanitizeError(mainErr);
+
+    assert.ok(sanitized instanceof CustomNestedError);
+    assert.ok(!sanitized.message.includes('SuperSecretPassword123'));
+
+    // Check cause is sanitized
+    assert.ok(!sanitized.cause.message.includes('SuperSecretPassword123'));
+    assert.ok(sanitized.cause.message.includes('[REDACTED]'));
+
+    // Check customAttribute is sanitized
+    assert.ok(sanitized.customAttribute.includes('[REDACTED]'));
+
+    // Check symbol key is sanitized
+    assert.equal(sanitized[secretSymbol], '[REDACTED_LOCATOR]');
+
+    // Check circular reference did not cause infinite loop and is preserved
+    assert.equal(sanitized.circularRef, sanitized);
   });
 });
 
