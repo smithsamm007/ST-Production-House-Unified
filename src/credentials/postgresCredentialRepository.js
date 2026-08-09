@@ -121,6 +121,7 @@ export class PostgresCredentialRepository {
         return this._toDTO(created);
       } catch (err) {
         if (this.auditRepo) {
+          // Log failed creation durably to connection pool, never to active aborted client
           await this.auditRepo.logAccess({
             credentialId: null,
             ownerId,
@@ -128,7 +129,7 @@ export class PostgresCredentialRepository {
             action: 'create',
             status: 'failure',
             errorMessage: err.message
-          }, client);
+          });
         }
         throw err;
       }
@@ -347,19 +348,15 @@ export class PostgresCredentialRepository {
         return this._toDTO(res.rows[0]);
       } catch (err) {
         if (this.auditRepo) {
-          const existsRes = await client.query(
-            "SELECT id FROM broker_credential_metadata WHERE id = $1 AND owner_id = $2 AND agent_id = $3",
-            [id, ownerId, agentId]
-          );
-          const hasCred = existsRes.rowCount > 0;
+          // Log failed attempt to connection pool (never pass aborted transactional client)
           await this.auditRepo.logAccess({
-            credentialId: hasCred ? id : null,
+            credentialId: id,
             ownerId,
             agentId,
             action: 'rotate',
             status: 'failure',
             errorMessage: err.message
-          }, client);
+          });
         }
         throw err;
       }
@@ -422,19 +419,14 @@ export class PostgresCredentialRepository {
         return this._toDTO(res.rows[0]);
       } catch (err) {
         if (this.auditRepo) {
-          const existsRes = await client.query(
-            "SELECT id FROM broker_credential_metadata WHERE id = $1 AND owner_id = $2 AND agent_id = $3",
-            [id, ownerId, agentId]
-          );
-          const hasCred = existsRes.rowCount > 0;
           await this.auditRepo.logAccess({
-            credentialId: hasCred ? id : null,
+            credentialId: id,
             ownerId,
             agentId,
             action: 'revoke',
             status: 'failure',
             errorMessage: err.message
-          }, client);
+          });
         }
         throw err;
       }
@@ -445,7 +437,6 @@ export class PostgresCredentialRepository {
    * Concurrency-safe updates to metadata. Scoped by owner and agent.
    */
   async updateMetadata(id, ownerId, { rotationStatus, expiresAt, lastHealthStatus, revokedAt }) {
-    // Left for PR #31 compatibility, but we enforce scoping when possible, or check:
     throw new Error("updateMetadata requires both ownerId and agentId parameters");
   }
 
@@ -512,19 +503,14 @@ export class PostgresCredentialRepository {
         return this._toDTO(res.rows[0]);
       } catch (err) {
         if (this.auditRepo) {
-          const existsRes = await client.query(
-            "SELECT id FROM broker_credential_metadata WHERE id = $1 AND owner_id = $2 AND agent_id = $3",
-            [id, ownerId, agentId]
-          );
-          const hasCred = existsRes.rowCount > 0;
           await this.auditRepo.logAccess({
-            credentialId: hasCred ? id : null,
+            credentialId: id,
             ownerId,
             agentId,
             action: 'update_metadata',
             status: 'failure',
             errorMessage: err.message
-          }, client);
+          });
         }
         throw err;
       }

@@ -88,7 +88,7 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
   const agentId2 = 'agent-02';
 
   t.after(async () => {
-    // Narrowly scoped cleanup
+    // Narrowly scoped teardown (Point 9)
     if (owner1Id && owner2Id) {
       await adapter.withTransaction(async (client) => {
         await client.query("SET LOCAL app.allow_audit_teardown = 'true'");
@@ -329,18 +329,16 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
       /Credential not found or unauthorized/
     );
 
-    // listLogsByOwner cross-agent denial: require owner+agent matching (point 2)
-    await assert.rejects(
-      async () => {
-        await auditRepo.listLogsByOwner(owner1Id, agentId2); // Should not find Owner 1's Agent 1 audits under Agent 2
-      }
-    );
+    // listLogsByOwner cross-agent denial: verify returns empty list instead of leaking Agent 1's logs
+    const logs = await auditRepo.listLogsByOwner(owner1Id, agentId2);
+    assert.equal(logs.length, 0, "Should contain 0 logs for unauthorized agent");
 
-    // listLogsByCredential cross-agent denial
+    // listLogsByCredential cross-agent denial: throws generic unauthorized error
     await assert.rejects(
       async () => {
         await auditRepo.listLogsByCredential(cred.id, owner1Id, agentId2);
-      }
+      },
+      /Credential not found or unauthorized/
     );
   });
 
@@ -444,41 +442,48 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
   });
 
   await t.test("Parent Owner/Credential RESTRICT deletion prevents orphans", async () => {
-    const oRes = await adapter.query(
-      `INSERT INTO owners (email, password_hash) VALUES ('temp-owner@test.com', 'hash') RETURNING id`
-    );
-    const tempOwnerId = oRes.rows[0].id;
-
-    const cred = await credentialRepo.create({
-      ownerId: tempOwnerId,
-      agentId: agentId1,
-      provider: 'temp-prov',
-      capability: 'temp-cap',
-      secretLocator: 'vault://st/temp-secret'
-    });
-
-    // Deleting parent credential fails due to ON DELETE RESTRICT (point 1 & 2)
-    await assert.rejects(
-      async () => {
-        await adapter.query(`DELETE FROM broker_credential_metadata WHERE id = $1`, [cred.id]);
-      },
-      /foreign key constraint/
-    );
-
-    // Deleting parent owner fails due to ON DELETE RESTRICT
-    await assert.rejects(
-      async () => {
-        await adapter.query(`DELETE FROM owners WHERE id = $1`, [tempOwnerId]);
-      },
-      /foreign key constraint/
-    );
-
-    // Clean up temp owner safely using SET LOCAL allow_audit_teardown (narrowly scoped teardown)
+    // Run entire subtest in transactional rollback block (Point 9 & 10)
     await adapter.withTransaction(async (client) => {
-      await client.query("SET LOCAL app.allow_audit_teardown = 'true'");
-      await client.query(`DELETE FROM broker_credential_audit_log WHERE owner_id = $1`, [tempOwnerId]);
-      await client.query(`DELETE FROM broker_credential_metadata WHERE owner_id = $1`, [tempOwnerId]);
-      await client.query(`DELETE FROM owners WHERE id = $1`, [tempOwnerId]);
+      const oRes = await client.query(
+        `INSERT INTO owners (email, password_hash) VALUES ('temp-owner@test.com', 'hash') RETURNING id`
+      );
+      const tempOwnerId = oRes.rows[0].id;
+
+      await client.query(
+        `INSERT INTO broker_credential_metadata (owner_id, agent_id, provider, capability, secret_locator)
+         VALUES ($1, 'agent-01', 'temp-prov', 'temp-cap', 'vault://st/temp-secret')`,
+        [tempOwnerId]
+      );
+
+      const credRes = await client.query(`SELECT id FROM broker_credential_metadata WHERE owner_id = $1`, [tempOwnerId]);
+      const credId = credRes.rows[0].id;
+
+      await client.query(
+        `INSERT INTO broker_credential_audit_log (credential_id, owner_id, agent_id, action, status)
+         VALUES ($1, $2, 'agent-01', 'read', 'success')`,
+         [credId, tempOwnerId]
+      );
+
+      // Deleting parent credential fails due to ON DELETE RESTRICT (point 1 & 2)
+      await assert.rejects(
+        async () => {
+          await client.query(`DELETE FROM broker_credential_metadata WHERE id = $1`, [credId]);
+        },
+        /foreign key constraint/
+      );
+
+      // Deleting parent owner fails due to ON DELETE RESTRICT
+      await assert.rejects(
+        async () => {
+          await client.query(`DELETE FROM owners WHERE id = $1`, [tempOwnerId]);
+        },
+        /foreign key constraint/
+      );
+
+      // Force rollback
+      throw new Error("ROLLBACK_FOR_TEARDOWN");
+    }).catch((err) => {
+      if (err.message !== "ROLLBACK_FOR_TEARDOWN") throw err;
     });
   });
 
