@@ -1,86 +1,76 @@
 /**
  * Abstract Repository Interface for Slice 4.3 Credentials.
  * PostgreSQL implementations must extend this class and override its methods.
+ * Production interfaces exclude unsafe unscoped methods to prevent insecure usage.
  */
 export class ICredentialRepository {
-  async findScoped({ ownerId, agentId, provider, capability, id, credentialId }) {
-    throw new Error("UNIMPLEMENTED: findScoped must be implemented by a concrete subclass.");
+  /**
+   * Scoped lookup matching owner, agent, provider, capability, and credentialId in a single predicate.
+   * Returns the raw locator string on success, or null if unauthorized/not found.
+   */
+  async findLocatorScoped({ ownerId, agentId, provider, capability, credentialId }) {
+    throw new Error("UNIMPLEMENTED: findLocatorScoped must be implemented by concrete subclass.");
   }
 
-  async findById(id) {
-    throw new Error("UNIMPLEMENTED: findById must be implemented by a concrete subclass.");
-  }
-
-  async findByLocator(locator) {
-    throw new Error("UNIMPLEMENTED: findByLocator must be implemented by a concrete subclass.");
-  }
-
-  async save(credential) {
-    throw new Error("UNIMPLEMENTED: save must be implemented by a concrete subclass.");
-  }
-
-  async create(credential) {
-    throw new Error("UNIMPLEMENTED: create must be implemented by a concrete subclass.");
-  }
-
-  async delete(id) {
-    throw new Error("UNIMPLEMENTED: delete must be implemented by a concrete subclass.");
+  /**
+   * Saves a credential record using PostgreSQL-compatible schema shape.
+   */
+  async save({ ownerId, agentId, provider, capability, credentialId, locator, metadata }) {
+    throw new Error("UNIMPLEMENTED: save must be implemented by concrete subclass.");
   }
 }
 
 /**
  * In-Memory Test-Only Credential Repository.
- * Conforms to ICredentialRepository. Used in deterministic unit and failure-injection testing.
- * This class is strictly test-only and is excluded from production wiring.
+ * Emulates the exact PostgreSQL snake_case schema shape and horizontal isolation.
  */
 export class TestOnlyInMemoryCredentialRepository extends ICredentialRepository {
   constructor() {
     super();
-    this.credentials = new Map();
+    // Stores database-shaped records
+    this.records = new Map();
   }
 
-  async findScoped({ ownerId, agentId, provider, capability, id, credentialId }) {
-    const targetId = id || credentialId;
-    const cred = this.credentials.get(targetId);
-    if (!cred) return null;
-    // Enforce 5-dimensional isolation predicate mapping in one single predicate evaluation
+  async findLocatorScoped({ ownerId, agentId, provider, capability, credentialId }) {
+    const row = this.records.get(credentialId);
+    if (!row) return null;
+
+    // Enforce PostgreSQL-shaped column predicate verification
     if (
-      cred.ownerId !== ownerId ||
-      cred.agentId !== agentId ||
-      cred.provider !== provider ||
-      cred.capability !== capability
+      row.owner_id !== ownerId ||
+      row.agent_id !== agentId ||
+      row.provider !== provider ||
+      row.capability !== capability
     ) {
       return null;
     }
-    return cred;
+
+    return row.secret_locator;
   }
 
-  async findById(id) {
-    return this.credentials.get(id) || null;
-  }
-
-  async findByLocator(locator) {
-    for (const cred of this.credentials.values()) {
-      if (cred.locator === locator) {
-        return cred;
-      }
+  async save({ ownerId, agentId, provider, capability, credentialId, locator, metadata }) {
+    if (!ownerId || !agentId || !provider || !capability || !locator) {
+      throw new Error("INVALID_COLUMNS: Missing required fields for database constraint.");
     }
-    return null;
-  }
 
-  async save(credential) {
-    if (!credential || !credential.id) {
-      throw new Error("INVALID_CREDENTIAL_DATA: Missing credential.id");
-    }
-    this.credentials.set(credential.id, credential);
-    return credential;
-  }
+    const id = credentialId || crypto.randomUUID();
 
-  async create(credential) {
-    return this.save(credential);
-  }
+    // Store in PostgreSQL compatible column names
+    const row = {
+      credential_id: id,
+      owner_id: ownerId,
+      agent_id: agentId,
+      provider: provider,
+      capability: capability,
+      secret_locator: locator,
+      metadata: metadata || null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
 
-  async delete(id) {
-    return this.credentials.delete(id);
+    this.records.set(id, row);
+
+    // Return the database representation of the credential ID
+    return id;
   }
 }

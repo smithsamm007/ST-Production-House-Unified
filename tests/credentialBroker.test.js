@@ -8,34 +8,35 @@ import {
 } from "../src/credentials/credentialBroker.js";
 import { TestOnlyInMemoryCredentialRepository } from "../src/credentials/credentialRepository.js";
 
-// Mock audit repository using recordEvent
-class MockAuditRepository {
-  constructor() {
+// PostgreSQL-shaped strict Audit Repository Fake (enforces Foreign Key constraints)
+class PostgresStrictAuditRepositoryFake {
+  constructor(existingCredentialIds = new Set()) {
+    this.existingCredentialIds = existingCredentialIds;
     this.events = [];
     this.shouldFail = false;
   }
-  async recordEvent(ownerId, eventType, payload) {
+
+  async recordEvent(payload) {
     if (this.shouldFail) {
       throw new Error("AUDIT_DB_DOWN");
     }
-    this.events.push({ ownerId, eventType, payload });
-  }
-}
 
-// Alternative mock audit repository using logAccess
-class MockAltAuditRepository {
-  constructor() {
-    this.accessLogs = [];
-  }
-  async logAccess(ownerId, payload) {
-    this.accessLogs.push({ ownerId, payload });
+    // Emulate strict database constraint behavior
+    if (payload.credentialId !== null && typeof payload.credentialId === "string") {
+      if (!this.existingCredentialIds.has(payload.credentialId)) {
+        // FK Violation!
+        throw new Error("FOREIGN_KEY_VIOLATION: credential_id does not exist in credentials table");
+      }
+    }
+
+    this.events.push(payload);
   }
 }
 
 test("Credential Broker - Constructor requires strict interfaces", () => {
   const repo = new TestOnlyInMemoryCredentialRepository();
   const resolver = () => {};
-  const audit = new MockAuditRepository();
+  const audit = new PostgresStrictAuditRepositoryFake();
 
   // Missing repository
   assert.throws(() => {
@@ -52,31 +53,27 @@ test("Credential Broker - Constructor requires strict interfaces", () => {
     new CredentialBroker({ repository: repo, resolver });
   }, /INVALID_AUDIT_REPOSITORY/);
 
-  // Valid constructor succeeds with recordEvent
+  // Valid constructor succeeds
   const broker = new CredentialBroker({ repository: repo, resolver, auditRepository: audit });
   assert.ok(broker);
-
-  // Valid constructor succeeds with logAccess
-  const brokerAlt = new CredentialBroker({ repository: repo, resolver, auditRepository: new MockAltAuditRepository() });
-  assert.ok(brokerAlt);
 });
 
 test("Credential Broker - Registration, scheme allowlist, and recursive scanning", async () => {
   const repo = new TestOnlyInMemoryCredentialRepository();
-  const audit = new MockAuditRepository();
+  const audit = new PostgresStrictAuditRepositoryFake();
   const broker = new CredentialBroker({ repository: repo, resolver: () => {}, auditRepository: audit });
 
   const ownerId = "owner-1";
 
   // Success with allowed schemes
-  const ok1 = await broker.register(ownerId, {
+  const okId = await broker.register(ownerId, {
     id: "cred-1",
     agentId: "agent-1",
     provider: "gemini",
     capability: "cap-1",
     locator: "vault://loc"
   });
-  assert.equal(ok1.id, "cred-1");
+  assert.equal(okId, "cred-1");
 
   // Rejects unallowlisted scheme
   await assert.rejects(async () => {
@@ -118,7 +115,7 @@ test("Credential Broker - Registration, scheme allowlist, and recursive scanning
   // Strengthened checking for circular structures
   const cyclic = { a: "vault://ok" };
   cyclic.self = cyclic;
-  const okCyclic = await broker.register(ownerId, {
+  const okCyclicId = await broker.register(ownerId, {
     id: "cred-5",
     agentId: "agent-1",
     provider: "gemini",
@@ -126,7 +123,7 @@ test("Credential Broker - Registration, scheme allowlist, and recursive scanning
     locator: "vault://loc",
     metadata: cyclic
   });
-  assert.equal(okCyclic.id, "cred-5");
+  assert.equal(okCyclicId, "cred-5");
 
   // Prototype pollution safety guard: custom getters/setters are blocked
   await assert.rejects(async () => {
@@ -146,10 +143,10 @@ test("Credential Broker - Registration, scheme allowlist, and recursive scanning
   }, SecurityViolationError);
 });
 
-test("Credential Broker - Resolution multi-dimensional isolation and generic error normalization", async () => {
+test("Credential Broker - Scoped database lookups, multi-dimensional isolation and generic normalization", async () => {
   const repo = new TestOnlyInMemoryCredentialRepository();
   const resolver = async (loc) => `resolved-secret-for-${loc}`;
-  const audit = new MockAuditRepository();
+  const audit = new PostgresStrictAuditRepositoryFake(new Set(["cred-secure"]));
   const broker = new CredentialBroker({ repository: repo, resolver, auditRepository: audit });
 
   const ownerId = "owner-1";
@@ -173,42 +170,31 @@ test("Credential Broker - Resolution multi-dimensional isolation and generic err
     assert.equal(secret, "resolved-secret-for-vault://secrets/gemini");
   });
   assert.equal(audit.events.length, 1);
-  assert.equal(audit.events[0].payload.outcome, "success");
+  assert.equal(audit.events[0].status, "success");
+  assert.equal(audit.events[0].errorCode, null);
 
   // Every mismatch returns the exact same generic ACCESS_DENIED error without detailing which parameter failed
-  await assert.rejects(async () => {
-    await broker.resolve({ ownerId: "wrong", agentId, provider, capability, credentialId });
-  }, (err) => {
-    assert.equal(err.message, "ACCESS_DENIED");
-    return true;
-  });
+  const mismatchParams = [
+    { ownerId: "wrong", agentId, provider, capability, credentialId },
+    { ownerId, agentId: "wrong", provider, capability, credentialId },
+    { ownerId, agentId, provider: "wrong", capability, credentialId },
+    { ownerId, agentId, provider, capability: "wrong", credentialId },
+  ];
 
-  await assert.rejects(async () => {
-    await broker.resolve({ ownerId, agentId: "wrong", provider, capability, credentialId });
-  }, (err) => {
-    assert.equal(err.message, "ACCESS_DENIED");
-    return true;
-  });
-
-  await assert.rejects(async () => {
-    await broker.resolve({ ownerId, agentId, provider: "wrong", capability, credentialId });
-  }, (err) => {
-    assert.equal(err.message, "ACCESS_DENIED");
-    return true;
-  });
-
-  await assert.rejects(async () => {
-    await broker.resolve({ ownerId, agentId, provider, capability: "wrong", credentialId });
-  }, (err) => {
-    assert.equal(err.message, "ACCESS_DENIED");
-    return true;
-  });
+  for (const params of mismatchParams) {
+    await assert.rejects(async () => {
+      await broker.resolve(params);
+    }, (err) => {
+      assert.equal(err.message, "ACCESS_DENIED");
+      return true;
+    });
+  }
 });
 
 test("Credential Broker - Strict lease lifetime limits", async () => {
   const repo = new TestOnlyInMemoryCredentialRepository();
   const resolver = async (loc) => "secret";
-  const audit = new MockAuditRepository();
+  const audit = new PostgresStrictAuditRepositoryFake(new Set(["cred-secure"]));
   const broker = new CredentialBroker({ repository: repo, resolver, auditRepository: audit });
 
   const ownerId = "owner-1";
@@ -239,7 +225,7 @@ test("Credential Broker - Strict lease lifetime limits", async () => {
 
 test("Credential Broker - Resolver output validation", async () => {
   const repo = new TestOnlyInMemoryCredentialRepository();
-  const audit = new MockAuditRepository();
+  const audit = new PostgresStrictAuditRepositoryFake(new Set(["cred-secure"]));
 
   const ownerId = "owner-1";
   const agentId = "agent-1";
@@ -248,11 +234,11 @@ test("Credential Broker - Resolver output validation", async () => {
   const credentialId = "cred-secure";
 
   await repo.save({
-    id: credentialId,
     ownerId,
     agentId,
     provider,
     capability,
+    credentialId,
     locator: "vault://secrets/gemini"
   });
 
@@ -276,7 +262,7 @@ test("Credential Broker - Resolver output validation", async () => {
 test("Credential Broker - Locator revalidation immediately before resolution", async () => {
   const repo = new TestOnlyInMemoryCredentialRepository();
   const resolver = async (loc) => "resolved-secret";
-  const audit = new MockAuditRepository();
+  const audit = new PostgresStrictAuditRepositoryFake(new Set(["cred-corrupt"]));
   const broker = new CredentialBroker({ repository: repo, resolver, auditRepository: audit });
 
   const ownerId = "owner-1";
@@ -287,11 +273,11 @@ test("Credential Broker - Locator revalidation immediately before resolution", a
 
   // Stored credential locator gets corrupted or loaded maliciously with an unsupported scheme
   await repo.save({
-    id: credentialId,
     ownerId,
     agentId,
     provider,
     capability,
+    credentialId,
     locator: "unsupported://secrets/private-api-key"
   });
 
@@ -319,16 +305,16 @@ test("Credential Lease - Safe consumption, revocation on downstream failure and 
 
   // Guarantee revocation after consume completed
   assert.equal(lease.isRevoked, true);
-  assert.throws(() => {
-    lease._getSecretInternalOnlyForTests();
-  });
+  await assert.rejects(async () => {
+    await lease.consume(() => {});
+  }, /LEASE_EXPIRED_OR_REVOKED/);
   // Confirm Buffer zeroization
   assert.equal(buf.every(byte => byte === 0), true);
 });
 
 test("Credential Broker - Audit failure fails closed", async () => {
   const repo = new TestOnlyInMemoryCredentialRepository();
-  const audit = new MockAuditRepository();
+  const audit = new PostgresStrictAuditRepositoryFake(new Set(["cred-secure"]));
   const broker = new CredentialBroker({ repository: repo, resolver: async () => "secret", auditRepository: audit });
 
   const ownerId = "owner-1";
@@ -337,7 +323,7 @@ test("Credential Broker - Audit failure fails closed", async () => {
   const capability = "cap-1";
   const credentialId = "cred-secure";
 
-  await repo.save({ id: credentialId, ownerId, agentId, provider, capability, locator: "vault://loc" });
+  await repo.save({ ownerId, agentId, provider, capability, credentialId, locator: "vault://loc" });
 
   audit.shouldFail = true; // Trigger audit repository failure
 
@@ -349,37 +335,29 @@ test("Credential Broker - Audit failure fails closed", async () => {
   });
 });
 
-test("Credential Broker - Complete Slice 4.3 and PR #32 interface compatibility", async () => {
+test("Credential Broker - Non-existent ID maps to null to avoid Foreign Key violations in audit logs", async () => {
   const repo = new TestOnlyInMemoryCredentialRepository();
-  const audit = new MockAuditRepository();
+  // Existing Set is empty -> emulates zero rows in credential table
+  const audit = new PostgresStrictAuditRepositoryFake(new Set());
   const broker = new CredentialBroker({ repository: repo, resolver: async () => "secret", auditRepository: audit });
 
   const ownerId = "owner-1";
   const agentId = "agent-1";
   const provider = "gemini";
   const capability = "cap-1";
-  const credentialId = "cred-compat";
+  const nonExistentCredentialId = "cred-non-existent-uuid-12345";
 
-  const credData = {
-    id: credentialId,
-    agentId,
-    provider,
-    capability,
-    locator: "vault://loc"
-  };
+  // Attempting to resolve non-existent credentialId
+  await assert.rejects(async () => {
+    await broker.resolve({ ownerId, agentId, provider, capability, credentialId: nonExistentCredentialId });
+  }, (err) => {
+    assert.equal(err.message, "ACCESS_DENIED");
+    return true;
+  });
 
-  // 1. Create method (used by PR #32)
-  await repo.create({ ...credData, ownerId });
-
-  // 2. findById method (used by PR #32)
-  const byId = await repo.findById(credentialId);
-  assert.equal(byId.id, credentialId);
-
-  // 3. findByLocator method (used by PR #32)
-  const byLoc = await repo.findByLocator("vault://loc");
-  assert.equal(byLoc.id, credentialId);
-
-  // 4. Resolve compatibility
-  const lease = await broker.resolve({ ownerId, agentId, provider, capability, credentialId });
-  assert.ok(lease);
+  // Verify that audit log succeeded and didn't fail with FK Violation, because credentialId was logged as null!
+  assert.equal(audit.events.length, 1);
+  assert.equal(audit.events[0].credentialId, null);
+  assert.equal(audit.events[0].status, "failed");
+  assert.equal(audit.events[0].errorCode, "ACCESS_DENIED");
 });

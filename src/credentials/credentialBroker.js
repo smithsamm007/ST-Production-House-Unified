@@ -38,9 +38,7 @@ export function sanitizeErrorMessage(message) {
 
 /**
  * Recursively scans an object for plaintext secrets under keys resembling sensitive names.
- * Sensitive keys (e.g., contains 'password', 'secret', 'token', 'apikey', 'privatekey', 'auth')
- * must have values starting with an allowlisted locator scheme.
- * Avoids walking custom prototype chains and invoking getters using own data-property descriptors.
+ * Avoids walking custom prototype chains or invoking getters by using own descriptors.
  */
 export function scanForPlaintextSecrets(obj, visited = new Set(), path = "", isSensitive = false) {
   if (!obj || typeof obj !== "object") return;
@@ -50,10 +48,9 @@ export function scanForPlaintextSecrets(obj, visited = new Set(), path = "", isS
   }
   visited.add(obj);
 
-  // Do not walk custom prototype chains. Enumerate own properties only to prevent getter invocation.
   const descriptors = Object.getOwnPropertyDescriptors(obj);
   for (const [key, desc] of Object.entries(descriptors)) {
-    // Skip potential prototype pollution vectors from direct key enumeration
+    // Skip potential prototype pollution vectors
     if (key === "__proto__" || key === "constructor") {
       const value = desc.value;
       if (value && typeof value === "object") {
@@ -62,7 +59,7 @@ export function scanForPlaintextSecrets(obj, visited = new Set(), path = "", isS
       continue;
     }
 
-    // If it is an accessor (getter/setter), reject it immediately to prevent execution
+    // Reject custom accessors immediately to avoid executing getter/setter logic
     if (desc.get || desc.set) {
       throw new SecurityViolationError(
         `Plaintext secret detected at "${path ? `${path}.${key}` : key}". Custom accessors are forbidden.`
@@ -156,6 +153,7 @@ export function validateSecretMaterial(secret) {
 
 /**
  * A short-lived, non-serializable lease representing a resolved credential secret.
+ * The raw secret is accessible ONLY via bounded consume(callback) capability.
  */
 export class CredentialLease {
   #secretValue;
@@ -175,16 +173,6 @@ export class CredentialLease {
         this.#timer.unref();
       }
     }
-  }
-
-  /**
-   * Internal test-only accessor. Do not use for production access.
-   */
-  _getSecretInternalOnlyForTests() {
-    if (this.#isRevoked || Date.now() >= this.#expiresAt) {
-      throw new Error("LEASE_EXPIRED_OR_REVOKED");
-    }
-    return this.#secretValue;
   }
 
   get isExpired() {
@@ -226,14 +214,16 @@ export class CredentialLease {
   }
 
   /**
-   * Minimizes raw secret exposure by auto-revoking the lease
-   * immediately after executing the callback.
+   * Only production secret access path. Always revokes/zeroizes on callback completion.
    */
   async consume(callback) {
     if (typeof callback !== "function") {
       throw new Error("CONSUME_CALLBACK_REQUIRED");
     }
-    const secret = this._getSecretInternalOnlyForTests();
+    if (this.#isRevoked || Date.now() >= this.#expiresAt) {
+      throw new Error("LEASE_EXPIRED_OR_REVOKED");
+    }
+    const secret = this.#secretValue;
     try {
       return await callback(secret);
     } finally {
@@ -252,7 +242,7 @@ export class CredentialLease {
  */
 export class CredentialBroker {
   constructor({ repository, resolver, auditRepository }) {
-    if (!repository || typeof repository.findScoped !== "function" || typeof repository.save !== "function") {
+    if (!repository || typeof repository.findLocatorScoped !== "function" || typeof repository.save !== "function") {
       throw new Error("INVALID_REPOSITORY: Repository must implement ICredentialRepository interface.");
     }
     if (!resolver || (typeof resolver !== "function" && typeof resolver.resolve !== "function")) {
@@ -285,15 +275,26 @@ export class CredentialBroker {
     }
   }
 
-  async _writeAudit(ownerId, payload) {
+  async _writeAudit({ credentialId, ownerId, agentId, provider, capability, action, status, errorCode }) {
     if (!this.auditRepository) {
       throw new Error("AUDIT_PERSISTENCE_FAILURE");
     }
+    const payload = {
+      credentialId,
+      ownerId,
+      agentId,
+      provider,
+      capability,
+      action,
+      status,
+      errorCode,
+      timestamp: new Date().toISOString()
+    };
     try {
       if (typeof this.auditRepository.recordEvent === "function") {
-        await this.auditRepository.recordEvent(ownerId, "credential_access", payload);
+        await this.auditRepository.recordEvent(payload);
       } else if (typeof this.auditRepository.logAccess === "function") {
-        await this.auditRepository.logAccess(ownerId, payload);
+        await this.auditRepository.logAccess(payload);
       } else {
         throw new Error("NO_VALID_AUDIT_METHOD");
       }
@@ -330,10 +331,15 @@ export class CredentialBroker {
       // Recursively scan the credentialData input for plaintext secrets in any sensitive fields
       scanForPlaintextSecrets(credentialData);
 
-      // Save to repository (ensuring ownerId is bound)
+      // Save to repository (using PostgreSQL columns shape)
       const record = {
-        ...credentialData,
-        ownerId
+        ownerId,
+        agentId,
+        provider,
+        capability,
+        credentialId: id,
+        locator,
+        metadata: credentialData.metadata || null
       };
 
       return await this.repository.save(record);
@@ -347,7 +353,9 @@ export class CredentialBroker {
 
   async resolve({ ownerId, agentId, provider, capability, credentialId, lifetimeMs = 30000 }) {
     let lease = null;
-    let auditOutcome = "access_denied";
+    let auditOutcome = "failed";
+    let errorCode = "ACCESS_DENIED";
+    let isIdFoundAndValid = false;
 
     try {
       if (!ownerId || !agentId || !provider || !capability || !credentialId) {
@@ -362,48 +370,53 @@ export class CredentialBroker {
         lifetimeMs <= 0 ||
         lifetimeMs > MAX_LEASE_LIFETIME_MS
       ) {
+        errorCode = "INVALID_LEASE_LIFETIME";
         throw new Error("INVALID_LEASE_LIFETIME");
       }
 
-      // 5-dimensional scoped database predicate resolution
-      const credential = await this.repository.findScoped({
+      // Single, horizontal-isolation db predicate query
+      const locator = await this.repository.findLocatorScoped({
         ownerId,
         agentId,
         provider,
         capability,
-        id: credentialId,
         credentialId
       });
 
-      if (!credential) {
+      if (!locator) {
         // Enforce generic access normalization
         throw new Error("ACCESS_DENIED");
       }
 
       // Immediately revalidate locator scheme before resolution
-      const locator = credential.locator;
       if (typeof locator !== "string") {
+        errorCode = "CORRUPTED_LOCATOR";
         throw new Error("ACCESS_DENIED");
       }
       const isAllowedScheme = ALLOWLISTED_SCHEMES.some(scheme => locator.startsWith(scheme));
       if (!isAllowedScheme) {
+        errorCode = "CORRUPTED_LOCATOR";
         throw new Error("ACCESS_DENIED");
       }
+
+      isIdFoundAndValid = true;
 
       const rawSecret = await this._resolveLocator(locator);
 
       lease = new CredentialLease(rawSecret, lifetimeMs);
       auditOutcome = "success";
+      errorCode = null;
 
-      // Persist access audit safely using append-only logAccess / recordEvent
-      await this._writeAudit(ownerId, {
+      // Persist access audit safely using compatible object-based API
+      await this._writeAudit({
+        credentialId,
         ownerId,
         agentId,
         provider,
         capability,
-        credentialId,
-        outcome: auditOutcome,
-        timestamp: new Date().toISOString()
+        action: "resolve",
+        status: auditOutcome,
+        errorCode
       });
 
       return lease;
@@ -413,16 +426,21 @@ export class CredentialBroker {
         lease.revoke();
       }
 
+      // For non-existent credential IDs, we MUST use null or a safe representation for credentialId
+      // so PostgreSQL Foreign Key constraints do not prevent auditing denails!
+      const auditCredentialId = isIdFoundAndValid ? credentialId : null;
+
       // Force durable audit recording even on access failure
       try {
-        await this._writeAudit(ownerId, {
-          ownerId,
+        await this._writeAudit({
+          credentialId: auditCredentialId,
+          ownerId: ownerId || "unknown",
           agentId: agentId || "unknown",
           provider: provider || "unknown",
           capability: capability || "unknown",
-          credentialId: credentialId || "unknown",
-          outcome: auditOutcome,
-          timestamp: new Date().toISOString()
+          action: "resolve",
+          status: auditOutcome,
+          errorCode: err.message === "INVALID_LEASE_LIFETIME" ? "INVALID_LEASE_LIFETIME" : errorCode
         });
       } catch (auditErr) {
         // Fail-closed on audit persistence failure
@@ -430,7 +448,7 @@ export class CredentialBroker {
       }
 
       // Generic normalized response
-      if (err.message === "ACCESS_DENIED" || err.message === "INVALID_LEASE_LIFETIME") {
+      if (err.message === "INVALID_LEASE_LIFETIME") {
         throw err;
       }
       throw new Error("ACCESS_DENIED");
