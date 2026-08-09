@@ -9,23 +9,62 @@ export class CredentialAuditRepository {
     this.adapter = postgresAdapter;
   }
 
+  _toDTO(row) {
+    if (!row) return null;
+    const dto = { ...row };
+    // Redact secret locators from error messages or standard audit payloads (point 6)
+    if (dto.error_message) {
+      dto.error_message = dto.error_message.replace(/(vault:\/\/|opaque:\/\/)[^\s'"]+/gi, "[REDACTED_LOCATOR]");
+    }
+    return Object.freeze(dto);
+  }
+
+  validateFields({ action, status, clientIp, userAgent }) {
+    if (!action || typeof action !== "string" || action.length < 1 || action.length > 100) {
+      throw new Error("action length must be between 1 and 100 characters");
+    }
+    if (!status || typeof status !== "string" || status.length < 1 || status.length > 100) {
+      throw new Error("status length must be between 1 and 100 characters");
+    }
+    if (clientIp) {
+      if (typeof clientIp !== "string" || clientIp.length > 45) {
+        throw new Error("clientIp exceeds max length of 45 characters");
+      }
+    }
+    if (userAgent) {
+      if (typeof userAgent !== "string" || userAgent.length > 500) {
+        throw new Error("userAgent exceeds max length of 500 characters");
+      }
+    }
+  }
+
+  /**
+   * Compatibility recordEvent method (point 3).
+   */
+  async recordEvent(params) {
+    return this.logAccess(params);
+  }
+
   /**
    * Logs an append-only credential access/action.
-   * Ensures that any error message is properly redacted of secrets/locators before persisting.
    */
   async logAccess({ credentialId, ownerId, agentId, action, status, errorMessage, clientIp, userAgent }) {
     if (!credentialId) throw new Error("Missing credentialId");
     if (!ownerId) throw new Error("Missing ownerId");
     if (!agentId) throw new Error("Missing agentId");
-    if (!action) throw new Error("Missing action");
-    if (!status) throw new Error("Missing status");
 
-    // Sanitize error message to prevent leaks of any sensitive data
+    this.validateFields({ action, status, clientIp, userAgent });
+
+    // Sanitize error message to prevent leaks of any sensitive data (point 6)
     let cleanErrorMessage = null;
     if (errorMessage) {
       try {
         const tempClean = sanitizeErrorMessage(errorMessage);
         cleanErrorMessage = sanitizeError(new Error(tempClean)).message;
+        // Bounded constraint checks for message
+        if (cleanErrorMessage.length > 1000) {
+          cleanErrorMessage = cleanErrorMessage.substring(0, 1000) + "... [TRUNCATED]";
+        }
       } catch (e) {
         cleanErrorMessage = "[REDACTED_ERROR_SANITIZATION_FAILED]";
       }
@@ -54,7 +93,7 @@ export class CredentialAuditRepository {
       clientIp || null,
       userAgent || null
     ]);
-    return res.rows[0];
+    return this._toDTO(res.rows[0]);
   }
 
   /**
@@ -68,7 +107,7 @@ export class CredentialAuditRepository {
       ORDER BY performed_at DESC;
     `;
     const res = await this.adapter.query(sql, [ownerId]);
-    return res.rows;
+    return res.rows.map(row => this._toDTO(row));
   }
 
   /**
@@ -82,6 +121,6 @@ export class CredentialAuditRepository {
       ORDER BY performed_at DESC;
     `;
     const res = await this.adapter.query(sql, [credentialId, ownerId]);
-    return res.rows;
+    return res.rows.map(row => this._toDTO(row));
   }
 }
