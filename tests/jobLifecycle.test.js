@@ -415,219 +415,329 @@ test("Job Lifecycle Contract — Live PG Suite", async (t) => {
       assert.equal(res.appliedCount, 0); // zero newly applied migrations
     });
 
-    // Ensure test agent is present in database
-    await adapter.query(
-      `INSERT INTO agents (id, name, namespace, concurrency_limit)
-       VALUES ('agent-life-test', 'LIFECYCLE_TEST_AGENT', 'st.agent.lifecycle.test', 2)
-       ON CONFLICT (id) DO UPDATE SET concurrency_limit = 2;`
-    );
-
     await t.test("idempotent job creation in real PG", async () => {
-      const key = `pg-idemp-${Date.now()}`;
-      const payload = { target: "episode_5" };
+      const unique = Date.now();
+      const agentId = `agent-life-test-idemp-${unique}`;
 
-      const j1 = await createJob(adapter, {
-        agentId: "agent-life-test",
-        capability: "assemble",
-        idempotencyKey: key,
-        payload,
-      });
+      // Register unique agent
+      await adapter.query(
+        `INSERT INTO agents (id, name, namespace, concurrency_limit)
+         VALUES ($1, $2, $3, 2);`,
+        [agentId, `LIFECYCLE_IDEMP_AGENT_${unique}`, `st.agent.lifecycle.idemp.${unique}`]
+      );
 
-      assert.ok(j1.id);
-      assert.equal(j1.status, "queued");
+      try {
+        const key = `pg-idemp-${unique}`;
+        const payload = { target: "episode_5" };
 
-      const j2 = await createJob(adapter, {
-        agentId: "agent-life-test",
-        capability: "assemble",
-        idempotencyKey: key,
-        payload: { changed: true },
-      });
+        const j1 = await createJob(adapter, {
+          agentId,
+          capability: "assemble",
+          idempotencyKey: key,
+          payload,
+        });
 
-      assert.equal(j2.id, j1.id);
-      assert.deepEqual(j2.payload.target, "episode_5"); // original payload is retained
+        assert.ok(j1.id);
+        assert.equal(j1.status, "queued");
+
+        const j2 = await createJob(adapter, {
+          agentId,
+          capability: "assemble",
+          idempotencyKey: key,
+          payload: { changed: true },
+        });
+
+        assert.equal(j2.id, j1.id);
+        assert.deepEqual(j2.payload.target, "episode_5"); // original payload is retained
+      } finally {
+        await adapter.query("DELETE FROM jobs WHERE agent_id = $1;", [agentId]);
+        await adapter.query("DELETE FROM agents WHERE id = $1;", [agentId]);
+      }
     });
 
     await t.test("respects concurrency limits and concurrent claims on real PostgreSQL", async () => {
       const unique = Date.now();
+      const agentId = `agent-life-test-concur-${unique}`;
       const cap = "assemble";
 
-      // Create 3 jobs
-      await createJob(adapter, { agentId: "agent-life-test", capability: cap, idempotencyKey: `c-key-1-${unique}`, payload: {} });
-      await createJob(adapter, { agentId: "agent-life-test", capability: cap, idempotencyKey: `c-key-2-${unique}`, payload: {} });
-      await createJob(adapter, { agentId: "agent-life-test", capability: cap, idempotencyKey: `c-key-3-${unique}`, payload: {} });
+      await adapter.query(
+        `INSERT INTO agents (id, name, namespace, concurrency_limit)
+         VALUES ($1, $2, $3, 2);`,
+        [agentId, `LIFECYCLE_CONCUR_AGENT_${unique}`, `st.agent.lifecycle.concur.${unique}`]
+      );
 
-      // Claim first job
-      const c1 = await claimJob(adapter, { agentId: "agent-life-test", capability: cap, leaseOwner: `w1-${unique}`, leaseDurationSeconds: 15 });
-      assert.ok(c1);
-      assert.equal(c1.status, "leased");
+      try {
+        // Create 3 jobs
+        await createJob(adapter, { agentId, capability: cap, idempotencyKey: `c-key-1-${unique}`, payload: {} });
+        await createJob(adapter, { agentId, capability: cap, idempotencyKey: `c-key-2-${unique}`, payload: {} });
+        await createJob(adapter, { agentId, capability: cap, idempotencyKey: `c-key-3-${unique}`, payload: {} });
 
-      // Claim second job
-      const c2 = await claimJob(adapter, { agentId: "agent-life-test", capability: cap, leaseOwner: `w2-${unique}`, leaseDurationSeconds: 15 });
-      assert.ok(c2);
+        // Claim first job
+        const c1 = await claimJob(adapter, { agentId, capability: cap, leaseOwner: `w1-${unique}`, leaseDurationSeconds: 15 });
+        assert.ok(c1);
+        assert.equal(c1.status, "leased");
 
-      // Try to claim third job — must return null (concurrency limit of 2 reached)
-      const c3 = await claimJob(adapter, { agentId: "agent-life-test", capability: cap, leaseOwner: `w3-${unique}`, leaseDurationSeconds: 15 });
-      assert.equal(c3, null);
+        // Claim second job
+        const c2 = await claimJob(adapter, { agentId, capability: cap, leaseOwner: `w2-${unique}`, leaseDurationSeconds: 15 });
+        assert.ok(c2);
 
-      // Transition to running & complete first job
-      await startJob(adapter, { jobId: c1.id, leaseOwner: `w1-${unique}` });
-      await completeJob(adapter, { jobId: c1.id, leaseOwner: `w1-${unique}`, resultPayload: { file: "output.mp4" } });
+        // Try to claim third job — must return null (concurrency limit of 2 reached)
+        const c3 = await claimJob(adapter, { agentId, capability: cap, leaseOwner: `w3-${unique}`, leaseDurationSeconds: 15 });
+        assert.equal(c3, null);
 
-      // Claim third job again — should succeed now that one active slot has opened up
-      const c3Retry = await claimJob(adapter, { agentId: "agent-life-test", capability: cap, leaseOwner: `w3-${unique}`, leaseDurationSeconds: 15 });
-      assert.ok(c3Retry);
-      assert.equal(c3Retry.idempotencyKey, `c-key-3-${unique}`);
+        // Transition to running & complete first job
+        await startJob(adapter, { jobId: c1.id, leaseOwner: `w1-${unique}` });
+        await completeJob(adapter, { jobId: c1.id, leaseOwner: `w1-${unique}`, resultPayload: { file: "output.mp4" } });
 
-      // Clean up tests
-      await startJob(adapter, { jobId: c2.id, leaseOwner: `w2-${unique}` });
-      await completeJob(adapter, { jobId: c2.id, leaseOwner: `w2-${unique}`, resultPayload: {} });
-      await startJob(adapter, { jobId: c3Retry.id, leaseOwner: `w3-${unique}` });
-      await completeJob(adapter, { jobId: c3Retry.id, leaseOwner: `w3-${unique}`, resultPayload: {} });
+        // Claim third job again — should succeed now that one active slot has opened up
+        const c3Retry = await claimJob(adapter, { agentId, capability: cap, leaseOwner: `w3-${unique}`, leaseDurationSeconds: 15 });
+        assert.ok(c3Retry);
+        assert.equal(c3Retry.idempotencyKey, `c-key-3-${unique}`);
+
+        // Clean up tests
+        await startJob(adapter, { jobId: c2.id, leaseOwner: `w2-${unique}` });
+        await completeJob(adapter, { jobId: c2.id, leaseOwner: `w2-${unique}`, resultPayload: {} });
+        await startJob(adapter, { jobId: c3Retry.id, leaseOwner: `w3-${unique}` });
+        await completeJob(adapter, { jobId: c3Retry.id, leaseOwner: `w3-${unique}`, resultPayload: {} });
+      } finally {
+        await adapter.query("DELETE FROM jobs WHERE agent_id = $1;", [agentId]);
+        await adapter.query("DELETE FROM agents WHERE id = $1;", [agentId]);
+      }
+    });
+
+    await t.test("genuinely simultaneous Promise.all concurrent-claim on real PostgreSQL", async () => {
+      const unique = Date.now();
+      const agentId = `agent-life-test-simul-${unique}`;
+      const cap = "simul-assemble";
+
+      await adapter.query(
+        `INSERT INTO agents (id, name, namespace, concurrency_limit)
+         VALUES ($1, $2, $3, 1);`,
+        [agentId, `LIFECYCLE_SIMUL_AGENT_${unique}`, `st.agent.lifecycle.simul.${unique}`]
+      );
+
+      try {
+        // Create 3 queued jobs
+        await createJob(adapter, { agentId, capability: cap, idempotencyKey: `simul-key-1-${unique}`, payload: {} });
+        await createJob(adapter, { agentId, capability: cap, idempotencyKey: `simul-key-2-${unique}`, payload: {} });
+        await createJob(adapter, { agentId, capability: cap, idempotencyKey: `simul-key-3-${unique}`, payload: {} });
+
+        // Genuinely simultaneous claims
+        const claims = await Promise.all([
+          claimJob(adapter, { agentId, capability: cap, leaseOwner: `w1-${unique}`, leaseDurationSeconds: 15 }),
+          claimJob(adapter, { agentId, capability: cap, leaseOwner: `w2-${unique}`, leaseDurationSeconds: 15 }),
+          claimJob(adapter, { agentId, capability: cap, leaseOwner: `w3-${unique}`, leaseDurationSeconds: 15 }),
+        ]);
+
+        // Exactly 1 claim should have succeeded, and the other 2 must be null (due to concurrency limit of 1 and FOR UPDATE locking)
+        const successfulClaims = claims.filter(c => c !== null);
+        assert.equal(successfulClaims.length, 1);
+
+        // Clean up
+        const successful = successfulClaims[0];
+        await startJob(adapter, { jobId: successful.id, leaseOwner: successful.leaseOwner });
+        await completeJob(adapter, { jobId: successful.id, leaseOwner: successful.leaseOwner, resultPayload: {} });
+      } finally {
+        await adapter.query("DELETE FROM jobs WHERE agent_id = $1;", [agentId]);
+        await adapter.query("DELETE FROM agents WHERE id = $1;", [agentId]);
+      }
     });
 
     await t.test("strict database-level job status transitions trigger verification", async () => {
       const unique = Date.now();
-      const j = await createJob(adapter, {
-        agentId: "agent-life-test",
-        capability: "trigger-test",
-        idempotencyKey: `trg-${unique}`,
-        payload: {},
-      });
+      const agentId = `agent-life-test-trans-${unique}`;
 
-      // Try transition from queued directly to running (illegal)
-      await assert.rejects(
-        async () => {
-          await adapter.query("UPDATE jobs SET status = 'running' WHERE id = $1;", [j.id]);
-        },
-        /Invalid transition from queued to running/
+      await adapter.query(
+        `INSERT INTO agents (id, name, namespace, concurrency_limit)
+         VALUES ($1, $2, $3, 2);`,
+        [agentId, `LIFECYCLE_TRANS_AGENT_${unique}`, `st.agent.lifecycle.trans.${unique}`]
       );
 
-      // Transition queued -> leased (legal)
-      const claimed = await claimJob(adapter, {
-        agentId: "agent-life-test",
-        capability: "trigger-test",
-        leaseOwner: `owner-${unique}`,
-        leaseDurationSeconds: 10,
-      });
-      assert.ok(claimed);
+      try {
+        const j = await createJob(adapter, {
+          agentId,
+          capability: "trigger-test",
+          idempotencyKey: `trg-${unique}`,
+          payload: {},
+        });
 
-      // Try transition from leased directly to succeeded (illegal - must be started/running first)
-      await assert.rejects(
-        async () => {
-          await adapter.query("UPDATE jobs SET status = 'succeeded' WHERE id = $1;", [j.id]);
-        },
-        /Invalid transition from leased to succeeded/
-      );
+        // Try transition from queued directly to running (illegal)
+        await assert.rejects(
+          async () => {
+            await adapter.query("UPDATE jobs SET status = 'running' WHERE id = $1;", [j.id]);
+          },
+          /Invalid transition from queued to running/
+        );
 
-      // Transition leased -> running (legal)
-      await startJob(adapter, { jobId: j.id, leaseOwner: `owner-${unique}` });
+        // Transition queued -> leased (legal)
+        const claimed = await claimJob(adapter, {
+          agentId,
+          capability: "trigger-test",
+          leaseOwner: `owner-${unique}`,
+          leaseDurationSeconds: 10,
+        });
+        assert.ok(claimed);
 
-      // Transition running -> succeeded (legal)
-      await completeJob(adapter, { jobId: j.id, leaseOwner: `owner-${unique}`, resultPayload: {} });
+        // Try transition from leased directly to succeeded (illegal - must be started/running first)
+        await assert.rejects(
+          async () => {
+            await adapter.query("UPDATE jobs SET status = 'succeeded' WHERE id = $1;", [j.id]);
+          },
+          /Invalid transition from leased to succeeded/
+        );
 
-      // Try transition succeeded -> queued (illegal)
-      await assert.rejects(
-        async () => {
-          await adapter.query("UPDATE jobs SET status = 'queued' WHERE id = $1;", [j.id]);
-        },
-        /Cannot transition from terminal status succeeded to queued/
-      );
+        // Transition leased -> running (legal)
+        await startJob(adapter, { jobId: j.id, leaseOwner: `owner-${unique}` });
+
+        // Transition running -> succeeded (legal)
+        await completeJob(adapter, { jobId: j.id, leaseOwner: `owner-${unique}`, resultPayload: {} });
+
+        // Try transition succeeded -> queued (illegal)
+        await assert.rejects(
+          async () => {
+            await adapter.query("UPDATE jobs SET status = 'queued' WHERE id = $1;", [j.id]);
+          },
+          /Cannot transition from terminal status succeeded to queued/
+        );
+      } finally {
+        await adapter.query("DELETE FROM jobs WHERE agent_id = $1;", [agentId]);
+        await adapter.query("DELETE FROM agents WHERE id = $1;", [agentId]);
+      }
     });
 
     await t.test("retry limits and dead-lettering in real PG", async () => {
       const unique = Date.now();
-      const j = await createJob(adapter, {
-        agentId: "agent-life-test",
-        capability: "retry-limit-test",
-        idempotencyKey: `retry-limit-${unique}`,
-        payload: {},
-        maxAttempts: 2,
-      });
+      const agentId = `agent-life-test-retry-${unique}`;
 
-      // Claim & Fail 1
-      const c1 = await claimJob(adapter, { agentId: "agent-life-test", capability: "retry-limit-test", leaseOwner: `worker-${unique}`, leaseDurationSeconds: 10 });
-      assert.equal(c1.attempts, 1);
-      const f1 = await failJob(adapter, { jobId: j.id, leaseOwner: `worker-${unique}`, errorPayload: { err: "first" } });
-      assert.equal(f1.status, "queued");
+      await adapter.query(
+        `INSERT INTO agents (id, name, namespace, concurrency_limit)
+         VALUES ($1, $2, $3, 2);`,
+        [agentId, `LIFECYCLE_RETRY_AGENT_${unique}`, `st.agent.lifecycle.retry.${unique}`]
+      );
 
-      // Claim & Fail 2
-      const c2 = await claimJob(adapter, { agentId: "agent-life-test", capability: "retry-limit-test", leaseOwner: `worker-${unique}`, leaseDurationSeconds: 10 });
-      assert.equal(c2.attempts, 2);
-      const f2 = await failJob(adapter, { jobId: j.id, leaseOwner: `worker-${unique}`, errorPayload: { err: "second" } });
-      assert.equal(f2.status, "dead_letter");
+      try {
+        const j = await createJob(adapter, {
+          agentId,
+          capability: "retry-limit-test",
+          idempotencyKey: `retry-limit-${unique}`,
+          payload: {},
+          maxAttempts: 2,
+        });
 
-      // Attempt to claim a dead_letter job (attempts >= max_attempts) should yield null
-      const c3 = await claimJob(adapter, { agentId: "agent-life-test", capability: "retry-limit-test", leaseOwner: `worker-${unique}`, leaseDurationSeconds: 10 });
-      assert.equal(c3, null);
+        // Claim & Fail 1
+        const c1 = await claimJob(adapter, { agentId, capability: "retry-limit-test", leaseOwner: `worker-${unique}`, leaseDurationSeconds: 10 });
+        assert.equal(c1.attempts, 1);
+        const f1 = await failJob(adapter, { jobId: j.id, leaseOwner: `worker-${unique}`, errorPayload: { err: "first" } });
+        assert.equal(f1.status, "queued");
+
+        // Claim & Fail 2
+        const c2 = await claimJob(adapter, { agentId: "agent-life-test-retry-" + unique, capability: "retry-limit-test", leaseOwner: `worker-${unique}`, leaseDurationSeconds: 10 });
+        assert.equal(c2.attempts, 2);
+        const f2 = await failJob(adapter, { jobId: j.id, leaseOwner: `worker-${unique}`, errorPayload: { err: "second" } });
+        assert.equal(f2.status, "dead_letter");
+
+        // Attempt to claim a dead_letter job (attempts >= max_attempts) should yield null
+        const c3 = await claimJob(adapter, { agentId, capability: "retry-limit-test", leaseOwner: `worker-${unique}`, leaseDurationSeconds: 10 });
+        assert.equal(c3, null);
+      } finally {
+        await adapter.query("DELETE FROM jobs WHERE agent_id = $1;", [agentId]);
+        await adapter.query("DELETE FROM agents WHERE id = $1;", [agentId]);
+      }
     });
 
     await t.test("renewLease rejects already-expired leases in real PG", async () => {
       const unique = Date.now();
-      const j = await createJob(adapter, {
-        agentId: "agent-life-test",
-        capability: "renew-exp-test",
-        idempotencyKey: `renew-exp-${unique}`,
-        payload: {},
-      });
+      const agentId = `agent-life-test-renew-exp-${unique}`;
 
-      const claimed = await claimJob(adapter, {
-        agentId: "agent-life-test",
-        capability: "renew-exp-test",
-        leaseOwner: `owner-${unique}`,
-        leaseDurationSeconds: 10,
-      });
-
-      // Explicitly force expiration in real PG database
       await adapter.query(
-        "UPDATE jobs SET lease_expires_at = now() - interval '5 seconds' WHERE id = $1;",
-        [j.id]
+        `INSERT INTO agents (id, name, namespace, concurrency_limit)
+         VALUES ($1, $2, $3, 2);`,
+        [agentId, `LIFECYCLE_RENEW_EXP_AGENT_${unique}`, `st.agent.lifecycle.renew.exp.${unique}`]
       );
 
-      // Attempting to renew an already-expired lease should fail/throw in SQL
-      await assert.rejects(
-        async () => {
-          await renewLease(adapter, {
-            jobId: j.id,
-            leaseOwner: `owner-${unique}`,
-            leaseDurationSeconds: 10,
-          });
-        },
-        /LEASE_NOT_FOUND_OR_EXPIRED_OR_OWNER_MISMATCH/
-      );
+      try {
+        const j = await createJob(adapter, {
+          agentId,
+          capability: "renew-exp-test",
+          idempotencyKey: `renew-exp-${unique}`,
+          payload: {},
+        });
+
+        const claimed = await claimJob(adapter, {
+          agentId,
+          capability: "renew-exp-test",
+          leaseOwner: `owner-${unique}`,
+          leaseDurationSeconds: 10,
+        });
+
+        // Explicitly force expiration in real PG database
+        await adapter.query(
+          "UPDATE jobs SET lease_expires_at = now() - interval '5 seconds' WHERE id = $1;",
+          [j.id]
+        );
+
+        // Attempting to renew an already-expired lease should fail/throw in SQL
+        await assert.rejects(
+          async () => {
+            await renewLease(adapter, {
+              jobId: j.id,
+              leaseOwner: `owner-${unique}`,
+              leaseDurationSeconds: 10,
+            });
+          },
+          /LEASE_NOT_FOUND_OR_EXPIRED_OR_OWNER_MISMATCH/
+        );
+      } finally {
+        await adapter.query("DELETE FROM jobs WHERE agent_id = $1;", [agentId]);
+        await adapter.query("DELETE FROM agents WHERE id = $1;", [agentId]);
+      }
     });
 
     await t.test("reclaims expired leases in real PG", async () => {
       const unique = Date.now();
-      const j = await createJob(adapter, {
-        agentId: "agent-life-test",
-        capability: "expire-test",
-        idempotencyKey: `exp-${unique}`,
-        payload: {},
-        maxAttempts: 2,
-      });
+      const agentId = `agent-life-test-reclaim-${unique}`;
 
-      // Claim job with valid lease duration
-      const c1 = await claimJob(adapter, {
-        agentId: "agent-life-test",
-        capability: "expire-test",
-        leaseOwner: `exp-owner-${unique}`,
-        leaseDurationSeconds: 10,
-      });
-      assert.ok(c1);
-
-      // Explicitly expire the lease in the database
       await adapter.query(
-        "UPDATE jobs SET lease_expires_at = now() - interval '5 seconds' WHERE id = $1;",
-        [j.id]
+        `INSERT INTO agents (id, name, namespace, concurrency_limit)
+         VALUES ($1, $2, $3, 2);`,
+        [agentId, `LIFECYCLE_RECLAIM_AGENT_${unique}`, `st.agent.lifecycle.reclaim.${unique}`]
       );
 
-      // Reclaim expired lease
-      const reclaimed = await reclaimExpiredLeases(adapter);
-      assert.ok(reclaimed.length >= 1);
+      try {
+        const j = await createJob(adapter, {
+          agentId,
+          capability: "expire-test",
+          idempotencyKey: `exp-${unique}`,
+          payload: {},
+          maxAttempts: 2,
+        });
 
-      const targetReclaimed = reclaimed.find((job) => job.id === j.id);
-      assert.ok(targetReclaimed);
-      assert.equal(targetReclaimed.status, "queued"); // was try 1, so it is back to queued
+        // Claim job with valid lease duration
+        const c1 = await claimJob(adapter, {
+          agentId,
+          capability: "expire-test",
+          leaseOwner: `exp-owner-${unique}`,
+          leaseDurationSeconds: 10,
+        });
+        assert.ok(c1);
+
+        // Explicitly expire the lease in the database
+        await adapter.query(
+          "UPDATE jobs SET lease_expires_at = now() - interval '5 seconds' WHERE id = $1;",
+          [j.id]
+        );
+
+        // Reclaim expired lease
+        const reclaimed = await reclaimExpiredLeases(adapter);
+        assert.ok(reclaimed.length >= 1);
+
+        const targetReclaimed = reclaimed.find((job) => job.id === j.id);
+        assert.ok(targetReclaimed);
+        assert.equal(targetReclaimed.status, "queued"); // was try 1, so it is back to queued
+      } finally {
+        await adapter.query("DELETE FROM jobs WHERE agent_id = $1;", [agentId]);
+        await adapter.query("DELETE FROM agents WHERE id = $1;", [agentId]);
+      }
     });
 
   } finally {
