@@ -313,8 +313,8 @@ export class CredentialBroker {
       }
 
       const { id, agentId, provider, capability, locator } = credentialData;
-      if (!agentId || !provider || !capability || !locator) {
-        throw new Error("INVALID_CREDENTIAL_DATA: agentId, provider, capability, and locator are required");
+      if (!id || !agentId || !provider || !capability || !locator) {
+        throw new Error("INVALID_CREDENTIAL_DATA: id, agentId, provider, capability, and locator are required");
       }
 
       if (typeof locator !== "string") {
@@ -353,7 +353,7 @@ export class CredentialBroker {
 
   async resolve({ ownerId, agentId, provider, capability, credentialId, lifetimeMs = 30000 }) {
     let lease = null;
-    let auditOutcome = "failure";
+    let auditOutcome = "failed";
     let errorCode = "ACCESS_DENIED";
     let isIdFoundAndValid = false;
 
@@ -440,11 +440,7 @@ export class CredentialBroker {
           capability: capability || "unknown",
           action: "resolve",
           status: auditOutcome,
-          errorCode: err.message === "INVALID_LEASE_LIFETIME"
-            ? "INVALID_LEASE_LIFETIME"
-            : err.message.startsWith("RESOLUTION_FAILED:")
-              ? "RESOLUTION_FAILED"
-              : errorCode
+          errorCode: err.message === "INVALID_LEASE_LIFETIME" ? "INVALID_LEASE_LIFETIME" : errorCode
         });
       } catch (auditErr) {
         // Fail-closed on audit persistence failure

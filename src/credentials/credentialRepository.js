@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 /**
  * Abstract Repository Interface for Slice 4.3 Credentials.
  * PostgreSQL implementations must extend this class and override its methods.
@@ -53,7 +55,7 @@ export class TestOnlyInMemoryCredentialRepository extends ICredentialRepository 
       throw new Error("INVALID_COLUMNS: Missing required fields for database constraint.");
     }
 
-    const id = credentialId || crypto.randomUUID();
+    const id = credentialId || randomUUID();
 
     // Store in PostgreSQL compatible column names
     const row = {
