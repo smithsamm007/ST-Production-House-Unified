@@ -55,13 +55,16 @@ export class PostgresCredentialRepository {
   }
 
   /**
-   * Public save method (Point 2)
+   * Public save method conforming to the frozen locator shape (point 4).
    */
-  async save({ ownerId, agentId, provider, capability, locator, secretLocator, expiresAt, lastHealthStatus }) {
-    const loc = locator || secretLocator;
-    return this.create({ ownerId, agentId, provider, capability, secretLocator: loc, expiresAt, lastHealthStatus });
+  async save({ ownerId, agentId, provider, capability, locator, expiresAt, lastHealthStatus }) {
+    if (!locator) throw new Error("Missing locator");
+    return this.create({ ownerId, agentId, provider, capability, secretLocator: locator, expiresAt, lastHealthStatus });
   }
 
+  /**
+   * Explicitly internal repository creation operation.
+   */
   async create({ ownerId, agentId, provider, capability, secretLocator, expiresAt, lastHealthStatus }) {
     try {
       this.validateSecretLocator(secretLocator);
@@ -138,6 +141,9 @@ export class PostgresCredentialRepository {
 
   /**
    * Frozen findLocatorScoped method (point 1 & 3 & 5).
+   * Returns ONLY the locator string or null.
+   * Does NOT write successful final resolve audit (broker owns success audit).
+   * Writes failure audit on failure.
    */
   async findLocatorScoped({ ownerId, agentId, provider, capability, credentialId }) {
     if (!ownerId || !agentId || !provider || !capability || !credentialId) {
@@ -180,26 +186,8 @@ export class PostgresCredentialRepository {
     }
 
     const cred = res.rows[0];
-    if (this.auditRepo) {
-      await this.auditRepo.logAccess({
-        credentialId: cred.id,
-        ownerId,
-        agentId,
-        action: 'resolve',
-        status: 'success'
-      });
-    }
-
-    // Returns unredacted locator string in locator/secret_locator property (point 1)
-    return {
-      id: cred.id,
-      locator: cred.secret_locator,
-      secret_locator: cred.secret_locator,
-      owner_id: cred.owner_id,
-      agent_id: cred.agent_id,
-      provider: cred.provider,
-      capability: cred.capability
-    };
+    // No successful final resolve audit here! Broker owns final success/failure audit semantics. (point 3)
+    return cred.secret_locator; // Returns ONLY the unredacted locator string (point 1)
   }
 
   /**
@@ -235,22 +223,8 @@ export class PostgresCredentialRepository {
    * Scoped by owner and agent.
    */
   async rotate(id, ownerId, agentId, { newSecretLocator, nextExpiresAt, expectedVersion }) {
-    try {
-      this.validateSecretLocator(newSecretLocator);
-      if (!id || !ownerId || !agentId) throw new Error("Missing required parameters for rotation");
-    } catch (err) {
-      if (this.auditRepo && ownerId && agentId) {
-        await this.auditRepo.logAccess({
-          credentialId: id || null,
-          ownerId,
-          agentId,
-          action: 'rotate',
-          status: 'failure',
-          errorMessage: err.message
-        });
-      }
-      throw err;
-    }
+    this.validateSecretLocator(newSecretLocator);
+    if (!id || !ownerId || !agentId) throw new Error("Missing required parameters for rotation");
 
     return await this.adapter.withTransaction(async (client) => {
       try {

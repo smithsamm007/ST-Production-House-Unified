@@ -241,7 +241,7 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
   });
 
   await t.test("Contract compatibility and Scoped retrieval", async () => {
-    // Test save() with 'locator' argument (point 2)
+    // Test save() with 'locator' argument (point 4)
     const cred = await credentialRepo.save({
       ownerId: owner1Id,
       agentId: agentId1,
@@ -252,15 +252,14 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
     assert.ok(cred.id);
 
     // findLocatorScoped contract check (5-dimensional authorization)
-    const found = await credentialRepo.findLocatorScoped({
+    const foundLocator = await credentialRepo.findLocatorScoped({
       ownerId: owner1Id,
       agentId: agentId1,
       provider: 'claude',
       capability: 'writing',
       credentialId: cred.id
     });
-    assert.equal(found.id, cred.id);
-    assert.equal(found.locator, 'vault://st/owner1/claude/v1'); // Unredacted locator as expected by broker (point 1)
+    assert.equal(foundLocator, 'vault://st/owner1/claude/v1'); // Returns ONLY raw locator string! (point 1)
 
     // listAll must redact the secret locator (point 6)
     const list = await credentialRepo.listAll(owner1Id);
