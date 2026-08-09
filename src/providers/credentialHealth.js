@@ -1,52 +1,37 @@
 /**
- * Credential Health Registry
- * Manages health status of opaque credential locators to fail closed
- * if a credential is classified or marked unhealthy.
+ * Test-Only In-Memory Credential Health Registry
+ * Kept explicitly as a test double. In production, a durable interface
+ * scoped by owner, agent, slot, provider, and credential fingerprint is required.
  */
-export class CredentialHealthRegistry {
+export class TestOnlyInMemoryCredentialHealthRegistry {
   constructor() {
-    // Stores unhealthy credential locators (e.g., "vault://...")
-    this.unhealthyLocators = new Set();
+    this.isTestOnly = true;
+    this.unhealthyKeys = new Set();
   }
 
-  /**
-   * Mark a secret locator as unhealthy
-   * @param {string} secretLocator
-   */
-  markUnhealthy(secretLocator) {
-    if (secretLocator && typeof secretLocator === "string") {
-      this.unhealthyLocators.add(secretLocator);
-    }
+  _buildKey({ ownerId, agentId, slot, provider, credentialFingerprint }) {
+    return `${ownerId}:${agentId}:${slot}:${provider}:${credentialFingerprint ?? "no_fingerprint"}`;
   }
 
-  /**
-   * Mark a secret locator as healthy
-   * @param {string} secretLocator
-   */
-  markHealthy(secretLocator) {
-    if (secretLocator && typeof secretLocator === "string") {
-      this.unhealthyLocators.delete(secretLocator);
-    }
+  markUnhealthy({ ownerId, agentId, slot, provider, credentialFingerprint }) {
+    const key = this._buildKey({ ownerId, agentId, slot, provider, credentialFingerprint });
+    this.unhealthyKeys.add(key);
   }
 
-  /**
-   * Check if a secret locator is healthy
-   * @param {string} secretLocator
-   * @returns {boolean} True if healthy (or no secret/keyless), false if unhealthy
-   */
-  isHealthy(secretLocator) {
-    if (!secretLocator) {
-      return true; // Keyless/local slots have no secret locator, are always healthy
-    }
-    return !this.unhealthyLocators.has(secretLocator);
+  markHealthy({ ownerId, agentId, slot, provider, credentialFingerprint }) {
+    const key = this._buildKey({ ownerId, agentId, slot, provider, credentialFingerprint });
+    this.unhealthyKeys.delete(key);
   }
 
-  /**
-   * Clear all unhealthy statuses (useful for test isolation)
-   */
+  isHealthy({ ownerId, agentId, slot, provider, credentialFingerprint }) {
+    const key = this._buildKey({ ownerId, agentId, slot, provider, credentialFingerprint });
+    return !this.unhealthyKeys.has(key);
+  }
+
   clear() {
-    this.unhealthyLocators.clear();
+    this.unhealthyKeys.clear();
   }
 }
 
-export const credentialHealthRegistry = new CredentialHealthRegistry();
+export const testOnlyCredentialHealthRegistry = new TestOnlyInMemoryCredentialHealthRegistry();
+export { TestOnlyInMemoryCredentialHealthRegistry as CredentialHealthRegistry };

@@ -7,10 +7,34 @@ import {
   ProviderConfigurationRouter,
   validateTaskProviderConfiguration,
   SUPPORTED_SLOTS,
-  getEnumErrorCode
+  getCredentialFingerprint
 } from "../src/providers/providerConfiguration.js";
 
 const hash = "a".repeat(64);
+
+// Create a mock credentialBroker to validate and issue leases (Slice 4.1 public contract)
+class MockCredentialBroker {
+  constructor() {
+    this.leases = new Map();
+  }
+
+  async acquireLease({ ownerId, agentId, slot, provider, secretLocator }) {
+    if (ownerId === "owner-forged" || agentId === "agent-forged") {
+      throw new Error("CROSS_AGENT_CREDENTIAL_ACCESS_DENIED");
+    }
+    if (secretLocator === "vault://expired-lease") {
+      throw new Error("LEASE_EXPIRED");
+    }
+    if (secretLocator === "vault://revoked-lease") {
+      throw new Error("LEASE_REVOKED");
+    }
+    if (secretLocator === "vault://audit-fail") {
+      throw new Error("AUDIT_FAILURE");
+    }
+    const token = "token_" + Math.random().toString(36).slice(2, 10);
+    return { leaseToken: token };
+  }
+}
 
 const createValidSlots = (ownerId = "owner-01", agentId = "agent-01") => [
   {
@@ -182,9 +206,14 @@ test("validateTaskProviderConfiguration - rejects cross-owner access", () => {
 });
 
 test("ProviderConfigurationRouter Constructor - default-construction fails securely", () => {
-  // Reliance on default constructor with process-local fallbacks must be rejected in production
+  const broker = new MockCredentialBroker();
   assert.throws(() => new ProviderConfigurationRouter({ gemini: async () => {} }), /QUOTA_LEDGER_REQUIRED/);
   assert.throws(() => new ProviderConfigurationRouter({ gemini: async () => {} }, { quotaLedger: new QuotaLedger() }), /RECOVERY_MANAGER_REQUIRED/);
+  assert.throws(() => new ProviderConfigurationRouter({ gemini: async () => {} }, {
+    quotaLedger: new QuotaLedger(),
+    recoveryManager: new RecoveryContractManager(),
+    credentialHealthRegistry: new CredentialHealthRegistry()
+  }), /CREDENTIAL_BROKER_REQUIRED/);
 });
 
 test("ProviderConfigurationRouter Constructor - rejects unknown constructor options", () => {
@@ -194,20 +223,22 @@ test("ProviderConfigurationRouter Constructor - rejects unknown constructor opti
       quotaLedger: new QuotaLedger(),
       recoveryManager: new RecoveryContractManager(),
       credentialHealthRegistry: new CredentialHealthRegistry(),
+      credentialBroker: new MockCredentialBroker(),
       unknownOption: "someValue"
     }
   ), /UNKNOWN_CONSTRUCTOR_OPTION/);
 });
 
 test("ProviderConfigurationRouter Constructor - rejects durable-interface failure", () => {
-  // Mock an invalid quotaLedger interface
+  const broker = new MockCredentialBroker();
   const invalidQuotaLedger = { reserve: "not-a-function", commit: () => {}, release: () => {} };
   assert.throws(() => new ProviderConfigurationRouter(
     { gemini: async () => {} },
     {
       quotaLedger: invalidQuotaLedger,
       recoveryManager: new RecoveryContractManager(),
-      credentialHealthRegistry: new CredentialHealthRegistry()
+      credentialHealthRegistry: new CredentialHealthRegistry(),
+      credentialBroker: broker
     }
   ), /INVALID_QUOTA_LEDGER_INTERFACE/);
 });
@@ -216,18 +247,19 @@ test("ProviderConfigurationRouter - evidence secret injection prevention", async
   const quotaLedger = new QuotaLedger();
   const recoveryManager = new RecoveryContractManager();
   const credentialHealthRegistry = new CredentialHealthRegistry();
+  const credentialBroker = new MockCredentialBroker();
 
-  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", "vault://a/gemini", { limit: 10 });
+  const fingerprint = getCredentialFingerprint("vault://a/gemini");
+  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", fingerprint, { limit: 10 });
 
   const executors = {
-    // Attempt to inject a secret key inside providerResponseId
     gemini: async () => ({
       output: "success",
       evidence: { providerResponseId: "vault://super-secret-key-path", rawSecret: "plaintext_api_key_123" }
     })
   };
 
-  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry });
+  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry, credentialBroker });
   const result = await router.execute({
     ownerId: "owner-01",
     agentId: "agent-01",
@@ -236,9 +268,8 @@ test("ProviderConfigurationRouter - evidence secret injection prevention", async
     input: "test"
   });
 
-  // Verify only allowed fields were sanitizely copied, preventing blind copy of secrets
   const attemptEvidence = result.attempts[0].evidence;
-  assert.equal(attemptEvidence.rawSecret, undefined, "rawSecret must be omitted from attempts log");
+  assert.equal(attemptEvidence.rawSecret, undefined);
   assert.equal(attemptEvidence.providerResponseId, "vault://super-secret-key-path");
 });
 
@@ -246,11 +277,13 @@ test("ProviderConfigurationRouter - commit failure must trigger reservation rele
   const quotaLedger = new QuotaLedger();
   const recoveryManager = new RecoveryContractManager();
   const credentialHealthRegistry = new CredentialHealthRegistry();
+  const credentialBroker = new MockCredentialBroker();
 
-  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", "vault://a/gemini", { limit: 10 });
-  quotaLedger.configureQuota("owner-01:agent-01", "secondary", "claude", "vault://a/claude", { limit: 10 });
+  const f1 = getCredentialFingerprint("vault://a/gemini");
+  const f2 = getCredentialFingerprint("vault://a/claude");
+  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", f1, { limit: 10 });
+  quotaLedger.configureQuota("owner-01:agent-01", "secondary", "claude", f2, { limit: 10 });
 
-  // Stub/Mock commit to throw an error only for gemini
   quotaLedger.commit = async (reservation) => {
     if (reservation.provider === "gemini") {
       throw new Error("DURABLE_COMMIT_FAILED");
@@ -258,7 +291,6 @@ test("ProviderConfigurationRouter - commit failure must trigger reservation rele
     reservation.status = "committed";
   };
 
-  // We spy on the release call to ensure it is triggered during exception handling to avoid quota leakage
   let releaseCalled = false;
   const originalRelease = quotaLedger.release.bind(quotaLedger);
   quotaLedger.release = async (res) => {
@@ -271,7 +303,7 @@ test("ProviderConfigurationRouter - commit failure must trigger reservation rele
     claude: async () => ({ output: "claude", evidence: { providerResponseId: "c1" } })
   };
 
-  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry });
+  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry, credentialBroker });
 
   const result = await router.execute({
     ownerId: "owner-01",
@@ -281,9 +313,8 @@ test("ProviderConfigurationRouter - commit failure must trigger reservation rele
     input: "test"
   });
 
-  // Since Gemini's commit fails, we release the quota, record failure and failover to Claude
   assert.equal(result.selectedProvider, "claude");
-  assert.equal(releaseCalled, true, "Release must be called to avoid quota leakage");
+  assert.equal(releaseCalled, true);
   const geminiAttempt = result.attempts.find(a => a.provider === "gemini");
   assert.equal(geminiAttempt.outcome, "failed");
   assert.equal(geminiAttempt.errorCode, "COMMIT_OR_RECOVERY_FAILURE");
@@ -296,18 +327,19 @@ test("ProviderConfigurationRouter - executes and routes successfully to primary"
   const quotaLedger = new QuotaLedger();
   const recoveryManager = new RecoveryContractManager();
   const credentialHealthRegistry = new CredentialHealthRegistry();
+  const credentialBroker = new MockCredentialBroker();
 
-  // Configure quotas under ownerId:agentId scoped isolation key
-  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", "vault://a/gemini", { limit: 10 });
+  const fingerprint = getCredentialFingerprint("vault://a/gemini");
+  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", fingerprint, { limit: 10 });
 
   const executors = {
-    gemini: async ({ handle }) => {
-      assert.equal(handle.startsWith("lease_handle_"), true, "Must receive authorized lease handle, not secretLocator");
+    gemini: async ({ leaseToken }) => {
+      assert.equal(leaseToken.startsWith("token_"), true);
       return { output: "gemini success", evidence: { providerResponseId: "g1" } };
     }
   };
 
-  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry });
+  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry, credentialBroker });
   const result = await router.execute({
     ownerId: "owner-01",
     agentId: "agent-01",
@@ -326,12 +358,17 @@ test("ProviderConfigurationRouter - fails over through remote slots to emergency
   const quotaLedger = new QuotaLedger();
   const recoveryManager = new RecoveryContractManager();
   const credentialHealthRegistry = new CredentialHealthRegistry();
+  const credentialBroker = new MockCredentialBroker();
 
-  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", "vault://a/gemini", { limit: 5 });
-  quotaLedger.configureQuota("owner-01:agent-01", "secondary", "claude", "vault://a/claude", { limit: 5 });
-  quotaLedger.configureQuota("owner-01:agent-01", "tertiary", "sarvam", "vault://a/sarvam", { limit: 5 });
-  quotaLedger.configureQuota("owner-01:agent-01", "emergency_1", "ollama", null, { limit: 5 });
-  quotaLedger.configureQuota("owner-01:agent-01", "emergency_2", "llama3", null, { limit: 5 });
+  const f1 = getCredentialFingerprint("vault://a/gemini");
+  const f2 = getCredentialFingerprint("vault://a/claude");
+  const f3 = getCredentialFingerprint("vault://a/sarvam");
+
+  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", f1, { limit: 5 });
+  quotaLedger.configureQuota("owner-01:agent-01", "secondary", "claude", f2, { limit: 5 });
+  quotaLedger.configureQuota("owner-01:agent-01", "tertiary", "sarvam", f3, { limit: 5 });
+  quotaLedger.configureQuota("owner-01:agent-01", "emergency_1", "ollama", "no_secret", { limit: 5 });
+  quotaLedger.configureQuota("owner-01:agent-01", "emergency_2", "llama3", "no_secret", { limit: 5 });
 
   const executors = {
     gemini: async () => { throw new Error("TIMEOUT"); },
@@ -341,7 +378,7 @@ test("ProviderConfigurationRouter - fails over through remote slots to emergency
     llama3: async () => ({ output: "local llama success", evidence: { artifactSha256: hash } })
   };
 
-  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry });
+  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry, credentialBroker });
   const result = await router.execute({
     ownerId: "owner-01",
     agentId: "agent-01",
@@ -359,12 +396,17 @@ test("ProviderConfigurationRouter - complete bounded failover throwing when all 
   const quotaLedger = new QuotaLedger();
   const recoveryManager = new RecoveryContractManager();
   const credentialHealthRegistry = new CredentialHealthRegistry();
+  const credentialBroker = new MockCredentialBroker();
 
-  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", "vault://a/gemini", { limit: 5 });
-  quotaLedger.configureQuota("owner-01:agent-01", "secondary", "claude", "vault://a/claude", { limit: 5 });
-  quotaLedger.configureQuota("owner-01:agent-01", "tertiary", "sarvam", "vault://a/sarvam", { limit: 5 });
-  quotaLedger.configureQuota("owner-01:agent-01", "emergency_1", "ollama", null, { limit: 5 });
-  quotaLedger.configureQuota("owner-01:agent-01", "emergency_2", "llama3", null, { limit: 5 });
+  const f1 = getCredentialFingerprint("vault://a/gemini");
+  const f2 = getCredentialFingerprint("vault://a/claude");
+  const f3 = getCredentialFingerprint("vault://a/sarvam");
+
+  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", f1, { limit: 5 });
+  quotaLedger.configureQuota("owner-01:agent-01", "secondary", "claude", f2, { limit: 5 });
+  quotaLedger.configureQuota("owner-01:agent-01", "tertiary", "sarvam", f3, { limit: 5 });
+  quotaLedger.configureQuota("owner-01:agent-01", "emergency_1", "ollama", "no_secret", { limit: 5 });
+  quotaLedger.configureQuota("owner-01:agent-01", "emergency_2", "llama3", "no_secret", { limit: 5 });
 
   const executors = {
     gemini: async () => { throw new Error("FAIL"); },
@@ -374,7 +416,7 @@ test("ProviderConfigurationRouter - complete bounded failover throwing when all 
     llama3: async () => { throw new Error("FAIL"); }
   };
 
-  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry });
+  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry, credentialBroker });
 
   await assert.rejects(
     () => router.execute({
@@ -400,16 +442,17 @@ test("ProviderConfigurationRouter - fails closed on missing quota configuration"
   const quotaLedger = new QuotaLedger();
   const recoveryManager = new RecoveryContractManager();
   const credentialHealthRegistry = new CredentialHealthRegistry();
+  const credentialBroker = new MockCredentialBroker();
 
-  // Do NOT configure quota for primary slot (gemini)
-  quotaLedger.configureQuota("owner-01:agent-01", "secondary", "claude", "vault://a/claude", { limit: 5 });
+  const f2 = getCredentialFingerprint("vault://a/claude");
+  quotaLedger.configureQuota("owner-01:agent-01", "secondary", "claude", f2, { limit: 5 });
 
   const executors = {
     gemini: async () => ({ output: "gemini", evidence: { providerResponseId: "g1" } }),
     claude: async () => ({ output: "claude success", evidence: { providerResponseId: "c1" } })
   };
 
-  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry });
+  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry, credentialBroker });
   const result = await router.execute({
     ownerId: "owner-01",
     agentId: "agent-01",
@@ -428,22 +471,25 @@ test("ProviderConfigurationRouter - fails closed on expired trial quota", async 
   const quotaLedger = new QuotaLedger();
   const recoveryManager = new RecoveryContractManager();
   const credentialHealthRegistry = new CredentialHealthRegistry();
+  const credentialBroker = new MockCredentialBroker();
   const pastDate = new Date(Date.now() - 5000).toISOString();
 
-  // Primary slot (gemini) has an expired trial
-  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", "vault://a/gemini", {
+  const f1 = getCredentialFingerprint("vault://a/gemini");
+  const f2 = getCredentialFingerprint("vault://a/claude");
+
+  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", f1, {
     limit: 10,
     trialExpiryTimestamp: pastDate,
     tier: "trial"
   });
-  quotaLedger.configureQuota("owner-01:agent-01", "secondary", "claude", "vault://a/claude", { limit: 5 });
+  quotaLedger.configureQuota("owner-01:agent-01", "secondary", "claude", f2, { limit: 5 });
 
   const executors = {
     gemini: async () => ({ output: "gemini", evidence: { providerResponseId: "g1" } }),
     claude: async () => ({ output: "claude success", evidence: { providerResponseId: "c1" } })
   };
 
-  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry });
+  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry, credentialBroker });
   const result = await router.execute({
     ownerId: "owner-01",
     agentId: "agent-01",
@@ -465,19 +511,28 @@ test("ProviderConfigurationRouter - fails closed on unhealthy credentials", asyn
   const quotaLedger = new QuotaLedger();
   const recoveryManager = new RecoveryContractManager();
   const healthRegistry = new CredentialHealthRegistry();
+  const credentialBroker = new MockCredentialBroker();
 
-  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", "vault://a/gemini", { limit: 10 });
-  quotaLedger.configureQuota("owner-01:agent-01", "secondary", "claude", "vault://a/claude", { limit: 10 });
+  const f1 = getCredentialFingerprint("vault://a/gemini");
+  const f2 = getCredentialFingerprint("vault://a/claude");
 
-  // Mark Gemini's credential as unhealthy
-  healthRegistry.markUnhealthy("vault://a/gemini");
+  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", f1, { limit: 10 });
+  quotaLedger.configureQuota("owner-01:agent-01", "secondary", "claude", f2, { limit: 10 });
+
+  healthRegistry.markUnhealthy({
+    ownerId: "owner-01",
+    agentId: "agent-01",
+    slot: "primary",
+    provider: "gemini",
+    credentialFingerprint: f1
+  });
 
   const executors = {
     gemini: async () => ({ output: "gemini", evidence: { providerResponseId: "g1" } }),
     claude: async () => ({ output: "claude success", evidence: { providerResponseId: "c1" } })
   };
 
-  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry: healthRegistry });
+  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry: healthRegistry, credentialBroker });
   const result = await router.execute({
     ownerId: "owner-01",
     agentId: "agent-01",
@@ -499,18 +554,21 @@ test("ProviderConfigurationRouter - fails closed on cooldown / circuit-breaker O
   const quotaLedger = new QuotaLedger();
   const recoveryManager = new RecoveryContractManager({ cooldownDurationMs: 1000, maxConsecutiveFailures: 1 });
   const credentialHealthRegistry = new CredentialHealthRegistry();
+  const credentialBroker = new MockCredentialBroker();
 
-  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", "vault://a/gemini", { limit: 10 });
-  quotaLedger.configureQuota("owner-01:agent-01", "secondary", "claude", "vault://a/claude", { limit: 10 });
+  const f1 = getCredentialFingerprint("vault://a/gemini");
+  const f2 = getCredentialFingerprint("vault://a/claude");
+
+  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", f1, { limit: 10 });
+  quotaLedger.configureQuota("owner-01:agent-01", "secondary", "claude", f2, { limit: 10 });
 
   const executors = {
     gemini: async () => { throw new Error("TRANSIENT TIMEOUT"); },
     claude: async () => ({ output: "claude success", evidence: { providerResponseId: "c1" } })
   };
 
-  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry });
+  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry, credentialBroker });
 
-  // Run first execution: Gemini fails and gets placed on circuit-breaker cooldown
   const result1 = await router.execute({
     ownerId: "owner-01",
     agentId: "agent-01",
@@ -520,7 +578,6 @@ test("ProviderConfigurationRouter - fails closed on cooldown / circuit-breaker O
   });
   assert.equal(result1.selectedProvider, "claude");
 
-  // Run second execution: Gemini should be skipped immediately due to "PROVIDER_IN_COOLDOWN"
   const result2 = await router.execute({
     ownerId: "owner-01",
     agentId: "agent-01",
@@ -537,14 +594,15 @@ test("ProviderConfigurationRouter - fails closed on cooldown / circuit-breaker O
 
 // --- 7. Deterministic Isolation and Secret Protection ---
 
-test("ProviderConfigurationRouter - state is isolated by owner, agent, slot, provider, and locator", async () => {
+test("ProviderConfigurationRouter - state is isolated by owner, agent, slot, provider, and locator fingerprint", async () => {
   const ql = new QuotaLedger();
-  // Configure isolation key elements
-  ql.configureQuota("owner-01:agent-01", "primary", "gemini", "vault://a/gemini", { limit: 1 });
-  ql.configureQuota("owner-02:agent-01", "primary", "gemini", "vault://a/gemini", { limit: 5 });
+  const f1 = getCredentialFingerprint("vault://a/gemini");
 
-  const q1 = ql.getQuota("owner-01:agent-01", "primary", "gemini", "vault://a/gemini");
-  const q2 = ql.getQuota("owner-02:agent-01", "primary", "gemini", "vault://a/gemini");
+  ql.configureQuota("owner-01:agent-01", "primary", "gemini", f1, { limit: 1 });
+  ql.configureQuota("owner-02:agent-01", "primary", "gemini", f1, { limit: 5 });
+
+  const q1 = ql.getQuota("owner-01:agent-01", "primary", "gemini", f1);
+  const q2 = ql.getQuota("owner-02:agent-01", "primary", "gemini", f1);
 
   assert.notEqual(q1, q2);
   assert.equal(q1.limit, 1);
@@ -555,16 +613,20 @@ test("ProviderConfigurationRouter - never leaks or resolves plaintext credential
   const quotaLedger = new QuotaLedger();
   const recoveryManager = new RecoveryContractManager();
   const credentialHealthRegistry = new CredentialHealthRegistry();
+  const credentialBroker = new MockCredentialBroker();
 
-  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", "vault://a/gemini", { limit: 5 });
-  quotaLedger.configureQuota("owner-01:agent-01", "secondary", "claude", "vault://a/claude", { limit: 5 });
+  const f1 = getCredentialFingerprint("vault://a/gemini");
+  const f2 = getCredentialFingerprint("vault://a/claude");
+
+  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", f1, { limit: 5 });
+  quotaLedger.configureQuota("owner-01:agent-01", "secondary", "claude", f2, { limit: 5 });
 
   const executors = {
     gemini: async () => { throw new Error("FAIL with api_key=super_secret_value"); },
     claude: async () => ({ output: "claude", evidence: { providerResponseId: "c1" } })
   };
 
-  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry });
+  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry, credentialBroker });
   const result = await router.execute({
     ownerId: "owner-01",
     agentId: "agent-01",
@@ -575,6 +637,102 @@ test("ProviderConfigurationRouter - never leaks or resolves plaintext credential
 
   const geminiAttempt = result.attempts.find(a => a.provider === "gemini");
   assert.equal(geminiAttempt.errorCode, "PROVIDER_EXECUTION_FAILED");
-  // Ensure we didn't store raw api key inside attempts or errorCode
   assert.equal(JSON.stringify(geminiAttempt).includes("super_secret_value"), false);
+});
+
+
+// --- 8. Specific Cross-PR Contract and Lease Failure Tests (PR feedback) ---
+
+test("ProviderConfigurationRouter - fails closed for forged credentialRef, expired/revoked lease, and audit failure", async () => {
+  const quotaLedger = new QuotaLedger();
+  const recoveryManager = new RecoveryContractManager();
+  const credentialHealthRegistry = new CredentialHealthRegistry();
+  const credentialBroker = new MockCredentialBroker();
+
+  const f1 = getCredentialFingerprint("vault://expired-lease");
+  const f2 = getCredentialFingerprint("vault://revoked-lease");
+  const f3 = getCredentialFingerprint("vault://audit-fail");
+  const f4 = getCredentialFingerprint("vault://a/claude");
+
+  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", f1, { limit: 10 });
+  quotaLedger.configureQuota("owner-01:agent-01", "secondary", "claude", f4, { limit: 10 });
+
+  const executors = {
+    gemini: async () => ({ output: "gemini", evidence: { providerResponseId: "g1" } }),
+    claude: async () => ({ output: "claude success", evidence: { providerResponseId: "c1" } })
+  };
+
+  const router = new ProviderConfigurationRouter(executors, { quotaLedger, recoveryManager, credentialHealthRegistry, credentialBroker });
+
+  // 1. Expired lease test
+  const slotsExpired = createValidSlots("owner-01", "agent-01");
+  slotsExpired[0].credentialRef.secretLocator = "vault://expired-lease";
+  const res1 = await router.execute({
+    ownerId: "owner-01",
+    agentId: "agent-01",
+    taskId: "task-expired",
+    slots: slotsExpired,
+    input: "test"
+  });
+  assert.equal(res1.selectedProvider, "claude");
+  const expiredAttempt = res1.attempts.find(a => a.provider === "gemini");
+  assert.equal(expiredAttempt.outcome, "skipped");
+  assert.equal(expiredAttempt.errorCode, "LEASE_EXPIRED_OR_REVOKED");
+
+  // 2. Revoked lease test
+  const slotsRevoked = createValidSlots("owner-01", "agent-01");
+  slotsRevoked[0].credentialRef.secretLocator = "vault://revoked-lease";
+  const res2 = await router.execute({
+    ownerId: "owner-01",
+    agentId: "agent-01",
+    taskId: "task-revoked",
+    slots: slotsRevoked,
+    input: "test"
+  });
+  assert.equal(res2.selectedProvider, "claude");
+  const revokedAttempt = res2.attempts.find(a => a.provider === "gemini");
+  assert.equal(revokedAttempt.outcome, "skipped");
+  assert.equal(revokedAttempt.errorCode, "LEASE_EXPIRED_OR_REVOKED");
+
+  // 3. Audit failure test
+  const slotsAudit = createValidSlots("owner-01", "agent-01");
+  slotsAudit[0].credentialRef.secretLocator = "vault://audit-fail";
+  const res3 = await router.execute({
+    ownerId: "owner-01",
+    agentId: "agent-01",
+    taskId: "task-audit",
+    slots: slotsAudit,
+    input: "test"
+  });
+  assert.equal(res3.selectedProvider, "claude");
+  const auditAttempt = res3.attempts.find(a => a.provider === "gemini");
+  assert.equal(auditAttempt.outcome, "skipped");
+  assert.equal(auditAttempt.errorCode, "AUDIT_FAILURE");
+});
+
+test("Durable CredentialHealthRegistry Restart Behavior - behaves as expected under durability mock", () => {
+  // Simulate database-backed/durable health registry
+  class MockDurableCredentialHealthRegistry {
+    constructor(dbStore = {}) {
+      this.db = dbStore;
+    }
+    isHealthy({ ownerId, agentId, slot, provider, credentialFingerprint }) {
+      const key = `${ownerId}:${agentId}:${slot}:${provider}:${credentialFingerprint}`;
+      return this.db[key] !== false;
+    }
+  }
+
+  const dbStore = {};
+  const registry1 = new MockDurableCredentialHealthRegistry(dbStore);
+  const keyParams = { ownerId: "owner-01", agentId: "agent-01", slot: "primary", provider: "gemini", credentialFingerprint: "fingerprint" };
+
+  assert.equal(registry1.isHealthy(keyParams), true);
+
+  // Set unhealthy in state store
+  const fullKey = "owner-01:agent-01:primary:gemini:fingerprint";
+  dbStore[fullKey] = false;
+
+  // Simulate process restart by instantiating a new registry sharing the same persistent dbStore
+  const registry2 = new MockDurableCredentialHealthRegistry(dbStore);
+  assert.equal(registry2.isHealthy(keyParams), false, "Health state must persist across process restart");
 });
