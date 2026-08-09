@@ -1,0 +1,143 @@
+name: Jules Session Watchdog
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: st-jules-session-watchdog
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+      JULES_API_BASE: https://jules.googleapis.com/v1alpha
+      STALL_SECONDS: "1200"
+      MAX_ATTEMPTS: "3"
+    steps:
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${JULES_API_KEY:-}" ]] || {
+            echo "::error::JULES_API_KEY is not configured."
+            exit 1
+          }
+
+      - name: Monitor active Jules sessions
+        shell: bash
+        run: |
+          set -euo pipefail
+          header=(-H "X-Goog-Api-Key: ${JULES_API_KEY}")
+          now="$(date -u +%s)"
+          prs="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" | jq -s 'add')"
+
+          jq -r '.[].number' <<<"${prs}" | while read -r pr_number; do
+            comments="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/comments?per_page=100" | jq -s 'add')"
+            bridge="$(jq -r '
+              [.[] | .body
+                | capture("st-jules-bridge session=(?<session>[^ ]+) attempt=(?<attempt>[1-3]) state=(?<state>[^ ]+)"; "g")?]
+              | map(select(. != null)) | last // empty
+              | [.session,.attempt,.state] | @tsv
+            ' <<<"${comments}")"
+            [[ -n "${bridge}" ]] || continue
+
+            IFS=$'\t' read -r session attempt recorded_state <<<"${bridge}"
+            case "${recorded_state}" in
+              COMPLETED|FAILED|CODEX_HANDOFF) continue ;;
+            esac
+
+            session_file="${RUNNER_TEMP}/session-${pr_number}.json"
+            http_code="$(curl --silent --show-error --output "${session_file}" --write-out '%{http_code}'               "${header[@]}" "${JULES_API_BASE}/sessions/${session}")"
+            if [[ "${http_code}" == "401" || "${http_code}" == "403" || "${http_code}" == "429" ]]; then
+              gh pr comment "${pr_number}" --repo "${GITHUB_REPOSITORY}" --body                 "<!-- st-jules-watchdog session=${session} result=OWNER_ACTION_REQUIRED observed=$(date -u +%FT%TZ) -->
+          Jules watchdog paused recovery: API returned HTTP ${http_code} (authentication, authorization, or free-quota limit). Owner/Codex action is required; no replacement session was created."
+              continue
+            fi
+            [[ "${http_code}" =~ ^2 ]] || {
+              echo "::warning::PR #${pr_number}: Jules status HTTP ${http_code}"
+              continue
+            }
+
+            state="$(jq -r '.state // "UNKNOWN"' "${session_file}")"
+            case "${state}" in
+              COMPLETED|SUCCEEDED|SESSION_COMPLETED)
+                gh pr comment "${pr_number}" --repo "${GITHUB_REPOSITORY}" --body                   "<!-- st-jules-bridge session=${session} attempt=${attempt} state=COMPLETED -->
+          Jules watchdog observed terminal completion. Exact PR-head review and CI verification are still required."
+                continue
+                ;;
+              FAILED|SESSION_FAILED|CANCELLED)
+                if (( attempt >= MAX_ATTEMPTS )); then
+                  gh pr comment "${pr_number}" --repo "${GITHUB_REPOSITORY}" --body                     "<!-- st-jules-bridge session=${session} attempt=${attempt} state=CODEX_HANDOFF -->
+          Jules attempt limit reached. Codex owns direct completion; no automatic merge or duplicate PR is permitted."
+                else
+                  gh pr comment "${pr_number}" --repo "${GITHUB_REPOSITORY}" --body                     "<!-- st-jules-watchdog session=${session} result=REPLACEMENT_REQUIRED attempt=${attempt} observed=$(date -u +%FT%TZ) -->
+          Jules failed. A governed replacement may start from the current GitHub PR branch as attempt $((attempt + 1)); the failed workspace must not be reused."
+                fi
+                continue
+                ;;
+              AWAITING_PLAN_APPROVAL)
+                approve_code="$(curl --silent --show-error --output "${RUNNER_TEMP}/approve-${pr_number}.json" --write-out '%{http_code}'                   -X POST "${header[@]}" "${JULES_API_BASE}/sessions/${session}:approvePlan")"
+                [[ "${approve_code}" =~ ^2 ]] || echo "::warning::PR #${pr_number}: plan approval HTTP ${approve_code}"
+                ;;
+            esac
+
+            activities_file="${RUNNER_TEMP}/activities-${pr_number}.json"
+            activity_code="$(curl --silent --show-error --output "${activities_file}" --write-out '%{http_code}'               "${header[@]}" "${JULES_API_BASE}/sessions/${session}/activities?pageSize=100")"
+            [[ "${activity_code}" =~ ^2 ]] || {
+              echo "::warning::PR #${pr_number}: activity HTTP ${activity_code}"
+              continue
+            }
+
+            last_id="$(jq -r '[.activities[]?] | last | (.id // .name // "none")' "${activities_file}")"
+            last_time="$(jq -r '[.activities[]?] | last | (.createTime // .createdAt // .timestamp // empty)' "${activities_file}")"
+            [[ -n "${last_time}" ]] || last_time="$(jq -r '.createTime // .updatedAt // empty' "${session_file}")"
+            [[ -n "${last_time}" ]] || {
+              echo "::warning::PR #${pr_number}: no trustworthy activity timestamp"
+              continue
+            }
+
+            last_epoch="$(date -u -d "${last_time}" +%s 2>/dev/null || true)"
+            [[ -n "${last_epoch}" ]] || continue
+            age="$((now - last_epoch))"
+            (( age >= STALL_SECONDS )) || continue
+
+            recovery_marker="$(jq -r --arg session "${session}" '
+              [.[] | select(.body | contains("st-jules-watchdog session=" + $session))
+               | select(.body | contains("recovery=1"))] | last | .created_at // empty
+            ' <<<"${comments}")"
+
+            if [[ -z "${recovery_marker}" ]]; then
+              message="$(jq -n --arg prompt                 "Continue from the current GitHub PR branch. Preserve completed work, address the latest authorized PR feedback, run the required tests, and push the correction to this same PR. Do not create another PR."                 '{prompt:$prompt}')"
+              message_code="$(curl --silent --show-error --output "${RUNNER_TEMP}/resume-${pr_number}.json" --write-out '%{http_code}'                 -X POST -H "Content-Type: application/json" "${header[@]}" --data-binary "${message}"                 "${JULES_API_BASE}/sessions/${session}:sendMessage")"
+              if [[ "${message_code}" =~ ^2 ]]; then
+                gh pr comment "${pr_number}" --repo "${GITHUB_REPOSITORY}" --body                   "<!-- st-jules-watchdog session=${session} recovery=1 last_activity=${last_id} observed=$(date -u +%FT%TZ) -->
+          Jules session was inactive for at least 20 minutes. One bounded resume message was sent. API acceptance is not treated as proof of recovery."
+              else
+                echo "::warning::PR #${pr_number}: resume HTTP ${message_code}"
+              fi
+              continue
+            fi
+
+            recovery_epoch="$(date -u -d "${recovery_marker}" +%s 2>/dev/null || true)"
+            [[ -n "${recovery_epoch}" ]] || continue
+            (( now - recovery_epoch >= STALL_SECONDS )) || continue
+
+            if (( attempt >= MAX_ATTEMPTS )); then
+              gh pr comment "${pr_number}" --repo "${GITHUB_REPOSITORY}" --body                 "<!-- st-jules-bridge session=${session} attempt=${attempt} state=CODEX_HANDOFF -->
+          Jules remained inactive after the bounded recovery window and reached the three-attempt limit. Codex owns direct completion."
+            else
+              gh pr comment "${pr_number}" --repo "${GITHUB_REPOSITORY}" --body                 "<!-- st-jules-watchdog session=${session} result=REPLACEMENT_REQUIRED attempt=${attempt} last_activity=${last_id} observed=$(date -u +%FT%TZ) -->
+          Jules remained inactive after one recovery message. To preserve one-writer safety, no replacement was started while this session is non-terminal. Codex must confirm termination, then launch attempt $((attempt + 1)) from the current GitHub PR branch."
+            fi
+          done
