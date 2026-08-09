@@ -1,7 +1,7 @@
 /**
  * Test-Only In-Memory Credential Health Registry
  * Kept explicitly as a test double. In production, a durable interface
- * scoped by owner, agent, slot, provider, and credential fingerprint is required.
+ * scoped by owner, agent, slot, provider, and credentialId is required.
  */
 export class TestOnlyInMemoryCredentialHealthRegistry {
   constructor() {
@@ -9,22 +9,22 @@ export class TestOnlyInMemoryCredentialHealthRegistry {
     this.unhealthyKeys = new Set();
   }
 
-  _buildKey({ ownerId, agentId, slot, provider, credentialFingerprint }) {
-    return `${ownerId}:${agentId}:${slot}:${provider}:${credentialFingerprint ?? "no_fingerprint"}`;
+  _buildKey({ ownerId, agentId, slot, provider, credentialId }) {
+    return `${ownerId}:${agentId}:${slot}:${provider}:${credentialId ?? "no_credential"}`;
   }
 
-  markUnhealthy({ ownerId, agentId, slot, provider, credentialFingerprint }) {
-    const key = this._buildKey({ ownerId, agentId, slot, provider, credentialFingerprint });
+  markUnhealthy({ ownerId, agentId, slot, provider, credentialId }) {
+    const key = this._buildKey({ ownerId, agentId, slot, provider, credentialId });
     this.unhealthyKeys.add(key);
   }
 
-  markHealthy({ ownerId, agentId, slot, provider, credentialFingerprint }) {
-    const key = this._buildKey({ ownerId, agentId, slot, provider, credentialFingerprint });
+  markHealthy({ ownerId, agentId, slot, provider, credentialId }) {
+    const key = this._buildKey({ ownerId, agentId, slot, provider, credentialId });
     this.unhealthyKeys.delete(key);
   }
 
-  isHealthy({ ownerId, agentId, slot, provider, credentialFingerprint }) {
-    const key = this._buildKey({ ownerId, agentId, slot, provider, credentialFingerprint });
+  isHealthy({ ownerId, agentId, slot, provider, credentialId }) {
+    const key = this._buildKey({ ownerId, agentId, slot, provider, credentialId });
     return !this.unhealthyKeys.has(key);
   }
 
@@ -34,4 +34,3 @@ export class TestOnlyInMemoryCredentialHealthRegistry {
 }
 
 export const testOnlyCredentialHealthRegistry = new TestOnlyInMemoryCredentialHealthRegistry();
-export { TestOnlyInMemoryCredentialHealthRegistry as CredentialHealthRegistry };

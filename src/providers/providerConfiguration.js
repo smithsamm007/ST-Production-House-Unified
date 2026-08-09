@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { sanitizeErrorMessage } from "../recovery/recoveryContract.js";
 
 export const SUPPORTED_SLOTS = Object.freeze([
@@ -13,18 +12,6 @@ export const REMOTE_SLOTS = Object.freeze(["primary", "secondary", "tertiary"]);
 export const EMERGENCY_SLOTS = Object.freeze(["emergency_1", "emergency_2"]);
 
 /**
- * Generates a stable non-secret fingerprint of the secret locator.
- * This ensures we never use raw secret locators as keys or pass them into general managers.
- *
- * @param {string} secretLocator
- * @returns {string} Keyed locator fingerprint
- */
-export function getCredentialFingerprint(secretLocator) {
-  if (!secretLocator) return "no_secret";
-  return createHash("sha256").update(secretLocator).digest("hex").slice(0, 16);
-}
-
-/**
  * Returns a stable uppercase enumerated error code based on the error context.
  *
  * @param {Error|any} error
@@ -37,7 +24,7 @@ export function getEnumErrorCode(error) {
   if (msg.includes("QUOTA_NOT_CONFIGURED") || msg.includes("QUOTA_RESERVATION_FAILED: quota_not_configured")) {
     return "QUOTA_NOT_CONFIGURED";
   }
-  if (msg.includes("TRIAL_EXPIRED") || msg.includes("QUOTA_RESERVATION_FAILED: trial_expired")) {
+  if (msg.includes("TRIAL_EXPIRED") || msg.includes("QUOTA_RESERVATION_FAILED: trial_expired") || msg.includes("TRIAL_EXPIRY_REJECTED")) {
     return "TRIAL_EXPIRED";
   }
   if (msg.includes("QUOTA_EXCEEDED") || msg.includes("QUOTA_RESERVATION_FAILED: quota_exceeded")) {
@@ -70,13 +57,13 @@ export function getEnumErrorCode(error) {
   if (msg.includes("CREDENTIAL_SLOT_MISMATCH")) {
     return "CREDENTIAL_SLOT_MISMATCH";
   }
-  if (msg.includes("LEASE_EXPIRED") || msg.includes("LEASE_REVOKED")) {
+  if (msg.includes("LEASE_EXPIRED") || msg.includes("LEASE_REVOKED") || msg.includes("LEASE_CONSUMED")) {
     return "LEASE_EXPIRED_OR_REVOKED";
   }
   if (msg.includes("AUDIT_FAILURE")) {
     return "AUDIT_FAILURE";
   }
-  if (msg.includes("COMMIT_OR_RECOVERY_FAILURE") || msg.includes("COMMIT_FAILED")) {
+  if (msg.includes("COMMIT_OR_RECOVERY_FAILURE") || msg.includes("COMMIT_FAILED") || msg.includes("DURABLE_COMMIT_FAILED")) {
     return "COMMIT_OR_RECOVERY_FAILURE";
   }
   return "PROVIDER_EXECUTION_FAILED";
@@ -130,8 +117,17 @@ export function validateTaskProviderConfiguration(ownerId, agentId, slots) {
       throw new Error("CREDENTIAL_SLOT_MISMATCH");
     }
 
-    if (!slot.credentialRef.secretLocator || typeof slot.credentialRef.secretLocator !== "string") {
+    // Require non-secret credentialId and capability
+    if (!slot.credentialRef.credentialId || typeof slot.credentialRef.credentialId !== "string") {
       throw new Error("REMOTE_SLOT_CONFIGURATION_REQUIRED");
+    }
+    if (!slot.credentialRef.capability || typeof slot.credentialRef.capability !== "string") {
+      throw new Error("REMOTE_SLOT_CONFIGURATION_REQUIRED");
+    }
+
+    // Never allow raw secret locators inside configuration
+    if (slot.credentialRef.secretLocator !== undefined) {
+      throw new Error("PAID_OR_OVERAGE_ROUTES_FORBIDDEN");
     }
 
     // Billing and Tier validations (Fail closed on missing/unknown metadata)
@@ -237,7 +233,7 @@ export class ProviderConfigurationRouter {
     if (typeof credentialHealthRegistry.isHealthy !== "function") {
       throw new Error("INVALID_CREDENTIAL_HEALTH_REGISTRY_INTERFACE");
     }
-    if (typeof credentialBroker.acquireLease !== "function") {
+    if (typeof credentialBroker.resolve !== "function") {
       throw new Error("INVALID_CREDENTIAL_BROKER_INTERFACE");
     }
 
@@ -268,11 +264,10 @@ export class ProviderConfigurationRouter {
     for (const slot of ordered) {
       const startedAt = new Date().toISOString();
       const executor = this.executors.get(slot.provider);
-      const secretLocator = slot.credentialRef?.secretLocator ?? null;
       const provider = slot.provider;
 
-      // Stable non-secret credential fingerprint scoped by owner+agent+slot+provider
-      const credentialFingerprint = getCredentialFingerprint(secretLocator);
+      const credentialId = slot.credentialRef?.credentialId ?? null;
+      const capability = slot.credentialRef?.capability ?? null;
       const scopeAgentId = `${ownerId}:${agentId}`;
 
       // 1. Paid, Overage, and Automatic Billing route rejection (Fail closed)
@@ -294,7 +289,7 @@ export class ProviderConfigurationRouter {
 
       // 2. Unhealthy credentials check (Fails closed)
       if (this.credentialHealthRegistry) {
-        if (!this.credentialHealthRegistry.isHealthy({ ownerId, agentId, slot: slot.slot, provider, credentialFingerprint })) {
+        if (!this.credentialHealthRegistry.isHealthy({ ownerId, agentId, slot: slot.slot, provider, credentialId })) {
           attempts.push({
             slot: slot.slot,
             provider: slot.provider,
@@ -308,7 +303,7 @@ export class ProviderConfigurationRouter {
 
       // 3. Health / Circuit Breaker check (applied to all slots)
       if (this.recoveryManager) {
-        if (!this.recoveryManager.isHealthy(scopeAgentId, slot.slot, provider, credentialFingerprint)) {
+        if (!this.recoveryManager.isHealthy(scopeAgentId, slot.slot, provider, credentialId)) {
           attempts.push({
             slot: slot.slot,
             provider: slot.provider,
@@ -320,18 +315,18 @@ export class ProviderConfigurationRouter {
         }
       }
 
-      // 4. Validate remote credential identity/capability and obtain an authorized short-lived lease (Slice 4.1)
-      let authorizedLease = null;
+      // 4. Validate remote credential identity/capability and obtain an authorized short-lived lease (Slice 4.1 resolve API)
+      let lease = null;
       if (slot.kind === "remote") {
         try {
-          authorizedLease = await this.credentialBroker.acquireLease({
+          lease = await this.credentialBroker.resolve({
             ownerId,
             agentId,
-            slot: slot.slot,
             provider: slot.provider,
-            secretLocator
+            capability,
+            credentialId
           });
-          if (!authorizedLease || !authorizedLease.leaseToken) {
+          if (!lease || typeof lease.consume !== "function") {
             throw new Error("LEASE_EXPIRED_OR_REVOKED");
           }
         } catch (brokerError) {
@@ -349,8 +344,16 @@ export class ProviderConfigurationRouter {
       // 5. Atomic Quota Reservation
       let reservation;
       try {
-        reservation = await this.quotaLedger.reserve(scopeAgentId, slot.slot, provider, credentialFingerprint);
+        reservation = await this.quotaLedger.reserve(scopeAgentId, slot.slot, provider, credentialId);
       } catch (reserveError) {
+        // If quota reservation fails, make sure we revoke the lease!
+        if (lease) {
+          try {
+            await lease.revoke();
+          } catch (e) {
+            // Exception safe
+          }
+        }
         attempts.push({
           slot: slot.slot,
           provider: slot.provider,
@@ -364,43 +367,31 @@ export class ProviderConfigurationRouter {
       // Reservation State Machine (tracks "reserved", "committed", "released" cleanly to prevent double-finalization)
       let reservationState = "reserved";
 
-      // 6. Executor Registration check
-      if (!executor) {
-        try {
-          await this.quotaLedger.release(reservation);
-          reservationState = "released";
-        } catch (releaseErr) {
-          // Exception safe
-        }
-
-        const configError = new Error("EXECUTOR_NOT_REGISTERED");
-        try {
-          this.recoveryManager.recordFailure(scopeAgentId, slot.slot, provider, credentialFingerprint, configError);
-        } catch (recErr) {
-          // Exception safe
-        }
-
-        attempts.push({
-          slot: slot.slot,
-          provider: slot.provider,
-          startedAt,
-          outcome: "unavailable",
-          errorCode: "EXECUTOR_NOT_REGISTERED"
-        });
-        continue;
-      }
-
-      // 7. Execution phase
+      // 6. Execution & Verification within try-finally (guaranteeing reservation release & lease revocation)
       try {
-        // Never pass raw secrets or complete locators to the executors.
-        // We pass the short-lived authorized lease token (or a local null) to the executor.
-        const leaseToken = authorizedLease ? authorizedLease.leaseToken : null;
-        const result = await executor({
-          agentId,
-          taskId,
-          input,
-          leaseToken
-        });
+        // Executor Registration check
+        if (!executor) {
+          throw new Error("EXECUTOR_NOT_REGISTERED");
+        }
+
+        // Execution phase: Execute inside lease.consume for remote execution
+        let result;
+        if (slot.kind === "remote") {
+          result = await lease.consume(async (secret) => {
+            // Never pass raw secret locator or raw secret object to the executor
+            return await executor({
+              agentId,
+              taskId,
+              input
+            });
+          });
+        } else {
+          result = await executor({
+            agentId,
+            taskId,
+            input
+          });
+        }
 
         // Verify output evidence
         if (slot.kind === "remote") {
@@ -413,27 +404,21 @@ export class ProviderConfigurationRouter {
           }
         }
 
-        // Try to commit reservation and record success (Exception-safe fail-closed guard)
+        // Try to commit reservation (Exception-safe fail-closed guard)
         try {
           await this.quotaLedger.commit(reservation);
           reservationState = "committed";
         } catch (commitError) {
-          // Commit failed: Release to avoid quota leakage and transition state
-          try {
-            await this.quotaLedger.release(reservation);
-            reservationState = "released";
-          } catch (releaseErr) {
-            // Exception safe
-          }
-          throw commitError;
+          throw commitError; // triggers release in catch block
         }
 
-        // Only record recovery success after a successful commit.
-        // If recovery success recording throws, fail closed but do not release an already committed reservation!
+        // Record recovery success only after successful commit (avoid double-finalization)
         try {
-          this.recoveryManager.recordSuccess(scopeAgentId, slot.slot, provider, credentialFingerprint);
-        } catch (recoverySuccessError) {
-          throw new Error(`COMMIT_OR_RECOVERY_FAILURE: ${recoverySuccessError.message}`);
+          if (this.recoveryManager) {
+            this.recoveryManager.recordSuccess(scopeAgentId, slot.slot, provider, credentialId);
+          }
+        } catch (recSuccessError) {
+          throw new Error(`COMMIT_OR_RECOVERY_FAILURE: ${recSuccessError.message}`);
         }
 
         // Store only allowlisted sanitized evidence reference fields to prevent secret exposure
@@ -455,23 +440,25 @@ export class ProviderConfigurationRouter {
         });
 
         return { output: result.output, selectedProvider: slot.provider, attempts };
-      } catch (execError) {
-        // Exception-safe cleanup: preserve original failure, avoid quota leakage, and fail closed
+      } catch (execOrCommitError) {
+        // Exception-safe cleanup: release reservation if not committed
         if (reservationState === "reserved") {
           try {
             await this.quotaLedger.release(reservation);
             reservationState = "released";
           } catch (releaseErr) {
-            // Do not overwrite original execError
+            // Exception-safe
           }
         }
 
-        const sanitizedMsg = sanitizeErrorMessage(execError);
+        const sanitizedMsg = sanitizeErrorMessage(execOrCommitError);
         const sanitizedError = new Error(sanitizedMsg);
         try {
-          this.recoveryManager.recordFailure(scopeAgentId, slot.slot, provider, credentialFingerprint, sanitizedError);
+          if (this.recoveryManager) {
+            this.recoveryManager.recordFailure(scopeAgentId, slot.slot, provider, credentialId, sanitizedError);
+          }
         } catch (recErr) {
-          // Do not overwrite original execError
+          // Exception-safe
         }
 
         attempts.push({
@@ -480,8 +467,17 @@ export class ProviderConfigurationRouter {
           startedAt,
           finishedAt: new Date().toISOString(),
           outcome: "failed",
-          errorCode: getEnumErrorCode(execError)
+          errorCode: getEnumErrorCode(execOrCommitError)
         });
+      } finally {
+        // Always revoke lease in both success/failure paths to guarantee cleanup
+        if (lease) {
+          try {
+            await lease.revoke();
+          } catch (e) {
+            // Exception safe
+          }
+        }
       }
     }
 
