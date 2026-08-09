@@ -27,11 +27,13 @@ CREATE INDEX IF NOT EXISTS broker_credential_metadata_owner_idx ON broker_creden
 CREATE INDEX IF NOT EXISTS broker_credential_metadata_agent_idx ON broker_credential_metadata (agent_id);
 
 -- Create broker_credential_audit_log table if not exists
+-- To prevent cascade delete blocks on audit log data, and to preserve audit trails
+-- independently of parent deletion (security requirement), standard non-cascading fields are used.
 CREATE TABLE IF NOT EXISTS broker_credential_audit_log (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  credential_id uuid NOT NULL REFERENCES broker_credential_metadata(id) ON DELETE CASCADE,
-  owner_id uuid NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
-  agent_id text NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  credential_id uuid NOT NULL,
+  owner_id uuid NOT NULL,
+  agent_id text NOT NULL,
   action text NOT NULL,
   performed_at timestamptz NOT NULL DEFAULT now(),
   status text NOT NULL,
@@ -47,13 +49,6 @@ CREATE INDEX IF NOT EXISTS broker_credential_audit_log_credential_idx ON broker_
 -- Enforce append-only audit: trigger function to prevent mutations (updates or deletes)
 CREATE OR REPLACE FUNCTION deny_credential_audit_mutation() RETURNS trigger AS $$
 BEGIN
-  IF TG_OP = 'DELETE' THEN
-    -- Permit deletes only if explicitly authorized via a local session setting (for test teardowns)
-    IF current_setting('app.allow_audit_teardown', true) = 'true' THEN
-      RETURN OLD;
-    END IF;
-  END IF;
-
   RAISE EXCEPTION 'CREDENTIAL_AUDIT_LOGS_ARE_IMMUTABLE';
 END;
 $$ LANGUAGE plpgsql;

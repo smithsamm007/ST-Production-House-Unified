@@ -90,11 +90,8 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
   t.after(async () => {
     // Teardown
     if (owner1Id && owner2Id) {
-      await adapter.withTransaction(async (client) => {
-        await client.query("SET LOCAL app.allow_audit_teardown = 'true'");
-        await client.query(`DELETE FROM broker_credential_metadata WHERE owner_id IN ($1, $2)`, [owner1Id, owner2Id]);
-        await client.query(`DELETE FROM owners WHERE id IN ($1, $2)`, [owner1Id, owner2Id]);
-      }).catch(() => {});
+      await adapter.query(`DELETE FROM broker_credential_metadata WHERE owner_id IN ($1, $2)`, [owner1Id, owner2Id]).catch(() => {});
+      await adapter.query(`DELETE FROM owners WHERE id IN ($1, $2)`, [owner1Id, owner2Id]).catch(() => {});
     }
     if (testPool) {
       await testPool.end().catch(() => {});
