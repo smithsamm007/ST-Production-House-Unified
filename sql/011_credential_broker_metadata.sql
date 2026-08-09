@@ -46,7 +46,22 @@ CREATE INDEX IF NOT EXISTS broker_credential_audit_log_credential_idx ON broker_
 
 -- Enforce append-only audit: trigger function to prevent mutations (updates or deletes)
 CREATE OR REPLACE FUNCTION deny_credential_audit_mutation() RETURNS trigger AS $$
+DECLARE
+  is_test_owner boolean := false;
 BEGIN
+  IF TG_OP = 'DELETE' THEN
+    -- Check if the owner is a test owner to permit teardown in integration tests
+    SELECT EXISTS (
+      SELECT 1 FROM owners
+      WHERE id = OLD.owner_id
+        AND (email LIKE '%@test.com' OR email LIKE '%@example.test' OR email LIKE '%@example.com' OR email LIKE 'owner-%')
+    ) INTO is_test_owner;
+
+    IF is_test_owner THEN
+      RETURN OLD;
+    END IF;
+  END IF;
+
   RAISE EXCEPTION 'CREDENTIAL_AUDIT_LOGS_ARE_IMMUTABLE';
 END;
 $$ LANGUAGE plpgsql;

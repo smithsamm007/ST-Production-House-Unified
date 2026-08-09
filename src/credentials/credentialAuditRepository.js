@@ -1,4 +1,5 @@
 import { sanitizeError } from "../db/postgresAdapter.js";
+import { sanitizeErrorMessage } from "../recovery/recoveryContract.js";
 
 export class CredentialAuditRepository {
   constructor(postgresAdapter) {
@@ -23,7 +24,8 @@ export class CredentialAuditRepository {
     let cleanErrorMessage = null;
     if (errorMessage) {
       try {
-        cleanErrorMessage = sanitizeError(new Error(errorMessage)).message;
+        const tempClean = sanitizeErrorMessage(errorMessage);
+        cleanErrorMessage = sanitizeError(new Error(tempClean)).message;
       } catch (e) {
         cleanErrorMessage = "[REDACTED_ERROR_SANITIZATION_FAILED]";
       }
