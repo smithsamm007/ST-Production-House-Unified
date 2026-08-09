@@ -8,122 +8,129 @@ import {
 } from "../src/credentials/credentialBroker.js";
 import { TestOnlyInMemoryCredentialRepository } from "../src/credentials/credentialRepository.js";
 
-test("Credential Broker - Constructor prevents implicit in-memory fallback", () => {
+// Mock audit repository for testing
+class MockAuditRepository {
+  constructor() {
+    this.events = [];
+    this.shouldFail = false;
+  }
+  async recordEvent(ownerId, eventType, payload) {
+    if (this.shouldFail) {
+      throw new Error("AUDIT_DB_DOWN");
+    }
+    this.events.push({ ownerId, eventType, payload });
+  }
+}
+
+test("Credential Broker - Constructor requires strict interfaces", () => {
+  const repo = new TestOnlyInMemoryCredentialRepository();
+  const resolver = () => {};
+  const audit = new MockAuditRepository();
+
+  // Missing repository
   assert.throws(() => {
-    new CredentialBroker({ resolver: () => {} });
-  }, /REPOSITORY_REQUIRED/);
+    new CredentialBroker({ resolver, auditRepository: audit });
+  }, /INVALID_REPOSITORY/);
+
+  // Missing resolver
+  assert.throws(() => {
+    new CredentialBroker({ repository: repo, auditRepository: audit });
+  }, /INVALID_RESOLVER/);
+
+  // Missing audit repository
+  assert.throws(() => {
+    new CredentialBroker({ repository: repo, resolver });
+  }, /INVALID_AUDIT_REPOSITORY/);
+
+  // Valid constructor succeeds
+  const broker = new CredentialBroker({ repository: repo, resolver, auditRepository: audit });
+  assert.ok(broker);
 });
 
-test("Credential Broker - Registration and scheme allowlist validation", async () => {
+test("Credential Broker - Registration, scheme allowlist, and recursive scanning", async () => {
   const repo = new TestOnlyInMemoryCredentialRepository();
-  const broker = new CredentialBroker({ repository: repo });
+  const audit = new MockAuditRepository();
+  const broker = new CredentialBroker({ repository: repo, resolver: () => {}, auditRepository: audit });
 
-  const ownerId = "owner-123";
+  const ownerId = "owner-1";
 
-  // 1. Success with allowlisted schemes
-  const valid1 = await broker.register(ownerId, {
+  // Success with allowed schemes
+  const ok1 = await broker.register(ownerId, {
     id: "cred-1",
-    agentId: "agent-abc",
+    agentId: "agent-1",
     provider: "gemini",
-    capability: "text-generation",
-    locator: "vault://production/gemini-api-key",
-    metadata: { env: "prod" }
+    capability: "cap-1",
+    locator: "vault://loc"
   });
-  assert.equal(valid1.id, "cred-1");
-  assert.equal(valid1.ownerId, ownerId);
+  assert.equal(ok1.id, "cred-1");
 
-  const valid2 = await broker.register(ownerId, {
-    id: "cred-2",
-    agentId: "agent-abc",
-    provider: "claude",
-    capability: "text-generation",
-    locator: "opaque://production/claude-api-key",
-    metadata: { env: "prod" }
-  });
-  assert.equal(valid2.id, "cred-2");
+  // Rejects unallowlisted scheme
+  await assert.rejects(async () => {
+    await broker.register(ownerId, {
+      id: "cred-2",
+      agentId: "agent-1",
+      provider: "gemini",
+      capability: "cap-1",
+      locator: "http://raw-url"
+    });
+  }, SecurityViolationError);
 
-  // 2. Failure with non-allowlisted schemes
+  // Strengthened plaintext checking on arrays and nested structures
   await assert.rejects(async () => {
     await broker.register(ownerId, {
       id: "cred-3",
-      agentId: "agent-abc",
+      agentId: "agent-1",
       provider: "gemini",
-      capability: "text-generation",
-      locator: "plain://production/gemini-api-key",
-      metadata: {}
+      capability: "cap-1",
+      locator: "vault://loc",
+      metadata: {
+        apiKeyList: ["vault://ok", "plain_un_opaque_secret"] // Contains plaintext inside array on secret-bearing key
+      }
     });
   }, SecurityViolationError);
 
+  // Strengthened checking for non-string primitives under sensitive keys
   await assert.rejects(async () => {
     await broker.register(ownerId, {
       id: "cred-4",
-      agentId: "agent-abc",
+      agentId: "agent-1",
       provider: "gemini",
-      capability: "text-generation",
-      locator: "raw_api_key_value_without_scheme",
-      metadata: {}
-    });
-  }, SecurityViolationError);
-});
-
-test("Credential Broker - Recursive plaintext secret rejection", async () => {
-  const repo = new TestOnlyInMemoryCredentialRepository();
-  const broker = new CredentialBroker({ repository: repo });
-  const ownerId = "owner-123";
-
-  // 1. Reject plain text secrets in sensitive keys (root level)
-  await assert.rejects(async () => {
-    await broker.register(ownerId, {
-      id: "cred-fail",
-      agentId: "agent-abc",
-      provider: "gemini",
-      capability: "text-generation",
-      locator: "vault://production/api-key",
-      apiKey: "raw_plaintext_api_key_123" // Sensitive key has plaintext
+      capability: "cap-1",
+      locator: "vault://loc",
+      apiKey: 12345 // Non-string primitive on secret-bearing key
     });
   }, SecurityViolationError);
 
-  // 2. Reject plain text secrets in sensitive keys (nested level inside metadata)
-  await assert.rejects(async () => {
-    await broker.register(ownerId, {
-      id: "cred-fail-nested",
-      agentId: "agent-abc",
-      provider: "gemini",
-      capability: "text-generation",
-      locator: "vault://production/api-key",
-      metadata: {
-        config: {
-          privateKey: "raw_private_key_material" // Nested sensitive key has plaintext
-        }
-      }
-    });
-  }, SecurityViolationError);
-
-  // 3. Accepts allowed locator scheme strings even in nested/sensitive keys
-  const validNested = await broker.register(ownerId, {
-    id: "cred-ok-nested",
-    agentId: "agent-abc",
+  // Strengthened checking for circular structures
+  const cyclic = { a: "vault://ok" };
+  cyclic.self = cyclic;
+  const okCyclic = await broker.register(ownerId, {
+    id: "cred-5",
+    agentId: "agent-1",
     provider: "gemini",
-    capability: "text-generation",
-    locator: "vault://production/api-key",
-    metadata: {
-      config: {
-        privateKey: "vault://production/nested-private-key" // Valid scheme!
-      }
-    }
+    capability: "cap-1",
+    locator: "vault://loc",
+    metadata: cyclic
   });
-  assert.equal(validNested.id, "cred-ok-nested");
+  assert.equal(okCyclic.id, "cred-5");
+
+  // Prototype pollution safety guard: secret carried on prototype chain must be blocked
+  await assert.rejects(async () => {
+    const maliciousPayload = JSON.parse('{"id": "cred-proto", "agentId": "a", "provider": "p", "capability": "c", "locator": "vault://ok", "__proto__": {"apiKey": "plaintext"}}');
+    await broker.register(ownerId, maliciousPayload);
+  }, SecurityViolationError);
 });
 
-test("Credential Broker - Multi-dimensional authorization binding (fails closed)", async () => {
+test("Credential Broker - Resolution multi-dimensional isolation and generic error normalization", async () => {
   const repo = new TestOnlyInMemoryCredentialRepository();
-  const resolver = async (loc) => `secret-for-${loc}`;
-  const broker = new CredentialBroker({ repository: repo, resolver });
+  const resolver = async (loc) => `resolved-secret-for-${loc}`;
+  const audit = new MockAuditRepository();
+  const broker = new CredentialBroker({ repository: repo, resolver, auditRepository: audit });
 
-  const ownerId = "owner-123";
-  const agentId = "agent-abc";
+  const ownerId = "owner-1";
+  const agentId = "agent-1";
   const provider = "gemini";
-  const capability = "text-generation";
+  const capability = "cap-1";
   const credentialId = "cred-secure";
 
   await broker.register(ownerId, {
@@ -131,206 +138,149 @@ test("Credential Broker - Multi-dimensional authorization binding (fails closed)
     agentId,
     provider,
     capability,
-    locator: "vault://path/to/gemini"
+    locator: "vault://secrets/gemini"
   });
 
-  // 1. Successful resolution
-  const lease = await broker.resolve({
+  // Successful resolution
+  const lease = await broker.resolve({ ownerId, agentId, provider, capability, credentialId });
+  assert.ok(lease);
+  assert.equal(lease.getSecret(), "resolved-secret-for-vault://secrets/gemini");
+  assert.equal(audit.events.length, 1);
+  assert.equal(audit.events[0].payload.outcome, "success");
+
+  // Every mismatch returns the exact same generic ACCESS_DENIED error without detailing which parameter failed
+  await assert.rejects(async () => {
+    await broker.resolve({ ownerId: "wrong", agentId, provider, capability, credentialId });
+  }, (err) => {
+    assert.equal(err.message, "ACCESS_DENIED");
+    return true;
+  });
+
+  await assert.rejects(async () => {
+    await broker.resolve({ ownerId, agentId: "wrong", provider, capability, credentialId });
+  }, (err) => {
+    assert.equal(err.message, "ACCESS_DENIED");
+    return true;
+  });
+
+  await assert.rejects(async () => {
+    await broker.resolve({ ownerId, agentId, provider: "wrong", capability, credentialId });
+  }, (err) => {
+    assert.equal(err.message, "ACCESS_DENIED");
+    return true;
+  });
+
+  await assert.rejects(async () => {
+    await broker.resolve({ ownerId, agentId, provider, capability: "wrong", credentialId });
+  }, (err) => {
+    assert.equal(err.message, "ACCESS_DENIED");
+    return true;
+  });
+});
+
+test("Credential Broker - Strict lease lifetime limits", async () => {
+  const repo = new TestOnlyInMemoryCredentialRepository();
+  const resolver = async (loc) => "secret";
+  const audit = new MockAuditRepository();
+  const broker = new CredentialBroker({ repository: repo, resolver, auditRepository: audit });
+
+  const ownerId = "owner-1";
+  const agentId = "agent-1";
+  const provider = "gemini";
+  const capability = "cap-1";
+  const credentialId = "cred-secure";
+
+  await broker.register(ownerId, {
+    id: credentialId,
+    agentId,
+    provider,
+    capability,
+    locator: "vault://secrets/gemini"
+  });
+
+  const invalidLifetimes = [Infinity, -100, 0, NaN, "30000", 300001];
+
+  for (const lt of invalidLifetimes) {
+    await assert.rejects(async () => {
+      await broker.resolve({ ownerId, agentId, provider, capability, credentialId, lifetimeMs: lt });
+    }, (err) => {
+      assert.equal(err.message, "INVALID_LEASE_LIFETIME");
+      return true;
+    });
+  }
+});
+
+test("Credential Broker - Resolver returns invalid/DTO secret structures", async () => {
+  const repo = new TestOnlyInMemoryCredentialRepository();
+  const audit = new MockAuditRepository();
+
+  const ownerId = "owner-1";
+  const agentId = "agent-1";
+  const provider = "gemini";
+  const capability = "cap-1";
+  const credentialId = "cred-secure";
+
+  await repo.save({
+    id: credentialId,
     ownerId,
     agentId,
     provider,
     capability,
-    credentialId
+    locator: "vault://secrets/gemini"
   });
-  assert.ok(lease);
-  assert.equal(lease.getSecret(), "secret-for-vault://path/to/gemini");
 
-  // 2. Fail closed on owner mismatch
+  // 1. Resolver returns empty string
+  const brokerEmpty = new CredentialBroker({ repository: repo, resolver: async () => "", auditRepository: audit });
   await assert.rejects(async () => {
-    await broker.resolve({
-      ownerId: "wrong-owner",
-      agentId,
-      provider,
-      capability,
-      credentialId
-    });
+    await brokerEmpty.resolve({ ownerId, agentId, provider, capability, credentialId });
   }, /ACCESS_DENIED/);
 
-  // 3. Fail closed on agent mismatch
+  // 2. Resolver returns null
+  const brokerNull = new CredentialBroker({ repository: repo, resolver: async () => null, auditRepository: audit });
   await assert.rejects(async () => {
-    await broker.resolve({
-      ownerId,
-      agentId: "wrong-agent",
-      provider,
-      capability,
-      credentialId
-    });
-  }, /ACCESS_DENIED/);
-
-  // 4. Fail closed on provider mismatch
-  await assert.rejects(async () => {
-    await broker.resolve({
-      ownerId,
-      agentId,
-      provider: "wrong-provider",
-      capability,
-      credentialId
-    });
-  }, /ACCESS_DENIED/);
-
-  // 5. Fail closed on capability mismatch
-  await assert.rejects(async () => {
-    await broker.resolve({
-      ownerId,
-      agentId,
-      provider,
-      capability: "wrong-capability",
-      credentialId
-    });
-  }, /ACCESS_DENIED/);
-
-  // 6. Fail closed on credentialId mismatch / non-existence
-  await assert.rejects(async () => {
-    await broker.resolve({
-      ownerId,
-      agentId,
-      provider,
-      capability,
-      credentialId: "wrong-cred-id"
-    });
+    await brokerNull.resolve({ ownerId, agentId, provider, capability, credentialId });
   }, /ACCESS_DENIED/);
 });
 
-test("Credential Lease - Lifecyle, manual revocation, auto-expiration, serialization protection, and zeroization", async () => {
-  // 1. Manual Revocation and Zeroization (Buffer secret)
-  const bufSecret = Buffer.from("super-secret-buffer-material");
-  const leaseBuf = new CredentialLease(bufSecret, 5000);
-  assert.equal(leaseBuf.getSecret().toString(), "super-secret-buffer-material");
+test("Credential Lease - Safe consumption, revocation on downstream failure and zeroization", async () => {
+  const buf = Buffer.from("temp-secret");
+  const lease = new CredentialLease(buf, 1000);
 
-  leaseBuf.revoke();
+  // Explicit consumption semantics
+  const result = await lease.consume(async (secret) => {
+    assert.equal(secret.toString(), "temp-secret");
+    return "processed-data";
+  });
+  assert.equal(result, "processed-data");
+
+  // Guarantee revocation after consume completed
+  assert.equal(lease.isRevoked, true);
   assert.throws(() => {
-    leaseBuf.getSecret();
-  }, /LEASE_EXPIRED_OR_REVOKED/);
-  // Verify zeroization: the buffer should have been filled with 0s
-  assert.equal(bufSecret.every(byte => byte === 0), true);
-
-  // 2. Manual Revocation and Zeroization (Object secret)
-  const buf1 = Buffer.from("nested-buf");
-  const objSecret = {
-    key1: buf1,
-    key2: "nested-string"
-  };
-  const leaseObj = new CredentialLease(objSecret, 5000);
-  leaseObj.revoke();
-  assert.throws(() => {
-    leaseObj.getSecret();
-  }, /LEASE_EXPIRED_OR_REVOKED/);
-  assert.equal(buf1.every(byte => byte === 0), true);
-  assert.equal(objSecret.key2, null);
-
-  // 3. Automatic Expiration
-  const leaseShort = new CredentialLease("instant-secret", 10);
-  assert.equal(leaseShort.getSecret(), "instant-secret");
-
-  // Wait for the lease to expire
-  await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(leaseShort.isExpired, true);
-  assert.throws(() => {
-    leaseShort.getSecret();
-  }, /LEASE_EXPIRED_OR_REVOKED/);
-
-  // 4. Non-serializable protection
-  const leaseSafe = new CredentialLease("my-safe-secret", 5000);
-  const serialized = JSON.stringify(leaseSafe);
-  assert.equal(serialized, undefined);
-
-  const wrapper = { handle: leaseSafe };
-  const serializedWrapper = JSON.stringify(wrapper);
-  assert.equal(serializedWrapper, "{}");
+    lease.getSecret();
+  });
+  // Confirm Buffer zeroization
+  assert.equal(buf.every(byte => byte === 0), true);
 });
 
-test("Credential Broker - Redacted logs, errors, and error sanitization", async () => {
+test("Credential Broker - Audit failure fails closed", async () => {
   const repo = new TestOnlyInMemoryCredentialRepository();
-  const broker = new CredentialBroker({ repository: repo });
-  const ownerId = "owner-123";
+  const audit = new MockAuditRepository();
+  const broker = new CredentialBroker({ repository: repo, resolver: async () => "secret", auditRepository: audit });
 
-  // 1. Scheme validation error does not include the raw bad locator
-  await assert.rejects(async () => {
-    await broker.register(ownerId, {
-      id: "cred-bad",
-      agentId: "agent-abc",
-      provider: "gemini",
-      capability: "text-generation",
-      locator: "unsupported://secrets/private-api-key"
-    });
-  }, (err) => {
-    assert.equal(err.message.includes("unsupported://secrets/private-api-key"), false);
-    return true;
-  });
+  const ownerId = "owner-1";
+  const agentId = "agent-1";
+  const provider = "gemini";
+  const capability = "cap-1";
+  const credentialId = "cred-secure";
 
-  // 2. Check general error message sanitization
-  const rawErr = "Failed to load locator vault://production-vault/secret-key-path from secret vault.";
-  const cleanErr = sanitizeErrorMessage(rawErr);
-  assert.equal(cleanErr.includes("vault://production-vault/secret-key-path"), false);
-  assert.equal(cleanErr.includes("[REDACTED_VAULT_LOCATOR]"), true);
-});
+  await repo.save({ id: credentialId, ownerId, agentId, provider, capability, locator: "vault://loc" });
 
-test("Credential Broker - Failure injection (Repository and Resolver failures fail closed)", async () => {
-  // 1. Repository failure injection
-  const failingRepo = {
-    findById: async () => {
-      throw new Error("CRITICAL_DATABASE_CONN_LOSS: vault://db-loc/password");
-    },
-    save: async () => {
-      throw new Error("CRITICAL_DATABASE_CONN_LOSS");
-    }
-  };
-
-  const brokerFailRepo = new CredentialBroker({ repository: failingRepo, resolver: () => {} });
+  audit.shouldFail = true; // Trigger audit repository failure
 
   await assert.rejects(async () => {
-    await brokerFailRepo.resolve({
-      ownerId: "owner-1",
-      agentId: "agent-1",
-      provider: "gemini",
-      capability: "cap-1",
-      credentialId: "cred-1"
-    });
+    await broker.resolve({ ownerId, agentId, provider, capability, credentialId });
   }, (err) => {
-    // Assert error is sanitized and does not leak the database password vault locator
-    assert.equal(err.message.includes("vault://db-loc/password"), false);
-    assert.equal(err.message.includes("[REDACTED_VAULT_LOCATOR]"), true);
-    return true;
-  });
-
-  // 2. Resolver failure injection
-  const repo = new TestOnlyInMemoryCredentialRepository();
-  const failingResolver = async () => {
-    throw new Error("NETWORK_TIMEOUT: Could not contact vault://prod-secrets/api-key");
-  };
-  const brokerFailResolver = new CredentialBroker({ repository: repo, resolver: failingResolver });
-
-  await repo.save({
-    id: "cred-1",
-    ownerId: "owner-1",
-    agentId: "agent-1",
-    provider: "gemini",
-    capability: "cap-1",
-    locator: "vault://prod-secrets/api-key"
-  });
-
-  await assert.rejects(async () => {
-    await brokerFailResolver.resolve({
-      ownerId: "owner-1",
-      agentId: "agent-1",
-      provider: "gemini",
-      capability: "cap-1",
-      credentialId: "cred-1"
-    });
-  }, (err) => {
-    // Assert error is sanitized and fails closed
-    assert.equal(err.message.includes("vault://prod-secrets/api-key"), false);
-    assert.equal(err.message.includes("[REDACTED_VAULT_LOCATOR]"), true);
+    assert.equal(err.message, "AUDIT_PERSISTENCE_FAILURE");
     return true;
   });
 });

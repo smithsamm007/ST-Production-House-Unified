@@ -3,8 +3,8 @@
  * PostgreSQL implementations must extend this class and override its methods.
  */
 export class ICredentialRepository {
-  async findById(id) {
-    throw new Error("UNIMPLEMENTED: findById must be implemented by a concrete subclass.");
+  async findScoped({ ownerId, agentId, provider, capability, id }) {
+    throw new Error("UNIMPLEMENTED: findScoped must be implemented by a concrete subclass.");
   }
 
   async save(credential) {
@@ -19,6 +19,7 @@ export class ICredentialRepository {
 /**
  * In-Memory Test-Only Credential Repository.
  * Conforms to ICredentialRepository. Used in deterministic unit and failure-injection testing.
+ * This class is strictly test-only and is excluded from production wiring.
  */
 export class TestOnlyInMemoryCredentialRepository extends ICredentialRepository {
   constructor() {
@@ -26,20 +27,27 @@ export class TestOnlyInMemoryCredentialRepository extends ICredentialRepository 
     this.credentials = new Map();
   }
 
-  async findById(id) {
+  async findScoped({ ownerId, agentId, provider, capability, id }) {
     const cred = this.credentials.get(id);
     if (!cred) return null;
-    // Return deep copy to prevent external mutation
-    return JSON.parse(JSON.stringify(cred));
+    // Enforce 5-dimensional isolation predicate mapping
+    if (
+      cred.ownerId !== ownerId ||
+      cred.agentId !== agentId ||
+      cred.provider !== provider ||
+      cred.capability !== capability
+    ) {
+      return null;
+    }
+    return cred;
   }
 
   async save(credential) {
     if (!credential || !credential.id) {
       throw new Error("INVALID_CREDENTIAL_DATA: Missing credential.id");
     }
-    // Deep copy to prevent external mutation
-    this.credentials.set(credential.id, JSON.parse(JSON.stringify(credential)));
-    return this.findById(credential.id);
+    this.credentials.set(credential.id, credential);
+    return credential;
   }
 
   async delete(id) {
