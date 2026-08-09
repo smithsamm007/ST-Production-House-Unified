@@ -3,11 +3,17 @@ BEGIN;
 -- Add concurrency_limit to the agents table, default to 5
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS concurrency_limit integer NOT NULL DEFAULT 5;
 
--- Update existing agents concurrency limit if necessary (default 5 is fine)
--- Enforce a minimum value of 1 for concurrency_limit
--- Drop constraint first to be idempotent on rerun
-ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_concurrency_limit_positive;
-ALTER TABLE agents ADD CONSTRAINT agents_concurrency_limit_positive CHECK (concurrency_limit > 0);
+-- Concurrency-safe additive/idempotent guard for constraint
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'agents_concurrency_limit_positive'
+  ) THEN
+    ALTER TABLE agents ADD CONSTRAINT agents_concurrency_limit_positive CHECK (concurrency_limit > 0);
+  END IF;
+END;
+$$;
 
 -- Create a function to enforce explicit, valid state transitions
 CREATE OR REPLACE FUNCTION enforce_job_status_transition()

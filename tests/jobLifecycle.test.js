@@ -390,9 +390,17 @@ test("Job Lifecycle Contract — Mock/Unit Suite", async (t) => {
 // ==========================================
 test("Job Lifecycle Contract — Live PG Suite", async (t) => {
   const dbUrl = process.env.POSTGRES_TEST_URL || process.env.DATABASE_URL;
+  const isCI = !!process.env.CI;
+  const isIntegrationCmd = process.env.npm_lifecycle_event === 'test:integration';
+  const expectPG = isCI || isIntegrationCmd || !!dbUrl;
+
   if (!dbUrl) {
-    t.diagnostic("Live PostgreSQL 15+ is not configured; skipping integration tests.");
-    return;
+    if (expectPG) {
+      assert.fail("PostgreSQL 15 instance is mandatory in CI/integration test environment but database URL is not set.");
+    } else {
+      t.diagnostic("Live PostgreSQL 15+ is not configured; skipping integration tests.");
+      return;
+    }
   }
 
   const adapter = createPostgresAdapter({ connectionString: dbUrl });

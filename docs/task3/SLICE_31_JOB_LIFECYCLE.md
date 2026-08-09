@@ -10,6 +10,7 @@ A robust PostgreSQL-backed task queue with explicit allowed state transitions, c
 
 1. **Agent Concurrency Limits**:
    - Added `concurrency_limit` integer column to the `agents` table, defaulting to `5` and restricted via constraint to be strictly positive (`> 0`).
+   - Implements a **concurrency-safe, additive, and fully idempotent PL/pgSQL guard** using a `DO` block to check if the constraint already exists before applying it. This guarantees error-free rerun safety during multiple concurrent deployments.
 
 2. **Durable State Machine Transition Trigger**:
    - Implemented `enforce_job_status_transition()` PL/pgSQL function triggered before any job status update.
@@ -35,18 +36,23 @@ Exports an atomic, battle-tested API driving the lifecycle:
    - If a duplicate job exists, returns the original job state rather than erroring.
 
 2. **`claimJob(client, { agentId, capability, leaseOwner, leaseDurationSeconds })`**
+   - Validates the lease duration as a bounded positive integer.
    - Serializes concurrent lease attempts per agent by acquiring a row lock on the agent (`FOR UPDATE`).
    - Counts non-expired leased or running jobs. If below `concurrency_limit`, grabs the highest-priority, oldest-queued job using `FOR UPDATE SKIP LOCKED`.
-   - Transitions state to `leased`, increments `attempts`, and sets `lease_expires_at`.
+   - Avoids claiming jobs with exhausted retries (`attempts < max_attempts`).
+   - Transitions state to `leased`, increments `attempts`, and sets `lease_expires_at` using safe interval multiplication (`now() + ($3 * interval '1 second')`).
 
 3. **`renewLease(client, { jobId, leaseOwner, leaseDurationSeconds })`**
+   - Validates the lease duration as a bounded positive integer.
    - Extends an active job's lease, checking the owner to prevent hijacking.
+   - Strictly rejects already-expired leases in SQL.
 
 4. **`startJob(client, { jobId, leaseOwner })`**
    - Transitions a job from `leased` to `running`.
 
 5. **`completeJob(client, { jobId, leaseOwner, resultPayload })`**
    - Merges results into payload and transitions to terminal `succeeded` state, clearing lease info.
+   - Fully aligned with the trigger constraints: strictly expects job status to be `'running'` (leased -> running -> succeeded).
 
 6. **`failJob(client, { jobId, leaseOwner, errorPayload })`**
    - Triggers transient status transitions to capture error context.
@@ -65,3 +71,4 @@ Validated both locally using a high-fidelity in-memory Mock DB adapter and seria
    - Confirmed complete state machine, per-agent concurrency enforcement (blocking when limit reached), idempotency, retries, and reclamation.
 2. **Integration tests**:
    - Asserts exact DB trigger behaviors, database-level serialization, and transactional safety under PostgreSQL 15.
+   - Integrates a **mandatory live integration gate** in CI: if running in CI or on integration command (`test:integration`), tests must execute and pass on a live PostgreSQL 15 instance without silent skipping or soft-passing.
