@@ -358,6 +358,6 @@ test("Credential Broker - Non-existent ID maps to null to avoid Foreign Key viol
   // Verify that audit log succeeded and didn't fail with FK Violation, because credentialId was logged as null!
   assert.equal(audit.events.length, 1);
   assert.equal(audit.events[0].credentialId, null);
-  assert.equal(audit.events[0].status, "failed");
+  assert.equal(audit.events[0].status, "failure");
   assert.equal(audit.events[0].errorCode, "ACCESS_DENIED");
 });
