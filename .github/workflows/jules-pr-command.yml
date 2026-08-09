@@ -1,0 +1,70 @@
+name: Jules PR Command Bridge
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: st-jules-pr-command
+  cancel-in-progress: false
+
+jobs:
+  start:
+    if: >-
+      github.event.issue.pull_request &&
+      github.event.comment.user.login == github.repository_owner &&
+      github.event.comment.body == '/jules-start'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+      JULES_API_BASE: https://jules.googleapis.com/v1alpha
+      PR_NUMBER: ${{ github.event.issue.number }}
+    steps:
+      - name: Validate and start bounded Jules session
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${JULES_API_KEY:-}" ]] || { echo "::error::JULES_API_KEY is not configured."; exit 1; }
+
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          [[ "$(jq -r '.state' <<<"${pr}")" == "open" ]] || { echo "::error::PR must be open."; exit 1; }
+          [[ "$(jq -r '.draft' <<<"${pr}")" == "true" ]] || { echo "::error::Coordination PR must remain draft."; exit 1; }
+          branch="$(jq -er '.head.ref' <<<"${pr}")"
+
+          case "${branch}" in
+            task3/slice-31-job-lifecycle|task3/slice-32-worker-checkpoints|task3/slice-33-quota-recovery) ;;
+            *) echo "::error::Branch is not an approved Task 3 slice."; exit 1 ;;
+          esac
+
+          comments="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" | jq -s 'add')"
+          existing="$(jq '[.[] | select(.body | contains("st-jules-bridge session="))] | length' <<<"${comments}")"
+          [[ "${existing}" -eq 0 ]] || { echo "::error::A Jules session is already registered for this PR."; exit 1; }
+          prompt="$(jq -er '[.[] | select(.body | startswith("## Jules attempt 1 prompt"))] | last | .body' <<<"${comments}")"
+
+          header=(-H "X-Goog-Api-Key: ${JULES_API_KEY}")
+          sessions="${RUNNER_TEMP}/sessions.json"
+          curl --fail-with-body --silent --show-error "${header[@]}" "${JULES_API_BASE}/sessions?pageSize=100" >"${sessions}"
+          active="$(jq '[.sessions[]? | select(.state == "QUEUED" or .state == "PLANNING" or .state == "AWAITING_PLAN_APPROVAL" or .state == "AWAITING_USER_FEEDBACK" or .state == "IN_PROGRESS" or .state == "PAUSED")] | length' "${sessions}")"
+          [[ "${active}" -lt 3 ]] || { echo "::error::Three Jules sessions are already active."; exit 1; }
+
+          sources="${RUNNER_TEMP}/sources.json"
+          curl --fail-with-body --silent --show-error "${header[@]}" "${JULES_API_BASE}/sources?pageSize=100" >"${sources}"
+          owner="${GITHUB_REPOSITORY%%/*}"; repo="${GITHUB_REPOSITORY#*/}"
+          source="$(jq -er --arg owner "${owner}" --arg repo "${repo}" '.sources[] | select(.githubRepo.owner == $owner and .githubRepo.repo == $repo) | .name' "${sources}" | head -n1)"
+
+          jq -n --arg prompt "${prompt}" --arg source "${source}" --arg branch "${branch}" --arg title "ST Task 3 PR #${PR_NUMBER}"             '{prompt:$prompt,title:$title,requirePlanApproval:false,sourceContext:{source:$source,githubRepoContext:{startingBranch:$branch}}}'             >"${RUNNER_TEMP}/request.json"
+          curl --fail-with-body --silent --show-error -X POST -H "Content-Type: application/json" "${header[@]}"             --data-binary @"${RUNNER_TEMP}/request.json" "${JULES_API_BASE}/sessions" >"${RUNNER_TEMP}/response.json"
+
+          session="$(jq -er '.id' "${RUNNER_TEMP}/response.json")"
+          state="$(jq -r '.state // "QUEUED"' "${RUNNER_TEMP}/response.json")"
+          gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body "<!-- st-jules-bridge session=${session} attempt=1 state=${state} -->
+          Jules session **${session}** started from GitHub for attempt **1/3**, state **${state}**.
+
+          Codex will verify the resulting exact PR head. No automatic merge, paid provider, or live publishing is authorized."
