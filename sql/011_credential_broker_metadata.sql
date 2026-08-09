@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS broker_credential_metadata (
   owner_id uuid NOT NULL REFERENCES owners(id) ON DELETE RESTRICT,
   agent_id text NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
   provider text NOT NULL,
-  capability text NOT NULL,
+  capability text NOT NULL DEFAULT 'default',
   secret_locator text NOT NULL,
   version integer NOT NULL DEFAULT 1 CHECK (version > 0),
   rotation_status text NOT NULL DEFAULT 'stable' CHECK (rotation_status IN ('stable', 'rotating', 'failed_rotation')),

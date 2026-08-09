@@ -1,9 +1,10 @@
 export class PostgresCredentialRepository {
-  constructor(postgresAdapter) {
+  constructor(postgresAdapter, credentialAuditRepository = null) {
     if (!postgresAdapter || typeof postgresAdapter.query !== "function") {
       throw new Error("PostgresCredentialRepository requires a valid PostgresAdapter instance.");
     }
     this.adapter = postgresAdapter;
+    this.auditRepo = credentialAuditRepository;
   }
 
   _toDTO(row) {
@@ -69,28 +70,42 @@ export class PostgresCredentialRepository {
     if (!provider) throw new Error("Missing provider");
     if (!capability) throw new Error("Missing capability");
 
-    const sql = `
-      INSERT INTO broker_credential_metadata (
-        owner_id,
-        agent_id,
+    return await this.adapter.withTransaction(async (client) => {
+      const sql = `
+        INSERT INTO broker_credential_metadata (
+          owner_id,
+          agent_id,
+          provider,
+          capability,
+          secret_locator,
+          expires_at,
+          last_health_status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *;
+      `;
+      const res = await client.query(sql, [
+        ownerId,
+        agentId,
         provider,
         capability,
-        secret_locator,
-        expires_at,
-        last_health_status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-      RETURNING *;
-    `;
-    const res = await this.adapter.query(sql, [
-      ownerId,
-      agentId,
-      provider,
-      capability,
-      secretLocator,
-      expiresAt || null,
-      lastHealthStatus || "healthy"
-    ]);
-    return this._toDTO(res.rows[0]);
+        secretLocator,
+        expiresAt || null,
+        lastHealthStatus || "healthy"
+      ]);
+      const created = res.rows[0];
+
+      if (this.auditRepo) {
+        await this.auditRepo.logAccess({
+          credentialId: created.id,
+          ownerId,
+          agentId,
+          action: 'create',
+          status: 'success'
+        });
+      }
+
+      return this._toDTO(created);
+    });
   }
 
   /**
@@ -108,6 +123,17 @@ export class PostgresCredentialRepository {
     if (res.rowCount === 0) {
       throw new Error("Credential not found or unauthorized");
     }
+
+    if (this.auditRepo) {
+      await this.auditRepo.logAccess({
+        credentialId,
+        ownerId,
+        agentId,
+        action: 'read',
+        status: 'success'
+      });
+    }
+
     return this._toDTO(res.rows[0]);
   }
 
@@ -126,6 +152,17 @@ export class PostgresCredentialRepository {
     if (res.rowCount === 0) {
       throw new Error("Credential not found or unauthorized");
     }
+
+    if (this.auditRepo) {
+      await this.auditRepo.logAccess({
+        credentialId,
+        ownerId,
+        agentId,
+        action: 'resolve',
+        status: 'success'
+      });
+    }
+
     return res.rows[0]; // Returns raw object containing unmasked secret_locator
   }
 
@@ -144,15 +181,15 @@ export class PostgresCredentialRepository {
   }
 
   /**
-   * Finds by locator scoped by owner (point 5).
+   * Finds by locator scoped by owner and agent (point 5).
    */
-  async findByLocator(secretLocator, ownerId) {
-    if (!secretLocator || !ownerId) return null;
+  async findByLocator(secretLocator, ownerId, agentId) {
+    if (!secretLocator || !ownerId || !agentId) return null;
     const sql = `
       SELECT * FROM broker_credential_metadata
-      WHERE secret_locator = $1 AND owner_id = $2;
+      WHERE secret_locator = $1 AND owner_id = $2 AND agent_id = $3;
     `;
-    const res = await this.adapter.query(sql, [secretLocator, ownerId]);
+    const res = await this.adapter.query(sql, [secretLocator, ownerId, agentId]);
     if (res.rowCount === 0) return null;
     return this._toDTO(res.rows[0]);
   }
@@ -220,6 +257,17 @@ export class PostgresCredentialRepository {
         RETURNING *;
       `;
       const res = await client.query(updateSql, [newSecretLocator, nextExpiresAt || null, id, ownerId, agentId]);
+
+      if (this.auditRepo) {
+        await this.auditRepo.logAccess({
+          credentialId: id,
+          ownerId,
+          agentId,
+          action: 'rotate',
+          status: 'success'
+        });
+      }
+
       return this._toDTO(res.rows[0]);
     });
   }
@@ -253,6 +301,17 @@ export class PostgresCredentialRepository {
         RETURNING *;
       `;
       const res = await client.query(updateSql, [id, ownerId, agentId]);
+
+      if (this.auditRepo) {
+        await this.auditRepo.logAccess({
+          credentialId: id,
+          ownerId,
+          agentId,
+          action: 'revoke',
+          status: 'success'
+        });
+      }
+
       return this._toDTO(res.rows[0]);
     });
   }
@@ -296,6 +355,17 @@ export class PostgresCredentialRepository {
         ownerId,
         agentId
       ]);
+
+      if (this.auditRepo) {
+        await this.auditRepo.logAccess({
+          credentialId: id,
+          ownerId,
+          agentId,
+          action: 'update_metadata',
+          status: 'success'
+        });
+      }
+
       return this._toDTO(res.rows[0]);
     });
   }

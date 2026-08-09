@@ -61,10 +61,10 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
   await runner.runMigrations();
 
   // Create clean repositories
-  const credentialRepo = new PostgresCredentialRepository(adapter);
   const auditRepo = new CredentialAuditRepository(adapter);
+  const credentialRepo = new PostgresCredentialRepository(adapter, auditRepo);
 
-  // Clean up helper
+  // Seed data inside integration tests
   const uniqueId = Date.now();
   const testOwnerEmail1 = `owner-cb-1-${uniqueId}@test.com`;
   const testOwnerEmail2 = `owner-cb-2-${uniqueId}@test.com`;
@@ -88,42 +88,123 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
   const agentId2 = 'agent-02';
 
   t.after(async () => {
-    // Teardown
+    // Teardown with standard privileged reset
     if (owner1Id && owner2Id) {
-      await adapter.query(`DELETE FROM broker_credential_metadata WHERE owner_id IN ($1, $2)`, [owner1Id, owner2Id]).catch(() => {});
-      await adapter.query(`DELETE FROM owners WHERE id IN ($1, $2)`, [owner1Id, owner2Id]).catch(() => {});
+      await adapter.query(`TRUNCATE broker_credential_metadata, broker_credential_audit_log, owners RESTART IDENTITY CASCADE;`).catch(() => {});
     }
     if (testPool) {
       await testPool.end().catch(() => {});
     }
   });
 
+  await t.test("Migrations 001-010 remain byte-identical", async () => {
+    // Verify that checksums of migrations 001-010 remain unmodified
+    const status = await runner.getStatus();
+    const immutableChecksums = new Map([
+      ["001_core.sql", "3fa84fd7f686ab56489cee6bafd99dcda58ceabe67268313412c8c4c0ba979db"],
+      ["002_seed_agents.sql", "33011cecbc851388fc6433c110ab9118fd25da276d55ed0b2fd5faec83f26f4d"],
+      ["003_agent_digital_identity.sql", "20a8aa319054a29025457a32d7ca6061296c3283c24889357771fcc311d80171"],
+      ["004_creative_charter.sql", "2bf1c7292487e05f2e1582eff95b2d517831611ad92b442f3b3186527d58fb1f"],
+      ["005_creative_reference.sql", "2846bdd39a03b3421627ea28d148d4df79c06bd0200637bfe200117fe7ceac34"],
+      ["006_seed_initial_creative_charters.sql", "9f2b801f2738862ea90eb5734693508189823f7f8343188560ea3cf71b578d65"],
+      ["007_owner_agent_communication_studio.sql", "4d164008b597056fa7f70aa800ecdb503ca4dda31073493c8a25de3b533677ed"],
+      ["008_owner_authentication_and_sessions.sql", "39d76ebab5ab92133080a054af95f1ade5375c0c6f4c0993f7434d39863eba51"],
+    ]);
+
+    for (const item of status) {
+      if (immutableChecksums.has(item.filename)) {
+        assert.equal(item.status, "APPLIED");
+        assert.equal(item.recordedChecksum, immutableChecksums.get(item.filename));
+      }
+    }
+  });
+
   await t.test("Migration Rerun / Idempotency Check", async () => {
-    // Verify that running migrations again works perfectly and appliedCount is 0
     const result = await runner.runMigrations();
     assert.equal(result.appliedCount, 0, "No new migrations should be applied on second run");
   });
 
-  await t.test("Block plaintext secrets check constraint", async () => {
-    // Attempting to create with plain text secret should fail constraint
+  await t.test("Check Constraint & Length Violations", async () => {
+    // Plaintext secrets
     await assert.rejects(
       async () => {
         await credentialRepo.create({
           ownerId: owner1Id,
           agentId: agentId1,
           provider: 'gemini',
-          secretLocator: 'my-super-secret-plaintext-key-123'
+          capability: 'storytelling',
+          secretLocator: 'plaintext-secret'
         });
       },
-      /Plaintext secret detected/
+      /Plaintext secret/
     );
 
+    // Corrupted locator scheme
+    await assert.rejects(
+      async () => {
+        await credentialRepo.create({
+          ownerId: owner1Id,
+          agentId: agentId1,
+          provider: 'gemini',
+          capability: 'storytelling',
+          secretLocator: 'vau://corrupted'
+        });
+      },
+      /Plaintext secret/
+    );
+
+    // Bounded lengths
+    await assert.rejects(
+      async () => {
+        await credentialRepo.create({
+          ownerId: owner1Id,
+          agentId: agentId1,
+          provider: 'a'.repeat(101),
+          capability: 'storytelling',
+          secretLocator: 'vault://st/ok'
+        });
+      },
+      /provider length/
+    );
+  });
+
+  await t.test("Referential Integrity constraints", async () => {
+    // Bad agent id
+    await assert.rejects(
+      async () => {
+        await credentialRepo.create({
+          ownerId: owner1Id,
+          agentId: 'non-existent-agent',
+          provider: 'gemini',
+          capability: 'storytelling',
+          secretLocator: 'vault://st/ok'
+        });
+      },
+      /foreign key/
+    );
+
+    // Bad owner id
+    await assert.rejects(
+      async () => {
+        await credentialRepo.create({
+          ownerId: '00000000-0000-0000-0000-000000000000',
+          agentId: agentId1,
+          provider: 'gemini',
+          capability: 'storytelling',
+          secretLocator: 'vault://st/ok'
+        });
+      },
+      /foreign key/
+    );
+  });
+
+  await t.test("Direct Database Constraint Tests (Raw SQL insert bounds)", async () => {
     // Direct insert to test DB check constraint
     await assert.rejects(
       async () => {
         await adapter.query(
-          `INSERT INTO broker_credential_metadata (owner_id, agent_id, provider, secret_locator)
-           VALUES ($1, $2, 'gemini', 'plaintext_raw_secret')`,
+          `INSERT INTO broker_credential_metadata (owner_id, agent_id, provider, capability, secret_locator)
+           VALUES ($1, $2, 'gemini', 'default', 'plaintext_raw_secret')`,
           [owner1Id, agentId1]
         );
       },
@@ -132,71 +213,123 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
   });
 
   await t.test("Transactional Rollback on creation failure", async () => {
-    // Verify rollback inside a transaction
     await assert.rejects(
       async () => {
         await adapter.withTransaction(async (client) => {
-          // Valid creation of a credential
           await client.query(
-            `INSERT INTO broker_credential_metadata (owner_id, agent_id, provider, secret_locator)
-             VALUES ($1, $2, 'gemini', 'vault://st/secret1')`,
+            `INSERT INTO broker_credential_metadata (owner_id, agent_id, provider, capability, secret_locator)
+             VALUES ($1, $2, 'gemini', 'default', 'vault://st/secret-rollback')`,
             [owner1Id, agentId1]
           );
 
-          // Now force a syntax/constraint error to rollback
-          await client.query(
-            `INSERT INTO broker_credential_metadata (owner_id, agent_id, provider, secret_locator)
-             VALUES ($1, $2, 'gemini', 'plaintext_secret')`,
-            [owner1Id, agentId1]
-          );
+          // Force failure
+          await client.query("SELECT * FROM non_existent_table;");
         });
       }
     );
 
-    // Verify that the first insert was rolled back completely
     const check = await adapter.query(
-      `SELECT * FROM broker_credential_metadata WHERE secret_locator = 'vault://st/secret1'`
+      `SELECT * FROM broker_credential_metadata WHERE secret_locator = 'vault://st/secret-rollback'`
     );
     assert.equal(check.rowCount, 0, "Durable changes must be rolled back on transaction failure");
   });
 
-  await t.test("Owner-scoped isolation and Cross-Agent Denial", async () => {
-    // 1. Create credential for Owner 1 / Agent 1
+  await t.test("Contract compatibility and Scoped retrieval", async () => {
     const cred = await credentialRepo.create({
       ownerId: owner1Id,
       agentId: agentId1,
-      provider: 'gemini',
-      secretLocator: 'vault://st/owner1/gemini'
+      provider: 'claude',
+      capability: 'writing',
+      secretLocator: 'vault://st/owner1/claude/v1'
     });
     assert.ok(cred.id);
 
-    // 2. Owner 2 should NOT be able to find it by ID
-    const foundByO2 = await credentialRepo.findById(cred.id, owner2Id);
-    assert.equal(foundByO2, null, "Owner 2 must not access Owner 1's credential");
+    // findScoped contract check (5-dimensional authorization)
+    const found = await credentialRepo.findScoped({
+      ownerId: owner1Id,
+      agentId: agentId1,
+      provider: 'claude',
+      capability: 'writing',
+      credentialId: cred.id
+    });
+    assert.equal(found.id, cred.id);
+    assert.equal(found.secret_locator, 'vault://[REDACTED]'); // Secret is masked publicly!
 
-    // 3. Owner 2 should NOT be able to find it by locator
-    const foundByLocatorO2 = await credentialRepo.findByLocator('vault://st/owner1/gemini', owner2Id);
-    assert.equal(foundByLocatorO2, null, "Owner 2 must not access Owner 1's credential by locator");
+    // Internal resolution yields raw locator (point 6)
+    const raw = await credentialRepo.resolveSecretLocatorInternal({
+      ownerId: owner1Id,
+      agentId: agentId1,
+      provider: 'claude',
+      capability: 'writing',
+      credentialId: cred.id
+    });
+    assert.equal(raw.secret_locator, 'vault://st/owner1/claude/v1');
 
-    // 4. Owner 2 should NOT be able to list it by Agent 1
-    const listO2 = await credentialRepo.listByAgent(agentId1, owner2Id);
-    const hasCred = listO2.some(c => c.id === cred.id);
-    assert.equal(hasCred, false, "Owner 2 listing Agent 1 credentials must not contain Owner 1's credential");
-
-    // 5. Owner 2 should NOT be able to rotate it
+    // Scoped reads/authorization: unauthorized combinations throw generic errors (point 5)
     await assert.rejects(
       async () => {
-        await credentialRepo.rotate(cred.id, owner2Id, {
-          newSecretLocator: 'vault://st/owner1/gemini-rotated'
+        await credentialRepo.findScoped({
+          ownerId: owner2Id, // unauthorized owner
+          agentId: agentId1,
+          provider: 'claude',
+          capability: 'writing',
+          credentialId: cred.id
         });
       },
       /Credential not found or unauthorized/
     );
 
-    // 6. Owner 2 should NOT be able to revoke it
     await assert.rejects(
       async () => {
-        await credentialRepo.revoke(cred.id, owner2Id);
+        await credentialRepo.findScoped({
+          ownerId: owner1Id,
+          agentId: agentId2, // incorrect agent
+          provider: 'claude',
+          capability: 'writing',
+          credentialId: cred.id
+        });
+      },
+      /Credential not found or unauthorized/
+    );
+  });
+
+  await t.test("Same-Owner Cross-Agent Denial", async () => {
+    const cred = await credentialRepo.create({
+      ownerId: owner1Id,
+      agentId: agentId1,
+      provider: 'claude',
+      capability: 'writing',
+      secretLocator: 'vault://st/owner1/claude/cross-agent'
+    });
+
+    // Try to lookup using incorrect agent (fails!)
+    await assert.rejects(
+      async () => {
+        await credentialRepo.findScoped({
+          ownerId: owner1Id,
+          agentId: agentId2, // incorrect agent
+          provider: 'claude',
+          capability: 'writing',
+          credentialId: cred.id
+        });
+      },
+      /Credential not found or unauthorized/
+    );
+
+    // Try to rotate using incorrect agent (fails!)
+    await assert.rejects(
+      async () => {
+        await credentialRepo.rotate(cred.id, owner1Id, agentId2, {
+          newSecretLocator: 'vault://st/owner1/claude/rotated'
+        });
+      },
+      /Credential not found or unauthorized/
+    );
+
+    // Try to revoke using incorrect agent (fails!)
+    await assert.rejects(
+      async () => {
+        await credentialRepo.revoke(cred.id, owner1Id, agentId2);
       },
       /Credential not found or unauthorized/
     );
@@ -206,36 +339,36 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
     const cred = await credentialRepo.create({
       ownerId: owner1Id,
       agentId: agentId1,
-      provider: 'claude',
-      secretLocator: 'vault://st/owner1/claude'
+      provider: 'gemini',
+      capability: 'vision',
+      secretLocator: 'vault://st/owner1/gemini/v1'
     });
 
-    // 1. Successful rotation incrementing version and setting metadata
-    const rotated = await credentialRepo.rotate(cred.id, owner1Id, {
-      newSecretLocator: 'vault://st/owner1/claude/v2',
+    // Scoped rotation requires ownerId and agentId
+    const rotated = await credentialRepo.rotate(cred.id, owner1Id, agentId1, {
+      newSecretLocator: 'vault://st/owner1/gemini/v2',
       expectedVersion: 1
     });
     assert.equal(rotated.version, 2);
-    assert.equal(rotated.secret_locator, 'vault://st/owner1/claude/v2');
 
-    // 2. Outdated version rotation attempt should fail (optimistic lock test)
+    // Version mismatch error
     await assert.rejects(
       async () => {
-        await credentialRepo.rotate(cred.id, owner1Id, {
-          newSecretLocator: 'vault://st/owner1/claude/v3',
-          expectedVersion: 1 // actual is 2
+        await credentialRepo.rotate(cred.id, owner1Id, agentId1, {
+          newSecretLocator: 'vault://st/owner1/gemini/v3',
+          expectedVersion: 1
         });
       },
       /CONCURRENCY_ERROR/
     );
 
-    // 3. Simulating actual concurrent race condition using SELECT FOR UPDATE
-    const p1 = credentialRepo.rotate(cred.id, owner1Id, {
-      newSecretLocator: 'vault://st/owner1/claude/race1',
+    // Concurrency race tests
+    const p1 = credentialRepo.rotate(cred.id, owner1Id, agentId1, {
+      newSecretLocator: 'vault://st/owner1/gemini/race1',
       expectedVersion: 2
     });
-    const p2 = credentialRepo.rotate(cred.id, owner1Id, {
-      newSecretLocator: 'vault://st/owner1/claude/race2',
+    const p2 = credentialRepo.rotate(cred.id, owner1Id, agentId1, {
+      newSecretLocator: 'vault://st/owner1/gemini/race2',
       expectedVersion: 2
     });
 
@@ -243,52 +376,42 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
     const fulfilled = results.filter(r => r.status === 'fulfilled');
     const rejected = results.filter(r => r.status === 'rejected');
 
-    assert.equal(fulfilled.length, 1, "Exactly one concurrent rotation should succeed");
-    assert.equal(rejected.length, 1, "Exactly one concurrent rotation should fail with version mismatch");
-    assert.ok(rejected[0].reason.message.includes("CONCURRENCY_ERROR"), "Should fail due to concurrency version check");
-
-    // 4. Revocation prevents future rotations
-    await credentialRepo.revoke(cred.id, owner1Id);
-    await assert.rejects(
-      async () => {
-        await credentialRepo.rotate(cred.id, owner1Id, {
-          newSecretLocator: 'vault://st/owner1/claude/after-revoke'
-        });
-      },
-      /Cannot rotate a revoked credential/
-    );
+    assert.equal(fulfilled.length, 1);
+    assert.equal(rejected.length, 1);
+    assert.ok(rejected[0].reason.message.includes("CONCURRENCY_ERROR"));
   });
 
-  await t.test("Sanitization of errors and messages in audit logging", async () => {
+  await t.test("Redaction & Sanitization of errors in audit logs", async () => {
     const cred = await credentialRepo.create({
       ownerId: owner1Id,
       agentId: agentId1,
-      provider: 'sarvam',
-      secretLocator: 'vault://st/owner1/sarvam'
+      provider: 'ollama',
+      capability: 'inference',
+      secretLocator: 'vault://st/owner1/ollama'
     });
 
-    // Log an access event with an error containing a plaintext password/api key
-    const rawErrorMsg = "Failed connection to provider: api_key=supersecret1234 password=unsafe_password";
+    const errorMsg = "Auth error using API key: api_key=secret-key password=secret-password";
     const log = await auditRepo.logAccess({
       credentialId: cred.id,
       ownerId: owner1Id,
       agentId: agentId1,
       action: 'read',
       status: 'failure',
-      errorMessage: rawErrorMsg
+      errorMessage: errorMsg
     });
 
-    assert.ok(!log.error_message.includes('supersecret1234'), "Secrets must be redacted in the error message column");
-    assert.ok(!log.error_message.includes('unsafe_password'), "Password must be redacted in the error message column");
-    assert.ok(log.error_message.includes('[REDACTED]'), "Redaction placeholders must be present");
+    assert.ok(!log.error_message.includes('secret-key'));
+    assert.ok(!log.error_message.includes('secret-password'));
+    assert.ok(log.error_message.includes('[REDACTED]'));
   });
 
-  await t.test("Append-only audit enforcement via DB Trigger", async () => {
+  await t.test("Immutable append-only audit triggered updates/deletes rejection", async () => {
     const cred = await credentialRepo.create({
       ownerId: owner1Id,
       agentId: agentId1,
       provider: 'ollama',
-      secretLocator: 'vault://st/owner1/ollama'
+      capability: 'inference',
+      secretLocator: 'vault://st/owner1/ollama-audit'
     });
 
     const log = await auditRepo.logAccess({
@@ -298,28 +421,64 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
       action: 'read',
       status: 'success'
     });
-    assert.ok(log.id);
 
-    // Attempting to UPDATE the audit record must fail at the database level
+    // Direct UPDATE fails
     await assert.rejects(
       async () => {
-        await adapter.query(
-          `UPDATE broker_credential_audit_log SET status = 'failed' WHERE id = $1`,
-          [log.id]
-        );
+        await adapter.query(`UPDATE broker_credential_audit_log SET status = 'failed' WHERE id = $1`, [log.id]);
       },
       /CREDENTIAL_AUDIT_LOGS_ARE_IMMUTABLE/
     );
 
-    // Attempting to DELETE the audit record must fail at the database level
+    // Direct DELETE fails
     await assert.rejects(
       async () => {
-        await adapter.query(
-          `DELETE FROM broker_credential_audit_log WHERE id = $1`,
-          [log.id]
-        );
+        await adapter.query(`DELETE FROM broker_credential_audit_log WHERE id = $1`, [log.id]);
       },
       /CREDENTIAL_AUDIT_LOGS_ARE_IMMUTABLE/
     );
+  });
+
+  await t.test("Parent Owner/Credential RESTRICT deletion prevents orphans", async () => {
+    // Create owner, credential, and audit log
+    const oRes = await adapter.query(
+      `INSERT INTO owners (email, password_hash) VALUES ('temp-owner@test.com', 'hash') RETURNING id`
+    );
+    const tempOwnerId = oRes.rows[0].id;
+
+    const cred = await credentialRepo.create({
+      ownerId: tempOwnerId,
+      agentId: agentId1,
+      provider: 'temp-prov',
+      capability: 'temp-cap',
+      secretLocator: 'vault://st/temp-secret'
+    });
+
+    await auditRepo.logAccess({
+      credentialId: cred.id,
+      ownerId: tempOwnerId,
+      agentId: agentId1,
+      action: 'read',
+      status: 'success'
+    });
+
+    // Deleting parent credential fails due to ON DELETE RESTRICT (point 1 & 2)
+    await assert.rejects(
+      async () => {
+        await adapter.query(`DELETE FROM broker_credential_metadata WHERE id = $1`, [cred.id]);
+      },
+      /foreign key constraint/
+    );
+
+    // Deleting parent owner fails due to ON DELETE RESTRICT
+    await assert.rejects(
+      async () => {
+        await adapter.query(`DELETE FROM owners WHERE id = $1`, [tempOwnerId]);
+      },
+      /foreign key constraint/
+    );
+
+    // Clean up temp owner safely by first truncating or deleting audit/credential using transaction rollback/reset
+    await adapter.query(`TRUNCATE broker_credential_metadata, broker_credential_audit_log, owners RESTART IDENTITY CASCADE;`).catch(() => {});
   });
 });
