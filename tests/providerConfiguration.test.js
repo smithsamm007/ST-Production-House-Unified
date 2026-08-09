@@ -28,7 +28,11 @@ class CredentialLease {
       throw new Error("LEASE_CONSUMED: Lease has already been consumed");
     }
     this.consumed = true;
-    return await callback(this.secret);
+    try {
+      return await callback(this.secret);
+    } finally {
+      await this.revoke();
+    }
   }
 
   async revoke() {
@@ -61,7 +65,9 @@ class MockCredentialBroker {
     }
     const key = `${ownerId}:${agentId}:${provider}:${capability}:${credentialId}`;
     const secret = this.credentials.get(key) || "mock-secret";
-    return new CredentialLease(secret, { ownerId, agentId, provider, capability, credentialId });
+    const lease = new CredentialLease(secret, { ownerId, agentId, provider, capability, credentialId });
+    this.lastLease = lease;
+    return lease;
   }
 }
 
@@ -749,4 +755,42 @@ test("Durable CredentialHealthRegistry Restart Behavior - behaves as expected un
 
   const registry2 = new MockDurableCredentialHealthRegistry(dbStore);
   assert.equal(registry2.isHealthy(keyParams), false, "Health state must persist across process restart");
+});
+
+
+test("ProviderConfigurationRouter - remote credential is bounded to lease callback and revoked", async () => {
+  const quotaLedger = new QuotaLedger();
+  const recoveryManager = new RecoveryContractManager();
+  const credentialHealthRegistry = new TestOnlyInMemoryCredentialHealthRegistry();
+  const credentialBroker = new MockCredentialBroker();
+  credentialBroker.register({
+    ownerId: "owner-01",
+    agentId: "agent-01",
+    provider: "gemini",
+    capability: "story.universe_and_continuity",
+    credentialId: "cred-gemini-01",
+    secret: "bounded-provider-secret"
+  });
+  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", "cred-gemini-01", { limit: 1 });
+
+  let observedCredential = null;
+  const router = new ProviderConfigurationRouter({
+    gemini: async ({ credential }) => {
+      observedCredential = credential;
+      return { output: "ok", evidence: { providerResponseId: "provider-response-1" } };
+    }
+  }, { quotaLedger, recoveryManager, credentialHealthRegistry, credentialBroker });
+
+  const result = await router.execute({
+    ownerId: "owner-01",
+    agentId: "agent-01",
+    taskId: "bounded-secret-test",
+    slots: createValidSlots(),
+    input: { prompt: "safe" }
+  });
+
+  assert.equal(result.output, "ok");
+  assert.equal(observedCredential, "bounded-provider-secret");
+  assert.equal(credentialBroker.lastLease.revoked, true);
+  assert.equal(credentialBroker.lastLease.secret, null);
 });
