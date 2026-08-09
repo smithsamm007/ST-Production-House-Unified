@@ -41,14 +41,14 @@ export class CredentialAuditRepository {
   /**
    * Compatibility recordEvent method (point 3).
    */
-  async recordEvent(params) {
-    return this.logAccess(params);
+  async recordEvent(params, client = null) {
+    return this.logAccess(params, client);
   }
 
   /**
    * Logs an append-only credential access/action.
    */
-  async logAccess({ credentialId, ownerId, agentId, action, status, errorMessage, clientIp, userAgent }) {
+  async logAccess({ credentialId, ownerId, agentId, action, status, errorMessage, clientIp, userAgent }, client = null) {
     if (!credentialId) throw new Error("Missing credentialId");
     if (!ownerId) throw new Error("Missing ownerId");
     if (!agentId) throw new Error("Missing agentId");
@@ -83,7 +83,8 @@ export class CredentialAuditRepository {
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING *;
     `;
-    const res = await this.adapter.query(sql, [
+    const executor = client || this.adapter;
+    const res = await executor.query(sql, [
       credentialId,
       ownerId,
       agentId,

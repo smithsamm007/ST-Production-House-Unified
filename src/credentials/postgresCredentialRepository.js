@@ -101,7 +101,7 @@ export class PostgresCredentialRepository {
           agentId,
           action: 'create',
           status: 'success'
-        });
+        }, client);
       }
 
       return this._toDTO(created);
@@ -265,7 +265,7 @@ export class PostgresCredentialRepository {
           agentId,
           action: 'rotate',
           status: 'success'
-        });
+        }, client);
       }
 
       return this._toDTO(res.rows[0]);
@@ -309,7 +309,7 @@ export class PostgresCredentialRepository {
           agentId,
           action: 'revoke',
           status: 'success'
-        });
+        }, client);
       }
 
       return this._toDTO(res.rows[0]);
@@ -363,7 +363,7 @@ export class PostgresCredentialRepository {
           agentId,
           action: 'update_metadata',
           status: 'success'
-        });
+        }, client);
       }
 
       return this._toDTO(res.rows[0]);
