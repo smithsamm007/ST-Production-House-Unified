@@ -378,11 +378,12 @@ export class ProviderConfigurationRouter {
         let result;
         if (slot.kind === "remote") {
           result = await lease.consume(async (secret) => {
-            // Never pass raw secret locator or raw secret object to the executor
+            // Secret material exists only for this bounded callback and is never persisted.
             return await executor({
               agentId,
               taskId,
-              input
+              input,
+              credential: secret
             });
           });
         } else {
@@ -469,6 +470,15 @@ export class ProviderConfigurationRouter {
           outcome: "failed",
           errorCode: getEnumErrorCode(execOrCommitError)
         });
+
+        // Never execute a second provider after the first provider already succeeded
+        // and its quota reservation was committed. That could duplicate side effects.
+        if (reservationState === "committed") {
+          const terminal = new Error("POST_COMMIT_RECOVERY_STATE_FAILURE");
+          terminal.doNotRetry = true;
+          terminal.attempts = attempts;
+          throw terminal;
+        }
       } finally {
         // Always revoke lease in both success/failure paths to guarantee cleanup
         if (lease) {
