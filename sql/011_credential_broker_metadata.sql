@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS broker_credential_audit_log (
   credential_id uuid, -- Nullable for failed lookups
   owner_id uuid NOT NULL REFERENCES owners(id) ON DELETE RESTRICT,
   agent_id text NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  provider text,
+  capability text,
+  error_code text,
   action text NOT NULL,
   performed_at timestamptz NOT NULL DEFAULT now(),
   status text NOT NULL,

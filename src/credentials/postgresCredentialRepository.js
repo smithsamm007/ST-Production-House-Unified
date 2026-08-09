@@ -57,21 +57,11 @@ export class PostgresCredentialRepository {
   /**
    * Public save / create method.
    */
-  async save({ ownerId, agentId, provider, capability, credentialId, locator, metadata, secretLocator, expiresAt, lastHealthStatus }) {
-    return this.create({
-      ownerId,
-      agentId,
-      provider,
-      capability,
-      credentialId,
-      secretLocator: locator ?? secretLocator,
-      metadata,
-      expiresAt,
-      lastHealthStatus
-    });
+  async save({ ownerId, agentId, provider, capability, secretLocator, expiresAt, lastHealthStatus }) {
+    return this.create({ ownerId, agentId, provider, capability, secretLocator, expiresAt, lastHealthStatus });
   }
 
-  async create({ ownerId, agentId, provider, capability, credentialId, secretLocator, metadata, expiresAt, lastHealthStatus }) {
+  async create({ ownerId, agentId, provider, capability, secretLocator, expiresAt, lastHealthStatus }) {
     try {
       this.validateSecretLocator(secretLocator);
       this.validateMetadataFields({ provider, capability, lastHealthStatus });
@@ -97,7 +87,6 @@ export class PostgresCredentialRepository {
       try {
         const sql = `
           INSERT INTO broker_credential_metadata (
-            id,
             owner_id,
             agent_id,
             provider,
@@ -105,11 +94,10 @@ export class PostgresCredentialRepository {
             secret_locator,
             expires_at,
             last_health_status
-          ) VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5, $6, $7, $8)
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7)
           RETURNING *;
         `;
         const res = await client.query(sql, [
-          credentialId || null,
           ownerId,
           agentId,
           provider,
@@ -146,28 +134,6 @@ export class PostgresCredentialRepository {
         throw err;
       }
     });
-  }
-
-  /**
-   * Broker-only five-dimensional lookup. Returns only the opaque locator and
-   * excludes revoked or expired credentials. It intentionally emits no audit;
-   * the broker records the authoritative resolve outcome after vault access.
-   */
-  async findLocatorScoped({ ownerId, agentId, provider, capability, credentialId }) {
-    if (!ownerId || !agentId || !provider || !capability || !credentialId) return null;
-    const sql = `
-      SELECT secret_locator
-      FROM broker_credential_metadata
-      WHERE owner_id = $1
-        AND agent_id = $2
-        AND provider = $3
-        AND capability = $4
-        AND id = $5
-        AND revoked_at IS NULL
-        AND (expires_at IS NULL OR expires_at > now());
-    `;
-    const res = await this.adapter.query(sql, [ownerId, agentId, provider, capability, credentialId]);
-    return res.rowCount === 1 ? res.rows[0].secret_locator : null;
   }
 
   /**
@@ -224,7 +190,13 @@ export class PostgresCredentialRepository {
       });
     }
 
-    return this._toDTO(cred);
+    const dto = this._toDTO(cred);
+    // Broker expects real secret locator in locator field (point 1)
+    return {
+      ...dto,
+      locator: cred.secret_locator,
+      secret_locator: cred.secret_locator
+    };
   }
 
   /**
