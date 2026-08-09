@@ -1,0 +1,97 @@
+name: Jules Tracking Issue Watchdog
+
+on:
+  schedule:
+    - cron: "5-59/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: st-jules-tracking-issue-watchdog
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+      JULES_API_BASE: https://jules.googleapis.com/v1alpha
+      STALL_SECONDS: "1200"
+      MAX_ATTEMPTS: "3"
+    steps:
+      - name: Monitor pre-PR Jules sessions
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${JULES_API_KEY:-}" ]] || { echo "::error::JULES_API_KEY missing"; exit 1; }
+          header=(-H "X-Goog-Api-Key: ${JULES_API_KEY}")
+          now="$(date -u +%s)"
+          issues="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100" | jq -s 'add | map(select(.pull_request == null))')"
+
+          jq -r '.[].number' <<<"$issues" | while read -r issue; do
+            comments="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${issue}/comments?per_page=100" | jq -s 'add')"
+            bridge="$(jq -r '[.[] | .body | capture("st-jules-bridge session=(?<session>[^ ]+) attempt=(?<attempt>[1-3]) state=(?<state>[^ ]+) branch=(?<branch>[^ >]+)"; "g")?] | map(select(. != null)) | last // empty | [.session,.attempt,.state,.branch] | @tsv' <<<"$comments")"
+            [[ -n "$bridge" ]] || continue
+            IFS=$'\t' read -r session attempt recorded_state branch <<<"$bridge"
+            case "$recorded_state" in COMPLETED|CODEX_HANDOFF) continue;; esac
+
+            response="${RUNNER_TEMP}/session-${issue}.json"
+            code="$(curl --silent --show-error --output "$response" --write-out '%{http_code}' "${header[@]}" "${JULES_API_BASE}/sessions/${session}")"
+            if [[ "$code" == "401" || "$code" == "403" || "$code" == "429" ]]; then
+              marker="st-jules-issue-watchdog session=${session} result=OWNER_ACTION_REQUIRED"
+              jq -e --arg m "$marker" '.[] | select(.body | contains($m))' <<<"$comments" >/dev/null || gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "<!-- ${marker} -->
+          Jules monitoring paused for authentication, authorization, or free quota. No paid fallback was used."
+              continue
+            fi
+            [[ "$code" =~ ^2 ]] || { echo "::warning::Issue #${issue}: HTTP $code"; continue; }
+            state="$(jq -r '.state // "STATE_UNSPECIFIED"' "$response")"
+
+            if [[ "$state" == "AWAITING_PLAN_APPROVAL" ]]; then
+              curl --fail-with-body --silent --show-error -X POST "${header[@]}" "${JULES_API_BASE}/sessions/${session}:approvePlan" >/dev/null
+            fi
+
+            if [[ "$state" == "COMPLETED" ]]; then
+              pr_url="$(jq -r '[.outputs[]?.pullRequest.url] | map(select(. != null)) | last // empty' "$response")"
+              marker="st-jules-bridge session=${session} attempt=${attempt} state=COMPLETED branch=${branch}"
+              jq -e --arg m "$marker" '.[] | select(.body | contains($m))' <<<"$comments" >/dev/null || gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "<!-- ${marker} -->
+          Jules completed. Implementation PR: ${pr_url:-not-yet-exported}. Codex exact-head review and CI are mandatory."
+              continue
+            fi
+
+            if [[ "$state" == "FAILED" ]]; then
+              if (( attempt >= MAX_ATTEMPTS )); then
+                gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "<!-- st-jules-bridge session=${session} attempt=${attempt} state=CODEX_HANDOFF branch=${branch} -->
+          Three attempts failed. Codex owns direct completion."
+                continue
+              fi
+              marker="st-jules-issue-watchdog session=${session} result=REPLACEMENT_REQUIRED"
+              jq -e --arg m "$marker" '.[] | select(.body | contains($m))' <<<"$comments" >/dev/null || gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "<!-- ${marker} -->
+          Jules failed terminally. A governed attempt $((attempt + 1)) replacement is required from audited main; no duplicate writer is active."
+              continue
+            fi
+
+            updated="$(jq -r '.updateTime // .createTime // empty' "$response")"
+            epoch="$(date -u -d "$updated" +%s 2>/dev/null || true)"
+            [[ -n "$epoch" ]] || continue
+            (( now - epoch >= STALL_SECONDS )) || continue
+            recovery_marker="st-jules-issue-watchdog session=${session} recovery=1"
+            recovery_time="$(jq -r --arg m "$recovery_marker" '[.[] | select(.body | contains($m))] | last | .created_at // empty' <<<"$comments")"
+            if [[ -z "$recovery_time" ]]; then
+              payload="$(jq -n --arg prompt 'Continue the authorized task from audited main. Preserve correct work, run all required tests, and create exactly one implementation PR. Do not use paid services or live credentials.' '{prompt:$prompt}')"
+              resume="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' "${header[@]}" --data-binary "$payload" "${JULES_API_BASE}/sessions/${session}:sendMessage")"
+              [[ "$resume" =~ ^2 ]] && gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "<!-- ${recovery_marker} observed=$(date -u +%FT%TZ) -->
+          Jules was inactive for 20 minutes. One bounded resume was accepted; acceptance is not proof of recovery."
+              continue
+            fi
+            recovery_epoch="$(date -u -d "$recovery_time" +%s 2>/dev/null || true)"
+            [[ -n "$recovery_epoch" ]] || continue
+            (( now - recovery_epoch >= STALL_SECONDS )) || continue
+            marker="st-jules-issue-watchdog session=${session} result=CODEX_HANDOFF_STALLED"
+            jq -e --arg m "$marker" '.[] | select(.body | contains($m))' <<<"$comments" >/dev/null || gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "<!-- ${marker} -->
+          Jules remained non-terminal after bounded recovery. The API cannot cancel it safely, so no duplicate writer was started; Codex takes over."
+          done
