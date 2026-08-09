@@ -55,10 +55,11 @@ export class PostgresCredentialRepository {
   }
 
   /**
-   * Public save / create method.
+   * Public save method (Point 2)
    */
-  async save({ ownerId, agentId, provider, capability, secretLocator, expiresAt, lastHealthStatus }) {
-    return this.create({ ownerId, agentId, provider, capability, secretLocator, expiresAt, lastHealthStatus });
+  async save({ ownerId, agentId, provider, capability, locator, secretLocator, expiresAt, lastHealthStatus }) {
+    const loc = locator || secretLocator;
+    return this.create({ ownerId, agentId, provider, capability, secretLocator: loc, expiresAt, lastHealthStatus });
   }
 
   async create({ ownerId, agentId, provider, capability, secretLocator, expiresAt, lastHealthStatus }) {
@@ -121,7 +122,6 @@ export class PostgresCredentialRepository {
         return this._toDTO(created);
       } catch (err) {
         if (this.auditRepo) {
-          // Log failed creation durably to connection pool, never to active aborted client
           await this.auditRepo.logAccess({
             credentialId: null,
             ownerId,
@@ -137,11 +137,11 @@ export class PostgresCredentialRepository {
   }
 
   /**
-   * Scoped find method (point 3 & 5).
+   * Frozen findLocatorScoped method (point 1 & 3 & 5).
    */
-  async findScoped({ ownerId, agentId, provider, capability, credentialId }) {
+  async findLocatorScoped({ ownerId, agentId, provider, capability, credentialId }) {
     if (!ownerId || !agentId || !provider || !capability || !credentialId) {
-      throw new Error("Missing required parameters for findScoped");
+      throw new Error("Missing required parameters for findLocatorScoped");
     }
 
     const sql = `
@@ -157,7 +157,7 @@ export class PostgresCredentialRepository {
           credentialId: null,
           ownerId,
           agentId,
-          action: 'read',
+          action: 'resolve',
           status: 'failure',
           errorMessage: err.message
         });
@@ -171,7 +171,7 @@ export class PostgresCredentialRepository {
           credentialId: null,
           ownerId,
           agentId,
-          action: 'read',
+          action: 'resolve',
           status: 'failure',
           errorMessage: 'Credential not found or unauthorized'
         });
@@ -185,75 +185,21 @@ export class PostgresCredentialRepository {
         credentialId: cred.id,
         ownerId,
         agentId,
-        action: 'read',
-        status: 'success'
-      });
-    }
-
-    const dto = this._toDTO(cred);
-    // Broker expects real secret locator in locator field (point 1)
-    return {
-      ...dto,
-      locator: cred.secret_locator,
-      secret_locator: cred.secret_locator
-    };
-  }
-
-  /**
-   * Internal lookup method for the broker to fetch the actual locator (point 6).
-   */
-  async resolveSecretLocatorInternal({ ownerId, agentId, provider, capability, credentialId }) {
-    if (!ownerId || !agentId || !provider || !capability || !credentialId) {
-      throw new Error("Missing required parameters for internal resolution");
-    }
-    const sql = `
-      SELECT * FROM broker_credential_metadata
-      WHERE owner_id = $1 AND agent_id = $2 AND provider = $3 AND capability = $4 AND id = $5;
-    `;
-    const res = await this.adapter.query(sql, [ownerId, agentId, provider, capability, credentialId]);
-    if (res.rowCount === 0) {
-      throw new Error("Credential not found or unauthorized");
-    }
-
-    if (this.auditRepo) {
-      await this.auditRepo.logAccess({
-        credentialId: credentialId,
-        ownerId,
-        agentId,
         action: 'resolve',
         status: 'success'
       });
     }
 
-    return res.rows[0]; // Returns raw object containing unmasked secret_locator
-  }
-
-  /**
-   * Finds by ID scoped by owner and agent (point 5).
-   */
-  async findById(id, ownerId, agentId) {
-    if (!id || !ownerId || !agentId) return null;
-    const sql = `
-      SELECT * FROM broker_credential_metadata
-      WHERE id = $1 AND owner_id = $2 AND agent_id = $3;
-    `;
-    const res = await this.adapter.query(sql, [id, ownerId, agentId]);
-    if (res.rowCount === 0) return null;
-    return this._toDTO(res.rows[0]);
-  }
-
-  /**
-   * Finds by locator scoped by owner and agent (point 5).
-   */
-  async findByLocator(secretLocator, ownerId, agentId) {
-    if (!secretLocator || !ownerId || !agentId) return null;
-    const sql = `
-      SELECT * FROM broker_credential_metadata
-      WHERE secret_locator = $1 AND owner_id = $2 AND agent_id = $3;
-    `;
-    const res = await this.adapter.query(sql, [secretLocator, ownerId, agentId]);
-    if (res.rowCount === 0) return null;
-    return this._toDTO(res.rows[0]);
+    // Returns unredacted locator string in locator/secret_locator property (point 1)
+    return {
+      id: cred.id,
+      locator: cred.secret_locator,
+      secret_locator: cred.secret_locator,
+      owner_id: cred.owner_id,
+      agent_id: cred.agent_id,
+      provider: cred.provider,
+      capability: cred.capability
+    };
   }
 
   /**
@@ -348,7 +294,6 @@ export class PostgresCredentialRepository {
         return this._toDTO(res.rows[0]);
       } catch (err) {
         if (this.auditRepo) {
-          // Log failed attempt to connection pool (never pass aborted transactional client)
           await this.auditRepo.logAccess({
             credentialId: id,
             ownerId,
@@ -436,10 +381,6 @@ export class PostgresCredentialRepository {
   /**
    * Concurrency-safe updates to metadata. Scoped by owner and agent.
    */
-  async updateMetadata(id, ownerId, { rotationStatus, expiresAt, lastHealthStatus, revokedAt }) {
-    throw new Error("updateMetadata requires both ownerId and agentId parameters");
-  }
-
   async updateMetadataScoped(id, ownerId, agentId, { rotationStatus, expiresAt, lastHealthStatus, revokedAt }) {
     if (!id || !ownerId || !agentId) {
       if (this.auditRepo && ownerId && agentId) {

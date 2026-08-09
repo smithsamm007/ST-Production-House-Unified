@@ -155,6 +155,17 @@ export class CredentialAuditRepository {
     if (!credentialId || !ownerId || !agentId) {
       throw new Error("Missing required parameters credentialId, ownerId, or agentId");
     }
+
+    // Verify credential existence and scoping first to prevent leaks/probes
+    const checkSql = `
+      SELECT 1 FROM broker_credential_metadata
+      WHERE id = $1 AND owner_id = $2 AND agent_id = $3;
+    `;
+    const check = await this.adapter.query(checkSql, [credentialId, ownerId, agentId]);
+    if (check.rowCount === 0) {
+      throw new Error("Credential not found or unauthorized");
+    }
+
     const sql = `
       SELECT * FROM broker_credential_audit_log
       WHERE credential_id = $1 AND owner_id = $2 AND agent_id = $3

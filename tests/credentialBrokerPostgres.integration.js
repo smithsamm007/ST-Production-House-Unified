@@ -241,17 +241,18 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
   });
 
   await t.test("Contract compatibility and Scoped retrieval", async () => {
-    const cred = await credentialRepo.create({
+    // Test save() with 'locator' argument (point 2)
+    const cred = await credentialRepo.save({
       ownerId: owner1Id,
       agentId: agentId1,
       provider: 'claude',
       capability: 'writing',
-      secretLocator: 'vault://st/owner1/claude/v1'
+      locator: 'vault://st/owner1/claude/v1'
     });
     assert.ok(cred.id);
 
-    // findScoped contract check (5-dimensional authorization)
-    const found = await credentialRepo.findScoped({
+    // findLocatorScoped contract check (5-dimensional authorization)
+    const found = await credentialRepo.findLocatorScoped({
       ownerId: owner1Id,
       agentId: agentId1,
       provider: 'claude',
@@ -261,13 +262,10 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
     assert.equal(found.id, cred.id);
     assert.equal(found.locator, 'vault://st/owner1/claude/v1'); // Unredacted locator as expected by broker (point 1)
 
-    // listAll, findById must redact the secret locator (point 6)
+    // listAll must redact the secret locator (point 6)
     const list = await credentialRepo.listAll(owner1Id);
     const listedCred = list.find(c => c.id === cred.id);
     assert.equal(listedCred.secret_locator, 'vault://[REDACTED]');
-
-    const byId = await credentialRepo.findById(cred.id, owner1Id, agentId1);
-    assert.equal(byId.secret_locator, 'vault://[REDACTED]');
   });
 
   await t.test("Same-Owner Cross-Agent Denial", async () => {
@@ -282,7 +280,7 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
     // Scoped lookup cross-agent denial
     await assert.rejects(
       async () => {
-        await credentialRepo.findScoped({
+        await credentialRepo.findLocatorScoped({
           ownerId: owner1Id,
           agentId: agentId2, // incorrect agent
           provider: 'claude',
@@ -292,14 +290,6 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
       },
       /Credential not found or unauthorized/
     );
-
-    // findById cross-agent denial
-    const foundById = await credentialRepo.findById(cred.id, owner1Id, agentId2);
-    assert.equal(foundById, null, "Should return null for unauthorized agent");
-
-    // findByLocator cross-agent denial
-    const foundByLocator = await credentialRepo.findByLocator('vault://st/owner1/claude/cross-agent', owner1Id, agentId2);
-    assert.equal(foundByLocator, null, "Should return null for unauthorized agent");
 
     // rotate cross-agent denial
     await assert.rejects(
