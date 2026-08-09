@@ -1,20 +1,25 @@
-name: Jules Command Files
+name: Jules Command Dispatcher
 
 on:
   push:
     branches: [main]
-    paths: ["automation/jules-commands/task-*.json"]
+    paths:
+      - "automation/jules-commands/task-*.json"
+      - ".github/workflows/jules-command-files.yml"
+  schedule:
+    - cron: "2-59/10 * * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
   issues: write
 
 concurrency:
-  group: st-jules-command-files
+  group: st-jules-command-dispatcher
   cancel-in-progress: false
 
 jobs:
-  start:
+  dispatch:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -23,46 +28,60 @@ jobs:
       JULES_API_BASE: https://jules.googleapis.com/v1alpha
     steps:
       - uses: actions/checkout@v4
-      - name: Start approved Jules session from tracking issue
+      - name: Dispatch pending authorized commands
         shell: bash
         run: |
           set -euo pipefail
           [[ -n "${JULES_API_KEY:-}" ]] || { echo "::error::JULES_API_KEY missing"; exit 1; }
-          file="$(git diff-tree --no-commit-id --name-only -r "${GITHUB_SHA}" | grep '^automation/jules-commands/task-[0-9][0-9]*-slice-[0-9][0-9]*\.json$' | head -n1)"
-          [[ -n "$file" ]] || { echo "::error::No Task command file"; exit 1; }
-
-          issue="$(jq -er '.tracking_issue' "$file")"
-          attempt="$(jq -er '.attempt' "$file")"
-          branch="$(jq -er '.starting_branch' "$file")"
-          title="$(jq -er '.title' "$file")"
-          [[ "$attempt" == "1" ]] || { echo "::error::Initial command must be attempt 1"; exit 1; }
-          [[ "$branch" == "main" ]] || { echo "::error::Initial Task 4 sessions must start from audited main"; exit 1; }
-
-          issue_json="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${issue}")"
-          [[ "$(jq -r '.state' <<<"$issue_json")" == "open" ]] || { echo "::error::Tracking issue must be open"; exit 1; }
-          comments="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${issue}/comments?per_page=100" | jq -s 'add')"
-          [[ "$(jq '[.[] | select(.body | contains("st-jules-bridge session="))] | length' <<<"$comments")" -eq 0 ]] || { echo "::error::Session already registered"; exit 1; }
-          prompt="$(jq -r '.prompt // empty' "$file")"
-          [[ -n "$prompt" ]] || prompt="$(jq -er '.body' <<<"$issue_json")"
-
           header=(-H "X-Goog-Api-Key: ${JULES_API_KEY}")
+
           curl --fail-with-body --silent --show-error "${header[@]}" "${JULES_API_BASE}/sessions?pageSize=100" >"${RUNNER_TEMP}/sessions.json"
           active="$(jq '[.sessions[]? | select(.state == "QUEUED" or .state == "PLANNING" or .state == "AWAITING_PLAN_APPROVAL" or .state == "AWAITING_USER_FEEDBACK" or .state == "IN_PROGRESS" or .state == "PAUSED")] | length' "${RUNNER_TEMP}/sessions.json")"
-          [[ "$active" -lt 3 ]] || { echo "::error::Three sessions active"; exit 1; }
 
           curl --fail-with-body --silent --show-error "${header[@]}" "${JULES_API_BASE}/sources?pageSize=100" >"${RUNNER_TEMP}/sources.json"
           owner="${GITHUB_REPOSITORY%%/*}"; repo="${GITHUB_REPOSITORY#*/}"
           source="$(jq -er --arg owner "$owner" --arg repo "$repo" '.sources[] | select(.githubRepo.owner == $owner and .githubRepo.repo == $repo) | .name' "${RUNNER_TEMP}/sources.json" | head -n1)"
-          jq -n --arg prompt "$prompt" --arg source "$source" --arg branch "$branch" --arg title "$title" \
-            '{prompt:$prompt,title:$title,requirePlanApproval:false,automationMode:"AUTO_CREATE_PR",sourceContext:{source:$source,githubRepoContext:{startingBranch:$branch}}}' >"${RUNNER_TEMP}/request.json"
-          code="$(curl --silent --show-error --output "${RUNNER_TEMP}/response.json" --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' "${header[@]}" --data-binary @"${RUNNER_TEMP}/request.json" "${JULES_API_BASE}/sessions")"
-          if [[ "$code" == "401" || "$code" == "403" || "$code" == "429" ]]; then
-            gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "<!-- st-jules-launch result=OWNER_ACTION_REQUIRED http=${code} -->
-          Jules launch paused for authentication, authorization, or free quota. No paid fallback was used."
-            exit 0
-          fi
-          [[ "$code" =~ ^2 ]] || { echo "::error::Jules create HTTP $code"; exit 1; }
-          session="$(jq -er '.id' "${RUNNER_TEMP}/response.json")"
-          state="$(jq -r '.state // "QUEUED"' "${RUNNER_TEMP}/response.json")"
-          gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "<!-- st-jules-bridge session=${session} attempt=1 state=${state} branch=${branch} -->
+
+          shopt -s nullglob
+          for file in automation/jules-commands/task-*-slice-*.json; do
+            issue="$(jq -er '.tracking_issue' "$file")"
+            attempt="$(jq -er '.attempt' "$file")"
+            branch="$(jq -er '.starting_branch' "$file")"
+            title="$(jq -er '.title' "$file")"
+            [[ "$attempt" == "1" && "$branch" == "main" ]] || { echo "::warning::Ignoring invalid command $file"; continue; }
+
+            issue_json="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${issue}")"
+            [[ "$(jq -r '.state' <<<"$issue_json")" == "open" ]] || continue
+            comments="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${issue}/comments?per_page=100" | jq -s 'add')"
+            if jq -e '.[] | select(.body | contains("st-jules-bridge session="))' <<<"$comments" >/dev/null; then
+              continue
+            fi
+
+            if (( active >= 3 )); then
+              marker="st-jules-launch result=CAPACITY_WAIT"
+              jq -e --arg m "$marker" '.[] | select(.body | contains($m))' <<<"$comments" >/dev/null || gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "<!-- ${marker} -->
+          Jules launch is queued because three sessions are active. The dispatcher will retry automatically; no paid capacity will be used."
+              continue
+            fi
+
+            prompt="$(jq -r '.prompt // empty' "$file")"
+            [[ -n "$prompt" ]] || prompt="$(jq -er '.body' <<<"$issue_json")"
+            jq -n --arg prompt "$prompt" --arg source "$source" --arg branch "$branch" --arg title "$title" \
+              '{prompt:$prompt,title:$title,requirePlanApproval:false,automationMode:"AUTO_CREATE_PR",sourceContext:{source:$source,githubRepoContext:{startingBranch:$branch}}}' >"${RUNNER_TEMP}/request-${issue}.json"
+            code="$(curl --silent --show-error --output "${RUNNER_TEMP}/response-${issue}.json" --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' "${header[@]}" --data-binary @"${RUNNER_TEMP}/request-${issue}.json" "${JULES_API_BASE}/sessions")"
+            if [[ "$code" == "401" || "$code" == "403" || "$code" == "429" ]]; then
+              marker="st-jules-launch result=OWNER_ACTION_REQUIRED http=${code}"
+              jq -e --arg m "$marker" '.[] | select(.body | contains($m))' <<<"$comments" >/dev/null || gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "<!-- ${marker} -->
+          Jules launch paused for authentication, authorization, or free quota. The dispatcher will retry; no paid fallback was used."
+              continue
+            fi
+            if [[ ! "$code" =~ ^2 ]]; then
+              echo "::warning::Issue #${issue}: Jules create HTTP $code"
+              continue
+            fi
+            session="$(jq -er '.id' "${RUNNER_TEMP}/response-${issue}.json")"
+            state="$(jq -r '.state // "QUEUED"' "${RUNNER_TEMP}/response-${issue}.json")"
+            gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "<!-- st-jules-bridge session=${session} attempt=1 state=${state} branch=${branch} -->
           Jules session **${session}** started, attempt **1/3**, state **${state}**. It must create exactly one implementation PR; no automatic merge is authorized."
+            active=$((active + 1))
+          done
