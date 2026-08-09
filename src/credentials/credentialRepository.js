@@ -3,12 +3,24 @@
  * PostgreSQL implementations must extend this class and override its methods.
  */
 export class ICredentialRepository {
-  async findScoped({ ownerId, agentId, provider, capability, id }) {
+  async findScoped({ ownerId, agentId, provider, capability, id, credentialId }) {
     throw new Error("UNIMPLEMENTED: findScoped must be implemented by a concrete subclass.");
+  }
+
+  async findById(id) {
+    throw new Error("UNIMPLEMENTED: findById must be implemented by a concrete subclass.");
+  }
+
+  async findByLocator(locator) {
+    throw new Error("UNIMPLEMENTED: findByLocator must be implemented by a concrete subclass.");
   }
 
   async save(credential) {
     throw new Error("UNIMPLEMENTED: save must be implemented by a concrete subclass.");
+  }
+
+  async create(credential) {
+    throw new Error("UNIMPLEMENTED: create must be implemented by a concrete subclass.");
   }
 
   async delete(id) {
@@ -27,10 +39,11 @@ export class TestOnlyInMemoryCredentialRepository extends ICredentialRepository 
     this.credentials = new Map();
   }
 
-  async findScoped({ ownerId, agentId, provider, capability, id }) {
-    const cred = this.credentials.get(id);
+  async findScoped({ ownerId, agentId, provider, capability, id, credentialId }) {
+    const targetId = id || credentialId;
+    const cred = this.credentials.get(targetId);
     if (!cred) return null;
-    // Enforce 5-dimensional isolation predicate mapping
+    // Enforce 5-dimensional isolation predicate mapping in one single predicate evaluation
     if (
       cred.ownerId !== ownerId ||
       cred.agentId !== agentId ||
@@ -42,12 +55,29 @@ export class TestOnlyInMemoryCredentialRepository extends ICredentialRepository 
     return cred;
   }
 
+  async findById(id) {
+    return this.credentials.get(id) || null;
+  }
+
+  async findByLocator(locator) {
+    for (const cred of this.credentials.values()) {
+      if (cred.locator === locator) {
+        return cred;
+      }
+    }
+    return null;
+  }
+
   async save(credential) {
     if (!credential || !credential.id) {
       throw new Error("INVALID_CREDENTIAL_DATA: Missing credential.id");
     }
     this.credentials.set(credential.id, credential);
     return credential;
+  }
+
+  async create(credential) {
+    return this.save(credential);
   }
 
   async delete(id) {

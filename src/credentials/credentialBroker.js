@@ -40,7 +40,7 @@ export function sanitizeErrorMessage(message) {
  * Recursively scans an object for plaintext secrets under keys resembling sensitive names.
  * Sensitive keys (e.g., contains 'password', 'secret', 'token', 'apikey', 'privatekey', 'auth')
  * must have values starting with an allowlisted locator scheme.
- * Prevents cyclic loops and handles prototype pollution/edge cases safely.
+ * Avoids walking custom prototype chains and invoking getters using own data-property descriptors.
  */
 export function scanForPlaintextSecrets(obj, visited = new Set(), path = "", isSensitive = false) {
   if (!obj || typeof obj !== "object") return;
@@ -50,26 +50,26 @@ export function scanForPlaintextSecrets(obj, visited = new Set(), path = "", isS
   }
   visited.add(obj);
 
-  // Scan prototype chain if it is a custom prototype (not Object.prototype or null)
-  const proto = Object.getPrototypeOf(obj);
-  if (proto && proto !== Object.prototype) {
-    scanForPlaintextSecrets(proto, visited, path, isSensitive);
-  }
-
-  const keys = Object.getOwnPropertyNames(obj);
-  for (const key of keys) {
-    if (!Object.prototype.hasOwnProperty.call(obj, key)) continue;
-
-    // Handle potential __proto__ or constructor own property safely
+  // Do not walk custom prototype chains. Enumerate own properties only to prevent getter invocation.
+  const descriptors = Object.getOwnPropertyDescriptors(obj);
+  for (const [key, desc] of Object.entries(descriptors)) {
+    // Skip potential prototype pollution vectors from direct key enumeration
     if (key === "__proto__" || key === "constructor") {
-      const value = obj[key];
+      const value = desc.value;
       if (value && typeof value === "object") {
         scanForPlaintextSecrets(value, visited, `${path}.${key}`, isSensitive);
       }
       continue;
     }
 
-    const value = obj[key];
+    // If it is an accessor (getter/setter), reject it immediately to prevent execution
+    if (desc.get || desc.set) {
+      throw new SecurityViolationError(
+        `Plaintext secret detected at "${path ? `${path}.${key}` : key}". Custom accessors are forbidden.`
+      );
+    }
+
+    const value = desc.value;
     const currentPath = path ? `${path}.${key}` : key;
     const lowerKey = key.toLowerCase();
 
@@ -107,6 +107,54 @@ export function scanForPlaintextSecrets(obj, visited = new Set(), path = "", isS
 }
 
 /**
+ * Validates that the resolved secret material consists only of supported, safe structures with clear zeroization paths.
+ * Rejects arrays, Dates, functions, promises, proxies/accessor-bearing objects, and arbitrary serializable DTOs.
+ */
+export function validateSecretMaterial(secret) {
+  if (secret === null || secret === undefined) {
+    throw new Error("INVALID_SECRET_MATERIAL");
+  }
+  if (typeof secret === "string") {
+    if (secret.trim() === "") {
+      throw new Error("INVALID_SECRET_MATERIAL");
+    }
+    return;
+  }
+  if (Buffer.isBuffer(secret)) {
+    if (secret.length === 0) {
+      throw new Error("INVALID_SECRET_MATERIAL");
+    }
+    return;
+  }
+
+  // Dict structure validation
+  if (typeof secret === "object") {
+    const proto = Object.getPrototypeOf(secret);
+    if (proto !== null && proto !== Object.prototype) {
+      throw new Error("INVALID_SECRET_MATERIAL"); // Reject proxies and custom prototypes
+    }
+
+    const descriptors = Object.getOwnPropertyDescriptors(secret);
+    for (const [key, desc] of Object.entries(descriptors)) {
+      if (desc.get || desc.set) {
+        throw new Error("INVALID_SECRET_MATERIAL"); // Reject custom accessors
+      }
+      const val = desc.value;
+      if (val === null || val === undefined) continue;
+      if (typeof val === "string") continue;
+      if (Buffer.isBuffer(val)) continue;
+      if (typeof val === "object") {
+        validateSecretMaterial(val); // Recursively validate nested dicts
+        continue;
+      }
+      throw new Error("INVALID_SECRET_MATERIAL"); // Reject other non-supported primitives
+    }
+    return;
+  }
+  throw new Error("INVALID_SECRET_MATERIAL");
+}
+
+/**
  * A short-lived, non-serializable lease representing a resolved credential secret.
  */
 export class CredentialLease {
@@ -129,7 +177,10 @@ export class CredentialLease {
     }
   }
 
-  getSecret() {
+  /**
+   * Internal test-only accessor. Do not use for production access.
+   */
+  _getSecretInternalOnlyForTests() {
     if (this.#isRevoked || Date.now() >= this.#expiresAt) {
       throw new Error("LEASE_EXPIRED_OR_REVOKED");
     }
@@ -182,7 +233,7 @@ export class CredentialLease {
     if (typeof callback !== "function") {
       throw new Error("CONSUME_CALLBACK_REQUIRED");
     }
-    const secret = this.getSecret();
+    const secret = this._getSecretInternalOnlyForTests();
     try {
       return await callback(secret);
     } finally {
@@ -207,8 +258,9 @@ export class CredentialBroker {
     if (!resolver || (typeof resolver !== "function" && typeof resolver.resolve !== "function")) {
       throw new Error("INVALID_RESOLVER: Resolver must be a function or implement a 'resolve' method.");
     }
-    if (!auditRepository || typeof auditRepository.recordEvent !== "function") {
-      throw new Error("INVALID_AUDIT_REPOSITORY: Audit repository must implement recordEvent method.");
+    if (!auditRepository ||
+       (typeof auditRepository.recordEvent !== "function" && typeof auditRepository.logAccess !== "function")) {
+      throw new Error("INVALID_AUDIT_REPOSITORY: Audit repository must implement recordEvent or logAccess method.");
     }
     this.repository = repository;
     this.resolver = resolver;
@@ -224,23 +276,29 @@ export class CredentialBroker {
         result = await this.resolver.resolve(locator);
       }
 
-      // Reject null, undefined, empty, or un-opaque structures
-      if (result === null || result === undefined) {
-        throw new Error("INVALID_SECRET_MATERIAL: Secret material cannot be null or undefined.");
-      }
-      if (typeof result !== "string" && !Buffer.isBuffer(result) && typeof result !== "object") {
-        throw new Error("INVALID_SECRET_MATERIAL: Unsupported secret material type.");
-      }
-      if (typeof result === "string" && result.trim() === "") {
-        throw new Error("INVALID_SECRET_MATERIAL: String secret material cannot be empty.");
-      }
-      if (Buffer.isBuffer(result) && result.length === 0) {
-        throw new Error("INVALID_SECRET_MATERIAL: Buffer secret material cannot be empty.");
-      }
+      // Explicit strict secret type check
+      validateSecretMaterial(result);
 
       return result;
     } catch (err) {
       throw new Error(`RESOLUTION_FAILED: ${sanitizeErrorMessage(err.message)}`);
+    }
+  }
+
+  async _writeAudit(ownerId, payload) {
+    if (!this.auditRepository) {
+      throw new Error("AUDIT_PERSISTENCE_FAILURE");
+    }
+    try {
+      if (typeof this.auditRepository.recordEvent === "function") {
+        await this.auditRepository.recordEvent(ownerId, "credential_access", payload);
+      } else if (typeof this.auditRepository.logAccess === "function") {
+        await this.auditRepository.logAccess(ownerId, payload);
+      } else {
+        throw new Error("NO_VALID_AUDIT_METHOD");
+      }
+    } catch (err) {
+      throw new Error("AUDIT_PERSISTENCE_FAILURE");
     }
   }
 
@@ -313,7 +371,8 @@ export class CredentialBroker {
         agentId,
         provider,
         capability,
-        id: credentialId
+        id: credentialId,
+        credentialId
       });
 
       if (!credential) {
@@ -321,13 +380,23 @@ export class CredentialBroker {
         throw new Error("ACCESS_DENIED");
       }
 
-      const rawSecret = await this._resolveLocator(credential.locator);
+      // Immediately revalidate locator scheme before resolution
+      const locator = credential.locator;
+      if (typeof locator !== "string") {
+        throw new Error("ACCESS_DENIED");
+      }
+      const isAllowedScheme = ALLOWLISTED_SCHEMES.some(scheme => locator.startsWith(scheme));
+      if (!isAllowedScheme) {
+        throw new Error("ACCESS_DENIED");
+      }
+
+      const rawSecret = await this._resolveLocator(locator);
 
       lease = new CredentialLease(rawSecret, lifetimeMs);
       auditOutcome = "success";
 
-      // Persist access audit safely - never contain locator or secret!
-      await this.auditRepository.recordEvent(ownerId, "credential_access", {
+      // Persist access audit safely using append-only logAccess / recordEvent
+      await this._writeAudit(ownerId, {
         ownerId,
         agentId,
         provider,
@@ -346,17 +415,15 @@ export class CredentialBroker {
 
       // Force durable audit recording even on access failure
       try {
-        if (this.auditRepository && typeof this.auditRepository.recordEvent === "function") {
-          await this.auditRepository.recordEvent(ownerId, "credential_access", {
-            ownerId,
-            agentId: agentId || "unknown",
-            provider: provider || "unknown",
-            capability: capability || "unknown",
-            credentialId: credentialId || "unknown",
-            outcome: auditOutcome,
-            timestamp: new Date().toISOString()
-          });
-        }
+        await this._writeAudit(ownerId, {
+          ownerId,
+          agentId: agentId || "unknown",
+          provider: provider || "unknown",
+          capability: capability || "unknown",
+          credentialId: credentialId || "unknown",
+          outcome: auditOutcome,
+          timestamp: new Date().toISOString()
+        });
       } catch (auditErr) {
         // Fail-closed on audit persistence failure
         throw new Error("AUDIT_PERSISTENCE_FAILURE");
