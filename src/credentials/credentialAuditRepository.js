@@ -20,11 +20,14 @@ export class CredentialAuditRepository {
   }
 
   validateFields({ action, status, clientIp, userAgent }) {
-    if (!action || typeof action !== "string" || action.length < 1 || action.length > 100) {
-      throw new Error("action length must be between 1 and 100 characters");
+    const ALLOWED_ACTIONS = ['create', 'read', 'rotate', 'revoke', 'resolve', 'update_metadata'];
+    const ALLOWED_STATUSES = ['success', 'failure'];
+
+    if (!action || typeof action !== "string" || !ALLOWED_ACTIONS.includes(action)) {
+      throw new Error(`Invalid or disallowed action: ${action}`);
     }
-    if (!status || typeof status !== "string" || status.length < 1 || status.length > 100) {
-      throw new Error("status length must be between 1 and 100 characters");
+    if (!status || typeof status !== "string" || !ALLOWED_STATUSES.includes(status)) {
+      throw new Error(`Invalid or disallowed status: ${status}`);
     }
     if (clientIp) {
       if (typeof clientIp !== "string" || clientIp.length > 45) {
@@ -48,8 +51,31 @@ export class CredentialAuditRepository {
   /**
    * Logs an append-only credential access/action.
    */
-  async logAccess({ credentialId, ownerId, agentId, action, status, errorMessage, clientIp, userAgent }, client = null) {
-    if (!credentialId) throw new Error("Missing credentialId");
+  async logAccess(first, ...rest) {
+    let params;
+    let client = null;
+
+    if (first && typeof first === "object" && !first.query) {
+      // It is an object-shaped call: { credentialId, ownerId, ... }
+      params = first;
+      client = rest[0] || null;
+    } else {
+      // It is a positional call (point 1): logAccess(credentialId, ownerId, agentId, action, status, errorMessage, clientIp, userAgent, client)
+      params = {
+        credentialId: first,
+        ownerId: rest[0],
+        agentId: rest[1],
+        action: rest[2],
+        status: rest[3],
+        errorMessage: rest[4],
+        clientIp: rest[5],
+        userAgent: rest[6],
+      };
+      client = rest[7] || null;
+    }
+
+    const { credentialId, ownerId, agentId, action, status, errorMessage, clientIp, userAgent } = params;
+
     if (!ownerId) throw new Error("Missing ownerId");
     if (!agentId) throw new Error("Missing agentId");
 
@@ -85,7 +111,7 @@ export class CredentialAuditRepository {
     `;
     const executor = client || this.adapter;
     const res = await executor.query(sql, [
-      credentialId,
+      credentialId || null,
       ownerId,
       agentId,
       action,
@@ -98,30 +124,34 @@ export class CredentialAuditRepository {
   }
 
   /**
-   * Lists all audit logs belonging to an owner.
+   * Lists all audit logs belonging to an owner scoped strictly by owner+agent (point 2).
    */
-  async listLogsByOwner(ownerId) {
-    if (!ownerId) return [];
+  async listLogsByOwner(ownerId, agentId) {
+    if (!ownerId || !agentId) {
+      throw new Error("Missing required parameters ownerId or agentId");
+    }
     const sql = `
       SELECT * FROM broker_credential_audit_log
-      WHERE owner_id = $1
+      WHERE owner_id = $1 AND agent_id = $2
       ORDER BY performed_at DESC;
     `;
-    const res = await this.adapter.query(sql, [ownerId]);
+    const res = await this.adapter.query(sql, [ownerId, agentId]);
     return res.rows.map(row => this._toDTO(row));
   }
 
   /**
-   * Lists audit logs for a specific credential, ensuring owner isolation.
+   * Lists audit logs for a specific credential, ensuring owner and agent isolation (point 2).
    */
-  async listLogsByCredential(credentialId, ownerId) {
-    if (!credentialId || !ownerId) return [];
+  async listLogsByCredential(credentialId, ownerId, agentId) {
+    if (!credentialId || !ownerId || !agentId) {
+      throw new Error("Missing required parameters credentialId, ownerId, or agentId");
+    }
     const sql = `
       SELECT * FROM broker_credential_audit_log
-      WHERE credential_id = $1 AND owner_id = $2
+      WHERE credential_id = $1 AND owner_id = $2 AND agent_id = $3
       ORDER BY performed_at DESC;
     `;
-    const res = await this.adapter.query(sql, [credentialId, ownerId]);
+    const res = await this.adapter.query(sql, [credentialId, ownerId, agentId]);
     return res.rows.map(row => this._toDTO(row));
   }
 }

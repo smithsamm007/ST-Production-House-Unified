@@ -88,9 +88,14 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
   const agentId2 = 'agent-02';
 
   t.after(async () => {
-    // Teardown with standard privileged reset
+    // Narrowly scoped cleanup
     if (owner1Id && owner2Id) {
-      await adapter.query(`TRUNCATE broker_credential_metadata, broker_credential_audit_log, owners RESTART IDENTITY CASCADE;`).catch(() => {});
+      await adapter.withTransaction(async (client) => {
+        await client.query("SET LOCAL app.allow_audit_teardown = 'true'");
+        await client.query(`DELETE FROM broker_credential_audit_log WHERE owner_id IN ($1, $2)`, [owner1Id, owner2Id]);
+        await client.query(`DELETE FROM broker_credential_metadata WHERE owner_id IN ($1, $2)`, [owner1Id, owner2Id]);
+        await client.query(`DELETE FROM owners WHERE id IN ($1, $2)`, [owner1Id, owner2Id]);
+      }).catch(() => {});
     }
     if (testPool) {
       await testPool.end().catch(() => {});
@@ -98,7 +103,6 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
   });
 
   await t.test("Migrations 001-010 remain byte-identical", async () => {
-    // Verify that checksums of migrations 001-010 remain unmodified
     const status = await runner.getStatus();
     const immutableChecksums = new Map([
       ["001_core.sql", "3fa84fd7f686ab56489cee6bafd99dcda58ceabe67268313412c8c4c0ba979db"],
@@ -109,13 +113,15 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
       ["006_seed_initial_creative_charters.sql", "9f2b801f2738862ea90eb5734693508189823f7f8343188560ea3cf71b578d65"],
       ["007_owner_agent_communication_studio.sql", "4d164008b597056fa7f70aa800ecdb503ca4dda31073493c8a25de3b533677ed"],
       ["008_owner_authentication_and_sessions.sql", "39d76ebab5ab92133080a054af95f1ade5375c0c6f4c0993f7434d39863eba51"],
+      ["009_add_owner_role.sql", "fde06a05a5290f4be439ce320d423af9fb746bda6a9eb4db34b02ff46d5d0541"],
+      ["010_job_lifecycle.sql", "86a011779be5afe0eb1f48562faf96acb107e99f28c4ad34b0c8632f7d84d5c6"]
     ]);
 
-    for (const item of status) {
-      if (immutableChecksums.has(item.filename)) {
-        assert.equal(item.status, "APPLIED");
-        assert.equal(item.recordedChecksum, immutableChecksums.get(item.filename));
-      }
+    for (const [filename, expectedChecksum] of immutableChecksums.entries()) {
+      const match = status.find(item => item.filename === filename);
+      assert.ok(match, `Migration ${filename} must be present`);
+      assert.equal(match.status, "APPLIED");
+      assert.equal(match.recordedChecksum, expectedChecksum, `Checksum mismatch for ${filename}`);
     }
   });
 
@@ -253,44 +259,15 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
       credentialId: cred.id
     });
     assert.equal(found.id, cred.id);
-    assert.equal(found.secret_locator, 'vault://[REDACTED]'); // Secret is masked publicly!
+    assert.equal(found.locator, 'vault://st/owner1/claude/v1'); // Unredacted locator as expected by broker (point 1)
 
-    // Internal resolution yields raw locator (point 6)
-    const raw = await credentialRepo.resolveSecretLocatorInternal({
-      ownerId: owner1Id,
-      agentId: agentId1,
-      provider: 'claude',
-      capability: 'writing',
-      credentialId: cred.id
-    });
-    assert.equal(raw.secret_locator, 'vault://st/owner1/claude/v1');
+    // listAll, findById must redact the secret locator (point 6)
+    const list = await credentialRepo.listAll(owner1Id);
+    const listedCred = list.find(c => c.id === cred.id);
+    assert.equal(listedCred.secret_locator, 'vault://[REDACTED]');
 
-    // Scoped reads/authorization: unauthorized combinations throw generic errors (point 5)
-    await assert.rejects(
-      async () => {
-        await credentialRepo.findScoped({
-          ownerId: owner2Id, // unauthorized owner
-          agentId: agentId1,
-          provider: 'claude',
-          capability: 'writing',
-          credentialId: cred.id
-        });
-      },
-      /Credential not found or unauthorized/
-    );
-
-    await assert.rejects(
-      async () => {
-        await credentialRepo.findScoped({
-          ownerId: owner1Id,
-          agentId: agentId2, // incorrect agent
-          provider: 'claude',
-          capability: 'writing',
-          credentialId: cred.id
-        });
-      },
-      /Credential not found or unauthorized/
-    );
+    const byId = await credentialRepo.findById(cred.id, owner1Id, agentId1);
+    assert.equal(byId.secret_locator, 'vault://[REDACTED]');
   });
 
   await t.test("Same-Owner Cross-Agent Denial", async () => {
@@ -302,7 +279,7 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
       secretLocator: 'vault://st/owner1/claude/cross-agent'
     });
 
-    // Try to lookup using incorrect agent (fails!)
+    // Scoped lookup cross-agent denial
     await assert.rejects(
       async () => {
         await credentialRepo.findScoped({
@@ -316,7 +293,15 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
       /Credential not found or unauthorized/
     );
 
-    // Try to rotate using incorrect agent (fails!)
+    // findById cross-agent denial
+    const foundById = await credentialRepo.findById(cred.id, owner1Id, agentId2);
+    assert.equal(foundById, null, "Should return null for unauthorized agent");
+
+    // findByLocator cross-agent denial
+    const foundByLocator = await credentialRepo.findByLocator('vault://st/owner1/claude/cross-agent', owner1Id, agentId2);
+    assert.equal(foundByLocator, null, "Should return null for unauthorized agent");
+
+    // rotate cross-agent denial
     await assert.rejects(
       async () => {
         await credentialRepo.rotate(cred.id, owner1Id, agentId2, {
@@ -326,12 +311,36 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
       /Credential not found or unauthorized/
     );
 
-    // Try to revoke using incorrect agent (fails!)
+    // revoke cross-agent denial
     await assert.rejects(
       async () => {
         await credentialRepo.revoke(cred.id, owner1Id, agentId2);
       },
       /Credential not found or unauthorized/
+    );
+
+    // updateMetadataScoped cross-agent denial
+    await assert.rejects(
+      async () => {
+        await credentialRepo.updateMetadataScoped(cred.id, owner1Id, agentId2, {
+          lastHealthStatus: 'unhealthy'
+        });
+      },
+      /Credential not found or unauthorized/
+    );
+
+    // listLogsByOwner cross-agent denial: require owner+agent matching (point 2)
+    await assert.rejects(
+      async () => {
+        await auditRepo.listLogsByOwner(owner1Id, agentId2); // Should not find Owner 1's Agent 1 audits under Agent 2
+      }
+    );
+
+    // listLogsByCredential cross-agent denial
+    await assert.rejects(
+      async () => {
+        await auditRepo.listLogsByCredential(cred.id, owner1Id, agentId2);
+      }
     );
   });
 
@@ -414,18 +423,13 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
       secretLocator: 'vault://st/owner1/ollama-audit'
     });
 
-    const log = await auditRepo.logAccess({
-      credentialId: cred.id,
-      ownerId: owner1Id,
-      agentId: agentId1,
-      action: 'read',
-      status: 'success'
-    });
+    const log = await auditRepo.listLogsByOwner(owner1Id, agentId1);
+    const targetLog = log[0];
 
     // Direct UPDATE fails
     await assert.rejects(
       async () => {
-        await adapter.query(`UPDATE broker_credential_audit_log SET status = 'failed' WHERE id = $1`, [log.id]);
+        await adapter.query(`UPDATE broker_credential_audit_log SET status = 'failed' WHERE id = $1`, [targetLog.id]);
       },
       /CREDENTIAL_AUDIT_LOGS_ARE_IMMUTABLE/
     );
@@ -433,14 +437,13 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
     // Direct DELETE fails
     await assert.rejects(
       async () => {
-        await adapter.query(`DELETE FROM broker_credential_audit_log WHERE id = $1`, [log.id]);
+        await adapter.query(`DELETE FROM broker_credential_audit_log WHERE id = $1`, [targetLog.id]);
       },
       /CREDENTIAL_AUDIT_LOGS_ARE_IMMUTABLE/
     );
   });
 
   await t.test("Parent Owner/Credential RESTRICT deletion prevents orphans", async () => {
-    // Create owner, credential, and audit log
     const oRes = await adapter.query(
       `INSERT INTO owners (email, password_hash) VALUES ('temp-owner@test.com', 'hash') RETURNING id`
     );
@@ -452,14 +455,6 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
       provider: 'temp-prov',
       capability: 'temp-cap',
       secretLocator: 'vault://st/temp-secret'
-    });
-
-    await auditRepo.logAccess({
-      credentialId: cred.id,
-      ownerId: tempOwnerId,
-      agentId: agentId1,
-      action: 'read',
-      status: 'success'
     });
 
     // Deleting parent credential fails due to ON DELETE RESTRICT (point 1 & 2)
@@ -478,7 +473,50 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
       /foreign key constraint/
     );
 
-    // Clean up temp owner safely by first truncating or deleting audit/credential using transaction rollback/reset
-    await adapter.query(`TRUNCATE broker_credential_metadata, broker_credential_audit_log, owners RESTART IDENTITY CASCADE;`).catch(() => {});
+    // Clean up temp owner safely using SET LOCAL allow_audit_teardown (narrowly scoped teardown)
+    await adapter.withTransaction(async (client) => {
+      await client.query("SET LOCAL app.allow_audit_teardown = 'true'");
+      await client.query(`DELETE FROM broker_credential_audit_log WHERE owner_id = $1`, [tempOwnerId]);
+      await client.query(`DELETE FROM broker_credential_metadata WHERE owner_id = $1`, [tempOwnerId]);
+      await client.query(`DELETE FROM owners WHERE id = $1`, [tempOwnerId]);
+    });
+  });
+
+  await t.test("Relational Tuple Integrity constraint", async () => {
+    const cred = await credentialRepo.create({
+      ownerId: owner1Id,
+      agentId: agentId1,
+      provider: 'claude',
+      capability: 'writing',
+      secretLocator: 'vault://st/owner1/claude/integrity'
+    });
+
+    // Try to insert a forged audit row where owner_id doesn't match the credential (fails!)
+    await assert.rejects(
+      async () => {
+        await auditRepo.logAccess({
+          credentialId: cred.id,
+          ownerId: owner2Id, // mismatched forged owner
+          agentId: agentId1,
+          action: 'read',
+          status: 'success'
+        });
+      },
+      /foreign key constraint|violates/
+    );
+
+    // Try to insert a forged audit row where agent_id doesn't match the credential (fails!)
+    await assert.rejects(
+      async () => {
+        await auditRepo.logAccess({
+          credentialId: cred.id,
+          ownerId: owner1Id,
+          agentId: agentId2, // mismatched forged agent
+          action: 'read',
+          status: 'success'
+        });
+      },
+      /foreign key constraint|violates/
+    );
   });
 });

@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS broker_credential_metadata (
   updated_at timestamptz NOT NULL DEFAULT now(),
   -- Unique constraint for owner/agent/provider/capability/locator configuration
   UNIQUE (owner_id, agent_id, provider, capability, secret_locator),
+  CONSTRAINT broker_credential_metadata_composite_key UNIQUE (id, owner_id, agent_id),
   -- Prevent plaintext secrets: must start with safe prefix like 'vault://' or 'opaque://'
   CONSTRAINT no_plaintext_secrets_locator CHECK (
     secret_locator LIKE 'vault://%' OR secret_locator LIKE 'opaque://%'
@@ -34,7 +35,7 @@ CREATE INDEX IF NOT EXISTS broker_credential_metadata_owner_agent_idx ON broker_
 -- Standard referential integrity enforced using non-cascading ON DELETE RESTRICT (point 1)
 CREATE TABLE IF NOT EXISTS broker_credential_audit_log (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  credential_id uuid NOT NULL REFERENCES broker_credential_metadata(id) ON DELETE RESTRICT,
+  credential_id uuid, -- Nullable for failed lookups
   owner_id uuid NOT NULL REFERENCES owners(id) ON DELETE RESTRICT,
   agent_id text NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
   action text NOT NULL,
@@ -43,15 +44,19 @@ CREATE TABLE IF NOT EXISTS broker_credential_audit_log (
   error_message text,
   client_ip text,
   user_agent text,
+  -- Composite foreign key enforcing relational tuple integrity!
+  FOREIGN KEY (credential_id, owner_id, agent_id) REFERENCES broker_credential_metadata(id, owner_id, agent_id) ON DELETE RESTRICT,
   -- Length and value validations
   CONSTRAINT valid_action_len CHECK (char_length(action) BETWEEN 1 AND 100),
   CONSTRAINT valid_status_len CHECK (char_length(status) BETWEEN 1 AND 100),
   CONSTRAINT valid_client_ip CHECK (char_length(client_ip) <= 45),
-  CONSTRAINT valid_user_agent CHECK (char_length(user_agent) <= 500)
+  CONSTRAINT valid_user_agent CHECK (char_length(user_agent) <= 500),
+  CONSTRAINT valid_action_value CHECK (action IN ('create', 'read', 'rotate', 'revoke', 'resolve', 'update_metadata')),
+  CONSTRAINT valid_status_value CHECK (status IN ('success', 'failure'))
 );
 
 -- Index for the audit log
-CREATE INDEX IF NOT EXISTS broker_credential_audit_log_owner_idx ON broker_credential_audit_log (owner_id);
+CREATE INDEX IF NOT EXISTS broker_credential_audit_log_owner_agent_idx ON broker_credential_audit_log (owner_id, agent_id);
 CREATE INDEX IF NOT EXISTS broker_credential_audit_log_credential_idx ON broker_credential_audit_log (credential_id);
 
 -- Enforce append-only audit: trigger function to prevent mutations (updates or deletes)
