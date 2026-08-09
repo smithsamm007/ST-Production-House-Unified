@@ -83,9 +83,9 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
   );
   owner2Id = o2Res.rows[0].id;
 
-  // We have 20 preloaded agents. Let's use 'jarvis' and 'sherlock'
-  const agentId1 = 'jarvis';
-  const agentId2 = 'sherlock';
+  // We have 20 preloaded agents. Let's use 'agent-01' (JARVIS) and 'agent-02' (SHERLOCK)
+  const agentId1 = 'agent-01';
+  const agentId2 = 'agent-02';
 
   t.after(async () => {
     // Teardown
