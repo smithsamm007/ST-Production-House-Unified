@@ -19,7 +19,7 @@ export class CredentialAuditRepository {
     return Object.freeze(dto);
   }
 
-  validateFields({ action, status, clientIp, userAgent }) {
+  validateFields({ action, status, provider, capability, errorCode, clientIp, userAgent }) {
     const ALLOWED_ACTIONS = ['create', 'read', 'rotate', 'revoke', 'resolve', 'update_metadata'];
     const ALLOWED_STATUSES = ['success', 'failure'];
 
@@ -28,6 +28,11 @@ export class CredentialAuditRepository {
     }
     if (!status || typeof status !== "string" || !ALLOWED_STATUSES.includes(status)) {
       throw new Error(`Invalid or disallowed status: ${status}`);
+    }
+    for (const [name, value] of [["provider", provider], ["capability", capability], ["errorCode", errorCode]]) {
+      if (value != null && (typeof value !== "string" || value.length < 1 || value.length > 100)) {
+        throw new Error(`${name} must be between 1 and 100 characters`);
+      }
     }
     if (clientIp) {
       if (typeof clientIp !== "string" || clientIp.length > 45) {
@@ -51,47 +56,36 @@ export class CredentialAuditRepository {
   /**
    * Logs an append-only credential access/action.
    */
-  async logAccess(first, ...rest) {
-    let params;
-    let client = null;
-
-    if (first && typeof first === "object" && !first.query) {
-      // It is an object-shaped call: { credentialId, ownerId, ... }
-      params = first;
-      client = rest[0] || null;
-    } else {
-      // It is a positional call (point 1): logAccess(credentialId, ownerId, agentId, action, status, errorMessage, clientIp, userAgent, client)
-      params = {
-        credentialId: first,
-        ownerId: rest[0],
-        agentId: rest[1],
-        action: rest[2],
-        status: rest[3],
-        errorMessage: rest[4],
-        clientIp: rest[5],
-        userAgent: rest[6],
-      };
-      client = rest[7] || null;
+  async logAccess(params, client = null) {
+    if (!params || typeof params !== "object" || params.query) {
+      throw new Error("Credential audit requires one object-shaped payload");
     }
-
-    const { credentialId, ownerId, agentId, action, status, errorMessage, clientIp, userAgent } = params;
+    const {
+      credentialId,
+      ownerId,
+      agentId,
+      provider,
+      capability,
+      action,
+      status,
+      errorCode,
+      errorMessage,
+      clientIp,
+      userAgent
+    } = params;
 
     if (!ownerId) throw new Error("Missing ownerId");
     if (!agentId) throw new Error("Missing agentId");
+    this.validateFields({ action, status, provider, capability, errorCode, clientIp, userAgent });
 
-    this.validateFields({ action, status, clientIp, userAgent });
-
-    // Sanitize error message to prevent leaks of any sensitive data (point 6)
     let cleanErrorMessage = null;
     if (errorMessage) {
       try {
-        const tempClean = sanitizeErrorMessage(errorMessage);
-        cleanErrorMessage = sanitizeError(new Error(tempClean)).message;
-        // Bounded constraint checks for message
+        cleanErrorMessage = sanitizeError(new Error(sanitizeErrorMessage(errorMessage))).message;
         if (cleanErrorMessage.length > 1000) {
           cleanErrorMessage = cleanErrorMessage.substring(0, 1000) + "... [TRUNCATED]";
         }
-      } catch (e) {
+      } catch {
         cleanErrorMessage = "[REDACTED_ERROR_SANITIZATION_FAILED]";
       }
     }
@@ -101,12 +95,15 @@ export class CredentialAuditRepository {
         credential_id,
         owner_id,
         agent_id,
+        provider,
+        capability,
+        error_code,
         action,
         status,
         error_message,
         client_ip,
         user_agent
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       RETURNING *;
     `;
     const executor = client || this.adapter;
@@ -114,6 +111,9 @@ export class CredentialAuditRepository {
       credentialId || null,
       ownerId,
       agentId,
+      provider || null,
+      capability || null,
+      errorCode || null,
       action,
       status,
       cleanErrorMessage,
