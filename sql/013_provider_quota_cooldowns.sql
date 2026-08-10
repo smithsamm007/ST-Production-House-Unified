@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS provider_quota_limits (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (owner_id, agent_id, slot, provider, credential_key),
+  UNIQUE (id, owner_id, agent_id, slot, provider, credential_key),
   CONSTRAINT provider_quota_counts_bounded CHECK (usage_count + reserved_count <= quota_limit),
   CONSTRAINT provider_quota_credential_identity CHECK (
     (credential_id IS NULL AND credential_key = '__local__') OR
@@ -45,7 +46,7 @@ CREATE INDEX IF NOT EXISTS provider_quota_cooldown_idx
 
 CREATE TABLE IF NOT EXISTS provider_quota_reservations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  quota_id uuid NOT NULL REFERENCES provider_quota_limits(id) ON DELETE RESTRICT,
+  quota_id uuid NOT NULL,
   owner_id uuid NOT NULL REFERENCES owners(id) ON DELETE RESTRICT,
   agent_id text NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
   slot text NOT NULL CHECK (slot IN ('primary', 'secondary', 'tertiary', 'emergency_1', 'emergency_2')),
@@ -60,7 +61,14 @@ CREATE TABLE IF NOT EXISTS provider_quota_reservations (
   released_at timestamptz,
   UNIQUE (owner_id, agent_id, idempotency_key),
   CONSTRAINT provider_quota_reservation_scope_fk
-    FOREIGN KEY (quota_id) REFERENCES provider_quota_limits(id) ON DELETE RESTRICT
+    FOREIGN KEY (quota_id, owner_id, agent_id, slot, provider, credential_key)
+    REFERENCES provider_quota_limits (id, owner_id, agent_id, slot, provider, credential_key)
+    ON DELETE RESTRICT,
+  CONSTRAINT provider_quota_reservation_terminal_timestamps CHECK (
+    (status = 'reserved' AND committed_at IS NULL AND released_at IS NULL) OR
+    (status = 'committed' AND committed_at IS NOT NULL AND released_at IS NULL) OR
+    (status = 'released' AND committed_at IS NULL AND released_at IS NOT NULL)
+  )
 );
 
 CREATE INDEX IF NOT EXISTS provider_quota_reservation_scope_idx
