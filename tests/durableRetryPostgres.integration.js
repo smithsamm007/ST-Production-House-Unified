@@ -425,6 +425,7 @@ test("Durable Retry PostgreSQL Live Integration Suite", async (t) => {
 
       } finally {
         await adapter.query("DELETE FROM jobs WHERE agent_id IN ($1, $2);", [agentId1, agentId2]);
+        await adapter.query("DELETE FROM communication_sessions WHERE id = $1;", [session1]);
         await adapter.query("DELETE FROM agents WHERE id IN ($1, $2);", [agentId1, agentId2]);
         await adapter.query("DELETE FROM owners WHERE id IN ($1, $2);", [ownerId, otherOwnerId]);
       }
