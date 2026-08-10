@@ -57,50 +57,6 @@ export function deepRedactAndSanitize(val) {
   return val;
 }
 
-const EVIDENCE_PAYLOAD_FIELDS = new Set([
-  "jobId",
-  "agentId",
-  "ownerId",
-  "capability",
-  "attempts",
-  "maxAttempts",
-  "previousMaxAttempts",
-  "newMaxAttempts",
-  "additionalAttempts",
-  "classification",
-  "reason",
-  "error",
-  "nextAttemptAt",
-  "delaySec",
-  "approvalEvidenceId",
-  "consumedAt",
-  "action",
-]);
-
-/**
- * Preserves the bounded, documented evidence schema while dropping unknown keys
- * and sanitizing every persisted string. Nested objects and arrays are rejected
- * because retry evidence is intentionally a flat DTO.
- */
-export function sanitizeEvidencePayload(payload) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return {};
-
-  const clean = {};
-  for (const [key, value] of Object.entries(payload)) {
-    if (!EVIDENCE_PAYLOAD_FIELDS.has(key)) continue;
-
-    if (typeof value === "string") {
-      clean[key] = sanitizeErrorMessage(value).substring(0, 500);
-    } else if (typeof value === "number" && Number.isFinite(value)) {
-      clean[key] = value;
-    } else if (typeof value === "boolean" || value === null) {
-      clean[key] = value;
-    }
-  }
-
-  return clean;
-}
-
 /**
  * Builds a secret-safe, bounded error payload DTO for database persistence.
  */
@@ -225,7 +181,7 @@ export async function appendEvidenceEventXact(client, { subjectId, kind, classif
   const occurredAt = new Date().toISOString();
 
   // Clean payload by recursively redacting secrets
-  const cleanPayload = sanitizeEvidencePayload(payload || {});
+  const cleanPayload = deepRedactAndSanitize(payload || {});
 
   const record = {
     id: recordId,
