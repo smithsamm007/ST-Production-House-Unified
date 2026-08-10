@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { QuotaLedger } from "../src/quotas/quotaLedger.js";
 import { RecoveryContractManager } from "../src/recovery/recoveryContract.js";
 import { TestOnlyInMemoryCredentialHealthRegistry } from "../src/providers/credentialHealth.js";
+import { CredentialBroker } from "../src/credentials/credentialBroker.js";
 import {
   ProviderConfigurationRouter,
   validateTaskProviderConfiguration,
@@ -793,4 +794,69 @@ test("ProviderConfigurationRouter - remote credential is bounded to lease callba
   assert.equal(observedCredential, "bounded-provider-secret");
   assert.equal(credentialBroker.lastLease.revoked, true);
   assert.equal(credentialBroker.lastLease.secret, null);
+});
+
+
+test("ProviderConfigurationRouter composes with the production CredentialBroker contract", async () => {
+  const records = new Map();
+  const auditEvents = [];
+  const repository = {
+    async save(record) {
+      const credentialId = record.credentialId || "cred-gemini-01";
+      records.set(credentialId, { ...record, credentialId });
+      return { id: credentialId };
+    },
+    async findLocatorScoped(scope) {
+      const record = records.get(scope.credentialId);
+      if (!record) return null;
+      if (
+        record.ownerId !== scope.ownerId ||
+        record.agentId !== scope.agentId ||
+        record.provider !== scope.provider ||
+        record.capability !== scope.capability
+      ) return null;
+      return record.locator;
+    }
+  };
+  const credentialBroker = new CredentialBroker({
+    repository,
+    resolver: async () => "production-contract-secret",
+    auditRepository: {
+      async recordEvent(event) {
+        auditEvents.push(event);
+      }
+    }
+  });
+  await credentialBroker.register("owner-01", {
+    id: "cred-gemini-01",
+    agentId: "agent-01",
+    provider: "gemini",
+    capability: "story.universe_and_continuity",
+    locator: "vault://st/owner-01/agent-01/gemini"
+  });
+
+  const quotaLedger = new QuotaLedger();
+  quotaLedger.configureQuota("owner-01:agent-01", "primary", "gemini", "cred-gemini-01", { limit: 1 });
+  const recoveryManager = new RecoveryContractManager();
+  const credentialHealthRegistry = new TestOnlyInMemoryCredentialHealthRegistry();
+  let observedSecret;
+
+  const router = new ProviderConfigurationRouter({
+    gemini: async ({ credential }) => {
+      observedSecret = credential;
+      return { output: "verified", evidence: { providerResponseId: "response-contract-1" } };
+    }
+  }, { quotaLedger, recoveryManager, credentialHealthRegistry, credentialBroker });
+
+  const result = await router.execute({
+    ownerId: "owner-01",
+    agentId: "agent-01",
+    taskId: "production-contract",
+    slots: createValidSlots(),
+    input: { prompt: "safe" }
+  });
+
+  assert.equal(result.output, "verified");
+  assert.equal(observedSecret, "production-contract-secret");
+  assert.equal(auditEvents.filter((event) => event.action === "resolve" && event.status === "success").length, 1);
 });
