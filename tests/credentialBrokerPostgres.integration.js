@@ -16,17 +16,28 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
   let pgAvailable = false;
   let testPool = null;
   let lastConnectError = null;
+  const isolatedSchema = `credential_broker_${process.pid}_${Date.now()}`;
 
   if (dbUrl || process.env.PGHOST || isCI) {
+    const connectionOptions = {
+      connectionString: dbUrl || 'postgresql://st_app:st_test_password@localhost:5432/st_production_test',
+      host: process.env.PGHOST,
+      port: process.env.PGPORT ? parseInt(process.env.PGPORT, 10) : undefined,
+      user: process.env.PGUSER,
+      password: process.env.PGPASSWORD,
+      database: process.env.PGDATABASE,
+      connectionTimeoutMillis: 5000,
+    };
+    let bootstrapPool = null;
     try {
+      bootstrapPool = new pg.Pool(connectionOptions);
+      await bootstrapPool.query(`CREATE SCHEMA "${isolatedSchema}"`);
+      await bootstrapPool.end();
+      bootstrapPool = null;
+
       testPool = new pg.Pool({
-        connectionString: dbUrl || 'postgresql://st_app:st_test_password@localhost:5432/st_production_test',
-        host: process.env.PGHOST,
-        port: process.env.PGPORT ? parseInt(process.env.PGPORT, 10) : undefined,
-        user: process.env.PGUSER,
-        password: process.env.PGPASSWORD,
-        database: process.env.PGDATABASE,
-        connectionTimeoutMillis: 5000,
+        ...connectionOptions,
+        options: `-c search_path=${isolatedSchema},public`
       });
       const client = await testPool.connect();
       await client.query('SELECT 1');
@@ -35,6 +46,7 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
     } catch (err) {
       pgAvailable = false;
       lastConnectError = err;
+      if (bootstrapPool) await bootstrapPool.end().catch(() => {});
       if (testPool) {
         await testPool.end().catch(() => {});
         testPool = null;
@@ -89,16 +101,8 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
   const agentId2 = 'agent-02';
 
   t.after(async () => {
-    // Narrowly scoped teardown (Point 9)
-    if (owner1Id && owner2Id) {
-      await adapter.withTransaction(async (client) => {
-        await client.query("SET LOCAL app.allow_audit_teardown = 'true'");
-        await client.query(`DELETE FROM broker_credential_audit_log WHERE owner_id IN ($1, $2)`, [owner1Id, owner2Id]);
-        await client.query(`DELETE FROM broker_credential_metadata WHERE owner_id IN ($1, $2)`, [owner1Id, owner2Id]);
-        await client.query(`DELETE FROM owners WHERE id IN ($1, $2)`, [owner1Id, owner2Id]);
-      }).catch(() => {});
-    }
     if (testPool) {
+      await testPool.query(`DROP SCHEMA IF EXISTS "${isolatedSchema}" CASCADE`).catch(() => {});
       await testPool.end().catch(() => {});
     }
   });
@@ -512,21 +516,21 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
          [credId, tempOwnerId]
       );
 
-      // Deleting parent credential fails due to ON DELETE RESTRICT (point 1 & 2)
+      // PostgreSQL marks a transaction failed after an expected constraint error,
+      // so isolate each proof with a savepoint before continuing.
+      await client.query("SAVEPOINT credential_delete_check");
       await assert.rejects(
-        async () => {
-          await client.query(`DELETE FROM broker_credential_metadata WHERE id = $1`, [credId]);
-        },
+        client.query(`DELETE FROM broker_credential_metadata WHERE id = $1`, [credId]),
         /foreign key constraint/
       );
+      await client.query("ROLLBACK TO SAVEPOINT credential_delete_check");
 
-      // Deleting parent owner fails due to ON DELETE RESTRICT
+      await client.query("SAVEPOINT owner_delete_check");
       await assert.rejects(
-        async () => {
-          await client.query(`DELETE FROM owners WHERE id = $1`, [tempOwnerId]);
-        },
+        client.query(`DELETE FROM owners WHERE id = $1`, [tempOwnerId]),
         /foreign key constraint/
       );
+      await client.query("ROLLBACK TO SAVEPOINT owner_delete_check");
 
       // Force rollback
       throw new Error("ROLLBACK_FOR_TEARDOWN");
