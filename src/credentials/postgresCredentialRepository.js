@@ -152,7 +152,9 @@ export class PostgresCredentialRepository {
 
     const sql = `
       SELECT * FROM broker_credential_metadata
-      WHERE owner_id = $1 AND agent_id = $2 AND provider = $3 AND capability = $4 AND id = $5;
+      WHERE owner_id = $1 AND agent_id = $2 AND provider = $3 AND capability = $4 AND id = $5
+        AND revoked_at IS NULL
+        AND (expires_at IS NULL OR expires_at > now());
     `;
     let res;
     try {
