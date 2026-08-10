@@ -342,7 +342,7 @@ export class PostgresCredentialRepository {
       } catch (err) {
         if (this.auditRepo) {
           await this.auditRepo.logAccess({
-            credentialId: id,
+            credentialId: null,
             ownerId,
             agentId,
             action: 'revoke',
@@ -422,7 +422,7 @@ export class PostgresCredentialRepository {
       } catch (err) {
         if (this.auditRepo) {
           await this.auditRepo.logAccess({
-            credentialId: id,
+            credentialId: null,
             ownerId,
             agentId,
             action: 'update_metadata',
