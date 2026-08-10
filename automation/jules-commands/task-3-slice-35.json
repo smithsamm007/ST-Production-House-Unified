@@ -1,0 +1,6 @@
+{
+  "tracking_issue": 34,
+  "attempt": 1,
+  "starting_branch": "main",
+  "title": "Task 3.5 — Durable retry scheduling and dead-letter recovery"
+}
