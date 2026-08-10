@@ -55,7 +55,11 @@ CREATE TABLE IF NOT EXISTS broker_credential_audit_log (
   CONSTRAINT valid_client_ip CHECK (char_length(client_ip) <= 45),
   CONSTRAINT valid_user_agent CHECK (char_length(user_agent) <= 500),
   CONSTRAINT valid_action_value CHECK (action IN ('create', 'read', 'rotate', 'revoke', 'resolve', 'update_metadata')),
-  CONSTRAINT valid_status_value CHECK (status IN ('success', 'failure'))
+  CONSTRAINT valid_status_value CHECK (status IN ('success', 'failure')),
+  CONSTRAINT valid_audit_provider_len CHECK (provider IS NULL OR char_length(provider) BETWEEN 1 AND 100),
+  CONSTRAINT valid_audit_capability_len CHECK (capability IS NULL OR char_length(capability) BETWEEN 1 AND 100),
+  CONSTRAINT valid_audit_error_code_len CHECK (error_code IS NULL OR char_length(error_code) BETWEEN 1 AND 100),
+  CONSTRAINT valid_audit_error_message_len CHECK (error_message IS NULL OR char_length(error_message) <= 1000)
 );
 
 -- Index for the audit log
