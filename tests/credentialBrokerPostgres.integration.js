@@ -383,7 +383,9 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
 
     // listLogsByOwner cross-agent denial: verify returns empty list instead of leaking Agent 1's logs
     const logs = await auditRepo.listLogsByOwner(owner1Id, agentId2);
-    assert.equal(logs.length, 0, "Should contain 0 logs for unauthorized agent");
+    assert.ok(logs.length > 0, "Denied attempts must be durably audited for the requesting agent");
+    assert.ok(logs.every((row) => row.agent_id === agentId2), "Audit listing must not leak another agent's rows");
+    assert.ok(logs.every((row) => row.credential_id !== cred.id), "Denied audit rows must not expose the target credential identity");
 
     // listLogsByCredential cross-agent denial: throws generic unauthorized error
     await assert.rejects(
