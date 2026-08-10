@@ -5,6 +5,7 @@ import { PostgresAdapter } from "../src/db/postgresAdapter.js";
 import { MigrationRunner } from "../src/db/migrationRunner.js";
 import { PostgresCredentialRepository } from "../src/credentials/postgresCredentialRepository.js";
 import { CredentialAuditRepository } from "../src/credentials/credentialAuditRepository.js";
+import { CredentialBroker } from "../src/credentials/credentialBroker.js";
 
 test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Tests", async (t) => {
   const dbUrl = process.env.POSTGRES_TEST_URL || process.env.DATABASE_URL;
@@ -265,6 +266,64 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
     const list = await credentialRepo.listAll(owner1Id);
     const listedCred = list.find(c => c.id === cred.id);
     assert.equal(listedCred.secret_locator, 'vault://[REDACTED]');
+  });
+
+  await t.test("Real CredentialBroker composes with PostgreSQL repositories and audits exactly once", async () => {
+    const broker = new CredentialBroker({
+      repository: credentialRepo,
+      resolver: async (locator) => {
+        assert.match(locator, /^vault:\/\//);
+        return Buffer.from("integration-secret");
+      },
+      auditRepository: auditRepo
+    });
+
+    const registered = await broker.register(owner1Id, {
+      agentId: agentId1,
+      provider: "gemini",
+      capability: "broker-integration",
+      locator: "vault://st/owner1/gemini/broker-integration"
+    });
+    assert.ok(registered.id);
+    assert.equal(registered.secret_locator, "vault://[REDACTED]");
+
+    const lease = await broker.resolve({
+      ownerId: owner1Id,
+      agentId: agentId1,
+      provider: "gemini",
+      capability: "broker-integration",
+      credentialId: registered.id
+    });
+    const consumed = await lease.consume(async (secret) => Buffer.from(secret).toString("utf8"));
+    assert.equal(consumed, "integration-secret");
+    assert.equal(lease.isRevoked, true);
+
+    const logs = await auditRepo.listLogsByCredential(registered.id, owner1Id, agentId1);
+    const successes = logs.filter((row) => row.action === "resolve" && row.status === "success");
+    assert.equal(successes.length, 1, "broker must write exactly one final resolve success audit");
+
+    await assert.rejects(
+      broker.resolve({
+        ownerId: owner1Id,
+        agentId: agentId2,
+        provider: "gemini",
+        capability: "broker-integration",
+        credentialId: registered.id
+      }),
+      /ACCESS_DENIED/
+    );
+
+    await credentialRepo.revoke(registered.id, owner1Id, agentId1);
+    await assert.rejects(
+      broker.resolve({
+        ownerId: owner1Id,
+        agentId: agentId1,
+        provider: "gemini",
+        capability: "broker-integration",
+        credentialId: registered.id
+      }),
+      /ACCESS_DENIED/
+    );
   });
 
   await t.test("Same-Owner Cross-Agent Denial", async () => {
