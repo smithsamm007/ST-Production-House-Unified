@@ -228,8 +228,8 @@ export class PostgresCredentialRepository {
     this.validateSecretLocator(newSecretLocator);
     if (!id || !ownerId || !agentId) throw new Error("Missing required parameters for rotation");
 
-    return await this.adapter.withTransaction(async (client) => {
-      try {
+    try {
+      return await this.adapter.withTransaction(async (client) => {
         const checkSql = `
           SELECT * FROM broker_credential_metadata
           WHERE id = $1 AND owner_id = $2 AND agent_id = $3
@@ -244,7 +244,6 @@ export class PostgresCredentialRepository {
         if (current.revoked_at) {
           throw new Error("Cannot rotate a revoked credential");
         }
-
         if (expectedVersion !== undefined && current.version !== expectedVersion) {
           throw new Error("CONCURRENCY_ERROR: Version mismatch");
         }
@@ -262,26 +261,27 @@ export class PostgresCredentialRepository {
             credentialId: id,
             ownerId,
             agentId,
-            action: 'rotate',
-            status: 'success'
+            action: "rotate",
+            status: "success"
           }, client);
         }
-
         return this._toDTO(res.rows[0]);
-      } catch (err) {
-        if (this.auditRepo) {
-          await this.auditRepo.logAccess({
-            credentialId: id,
-            ownerId,
-            agentId,
-            action: 'rotate',
-            status: 'failure',
-            errorMessage: err.message
-          });
-        }
-        throw err;
+      });
+    } catch (err) {
+      // The transaction (and any row lock) is closed before durable failure auditing.
+      // This prevents a second pooled connection from self-blocking on the locked credential tuple.
+      if (this.auditRepo) {
+        await this.auditRepo.logAccess({
+          credentialId: id,
+          ownerId,
+          agentId,
+          action: "rotate",
+          status: "failure",
+          errorMessage: err.message
+        });
       }
-    });
+      throw err;
+    }
   }
 
   /**
