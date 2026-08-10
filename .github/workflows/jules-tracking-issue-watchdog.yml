@@ -22,7 +22,7 @@ jobs:
       JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
       JULES_API_BASE: https://jules.googleapis.com/v1alpha
       STALL_SECONDS: "1200"
-      MAX_ATTEMPTS: "3"
+      MAX_ATTEMPTS: "2"
     steps:
       - name: Monitor pre-PR Jules sessions
         shell: bash
@@ -35,7 +35,7 @@ jobs:
 
           jq -r '.[].number' <<<"$issues" | while read -r issue; do
             comments="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${issue}/comments?per_page=100" | jq -s 'add')"
-            bridge="$(jq -r '[.[] | .body | capture("st-jules-bridge session=(?<session>[^ ]+) attempt=(?<attempt>[1-3]) state=(?<state>[^ ]+) branch=(?<branch>[^ >]+)"; "g")?] | map(select(. != null)) | last // empty | [.session,.attempt,.state,.branch] | @tsv' <<<"$comments")"
+            bridge="$(jq -r '[.[] | .body | capture("st-jules-bridge session=(?<session>[^ ]+) attempt=(?<attempt>[1-2]) state=(?<state>[^ ]+) branch=(?<branch>[^ >]+)"; "g")?] | map(select(. != null)) | last // empty | [.session,.attempt,.state,.branch] | @tsv' <<<"$comments")"
             [[ -n "$bridge" ]] || continue
             IFS=$'\t' read -r session attempt recorded_state branch <<<"$bridge"
             case "$recorded_state" in COMPLETED|CODEX_HANDOFF) continue;; esac
@@ -66,7 +66,7 @@ jobs:
             if [[ "$state" == "FAILED" ]]; then
               if (( attempt >= MAX_ATTEMPTS )); then
                 gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "<!-- st-jules-bridge session=${session} attempt=${attempt} state=CODEX_HANDOFF branch=${branch} -->
-          Three attempts failed. Codex owns direct completion."
+          Two attempts failed. Codex owns direct completion."
                 continue
               fi
               marker="st-jules-issue-watchdog session=${session} result=REPLACEMENT_REQUIRED"
