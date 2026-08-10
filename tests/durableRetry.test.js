@@ -4,6 +4,7 @@ import {
   classifyRetryError,
   calculateNextAttemptDelay,
   sanitizeErrorMessage,
+  sanitizeEvidencePayload,
 } from "../src/jobs/retry/retryManager.js";
 
 test("Durable Retry Unit Tests — Stable Retry Error Classification", () => {
@@ -70,4 +71,29 @@ test("Durable Retry Unit Tests — Bounded Exponential Backoff with Jitter", () 
     jitterFn: (d) => d * 0.5, // 50% jitter
   });
   assert.equal(delayJitterFn, 15);
+});
+
+
+test("Durable Retry Unit Tests — Evidence payload retains schema and drops secrets", () => {
+  const sanitized = sanitizeEvidencePayload({
+    jobId: "job-123",
+    agentId: "agent-456",
+    attempts: 3,
+    classification: "transient",
+    reason: "provider token=super-secret timed out",
+    nextAttemptAt: "2026-08-10T10:00:00.000Z",
+    arbitrarySecret: "must-not-persist",
+    nested: { token: "must-not-persist" },
+  });
+
+  assert.deepEqual(sanitized, {
+    jobId: "job-123",
+    agentId: "agent-456",
+    attempts: 3,
+    classification: "transient",
+    reason: "provider token:[REDACTED] timed out",
+    nextAttemptAt: "2026-08-10T10:00:00.000Z",
+  });
+  assert.equal("arbitrarySecret" in sanitized, false);
+  assert.equal("nested" in sanitized, false);
 });
