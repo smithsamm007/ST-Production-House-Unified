@@ -272,7 +272,8 @@ export class PostgresCredentialRepository {
       // This prevents a second pooled connection from self-blocking on the locked credential tuple.
       if (this.auditRepo) {
         await this.auditRepo.logAccess({
-          credentialId: id,
+          // The requested tuple was not authorized; do not attach a credential FK.
+          credentialId: null,
           ownerId,
           agentId,
           action: "rotate",
