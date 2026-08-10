@@ -23,7 +23,7 @@ jobs:
       JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
       JULES_API_BASE: https://jules.googleapis.com/v1alpha
       STALL_SECONDS: "1200"
-      MAX_ATTEMPTS: "3"
+      MAX_ATTEMPTS: "2"
       MAX_ACTIVE_SESSIONS: "3"
     steps:
       - name: Monitor and recover governed Jules sessions
@@ -127,7 +127,7 @@ jobs:
             branch="$(jq -r '.head.ref' <<<"$pr_json")"
             head_sha="$(jq -r '.head.sha' <<<"$pr_json")"
             comments="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${pr}/comments?per_page=100" | jq -s 'add')"
-            bridge="$(jq -r '[.[] | .body | capture("st-jules-bridge session=(?<session>[^ ]+) attempt=(?<attempt>[1-3]) state=(?<state>[^ >]+)"; "g")?] | map(select(. != null)) | last // empty | [.session,.attempt,.state] | @tsv' <<<"$comments")"
+            bridge="$(jq -r '[.[] | .body | capture("st-jules-bridge session=(?<session>[^ ]+) attempt=(?<attempt>[1-2]) state=(?<state>[^ >]+)"; "g")?] | map(select(. != null)) | last // empty | [.session,.attempt,.state] | @tsv' <<<"$comments")"
             [[ -n "$bridge" ]] || continue
             IFS=$'\t' read -r session attempt recorded_state <<<"$bridge"
             case "$recorded_state" in COMPLETED|CODEX_HANDOFF) continue;; esac
@@ -158,7 +158,7 @@ jobs:
               if (( attempt >= MAX_ATTEMPTS )); then
                 post_once "$pr" "st-jules-bridge session=${session} attempt=${attempt} state=CODEX_HANDOFF" \
                   "<!-- st-jules-bridge session=${session} attempt=${attempt} state=CODEX_HANDOFF -->
-          Three Jules attempts failed. Codex owns direct completion on this existing PR." "$comments"
+          Two Jules attempts failed. Codex owns direct completion on this existing PR." "$comments"
               else
                 start_replacement "$pr" "$session" "$attempt" "$branch" "$comments" || echo "::warning::PR #${pr}: replacement creation failed"
               fi
