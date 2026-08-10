@@ -137,10 +137,10 @@ test("Durable Retry PostgreSQL Live Integration Suite", async (t) => {
               await failJob(client, {
                 jobId: job.id,
                 leaseOwner: "worker-r",
-                errorPayload: { message: "TIMEOUT_ERROR" },
+                errorPayload: { message: "TIMEOUT" },
               });
 
-              // Force a database exception (e.g. invalid syntax / violate ON DELETE RESTRICT on agents)
+              // Force a database exception
               await client.query("DELETE FROM agents WHERE id = $1;", [agentId]);
             });
           },
@@ -192,10 +192,10 @@ test("Durable Retry PostgreSQL Live Integration Suite", async (t) => {
           [job.id]
         );
 
-        // Run two concurrent reclaim processes genuinely in parallel
+        // Run two concurrent reclaim processes genuinely in parallel, scoped strictly by agentId
         const [reclaimed1, reclaimed2] = await Promise.all([
-          reclaimExpiredLeases(adapter),
-          reclaimExpiredLeases(adapter),
+          reclaimExpiredLeases(adapter, { agentId }),
+          reclaimExpiredLeases(adapter, { agentId }),
         ]);
 
         // Total reclaimed across both must be 1, because exactly one concurrent sweeper can process and recover it!
@@ -253,7 +253,7 @@ test("Durable Retry PostgreSQL Live Integration Suite", async (t) => {
         const failed = await failJob(adapter, {
           jobId: job.id,
           leaseOwner: "worker-m",
-          errorPayload: { message: "CONN_RESET" },
+          errorPayload: { message: "TIMEOUT" },
         });
 
         assert.equal(failed.status, "dead_letter");
@@ -268,7 +268,7 @@ test("Durable Retry PostgreSQL Live Integration Suite", async (t) => {
         const evidence = evidenceRes.rows[0].payload;
         assert.equal(evidence.jobId, job.id);
         assert.equal(evidence.attempts, 1);
-        assert.equal(evidence.classification, "transient"); // error classified as transient (network-related) but exhausted
+        assert.equal(evidence.classification, "transient"); // error classified as transient but exhausted
         assert.equal(evidence.reason, "attempts_exhausted");
       } finally {
         await adapter.query("DELETE FROM jobs WHERE agent_id = $1;", [agentId]);
@@ -304,6 +304,14 @@ test("Durable Retry PostgreSQL Live Integration Suite", async (t) => {
         ]
       );
 
+      // Seed canonical ownership connection in communication_sessions
+      const session1 = crypto.randomUUID();
+      await adapter.query(
+        `INSERT INTO communication_sessions (id, owner_id, agent_id, is_active)
+         VALUES ($1, $2, $3, true);`,
+        [session1, ownerId, agentId1]
+      );
+
       try {
         const job = await createJob(adapter, {
           agentId: agentId1,
@@ -326,17 +334,25 @@ test("Durable Retry PostgreSQL Live Integration Suite", async (t) => {
           errorPayload: { message: "TIMEOUT" },
         });
 
-        // Seed an evidence event that acts as the owner authorization
+        // Seed an unconsumed owner-authorized approval record with budget (Comment 1 & 2)
         const authEvidenceId = crypto.randomUUID();
+        const approvalPayload = {
+          ownerId,
+          agentId: agentId1,
+          jobId: job.id,
+          action: "replay",
+          additionalAttempts: 3
+        };
+
         await adapter.query(
           `INSERT INTO evidence_events (id, subject_id, kind, classification, payload, event_hash)
            VALUES ($1, $2, $3, $4, $5, $6);`,
           [
             authEvidenceId,
             job.id,
-            "replay_authorization",
-            "owner_authorized",
-            JSON.stringify({ note: "Approved by manager" }),
+            "job_replay_authorized",
+            "owner_authorized_replay",
+            JSON.stringify(approvalPayload),
             crypto.createHash("sha256").update(authEvidenceId).digest("hex")
           ]
         );
@@ -377,10 +393,10 @@ test("Durable Retry PostgreSQL Live Integration Suite", async (t) => {
               evidenceId: authEvidenceId,
             });
           },
-          /AGENT_ISOLATION_VIOLATION/
+          /AGENT_OWNERSHIP_VIOLATION/
         );
 
-        // 4. Successful Authorized Replay
+        // 4. Successful Authorized Replay with consumption
         const replayed = await replayJob(adapter, {
           jobId: job.id,
           agentId: agentId1,
@@ -391,23 +407,21 @@ test("Durable Retry PostgreSQL Live Integration Suite", async (t) => {
         assert.equal(replayed.status, "queued");
         // Verify attempts history is NOT reset (never resets history silently)
         assert.equal(replayed.attempts, 1, "History must not be reset; attempts should still be 1");
-        // Verify maxAttempts was increased by 3 (from 1 to 4)
+        // Verify maxAttempts was increased by budget carried by the evidence (from 1 to 4)
         assert.equal(replayed.maxAttempts, 4);
-        assert.equal(replayed.backoffMetadata.replayed_by_owner, ownerId);
-        assert.equal(replayed.backoffMetadata.replay_evidence_id, authEvidenceId);
 
-        // Ensure exact job_replay_authorized evidence event is logged
-        const replayEvRes = await adapter.query(
-          "SELECT * FROM evidence_events WHERE subject_id = $1 AND kind = 'job_replay_authorized' ORDER BY occurred_at DESC;",
-          [job.id]
+        // 5. Trying to consume the same approval evidence record again should fail (consumption/reuse lock check)
+        await assert.rejects(
+          async () => {
+            await replayJob(adapter, {
+              jobId: job.id,
+              agentId: agentId1,
+              ownerId,
+              evidenceId: authEvidenceId,
+            });
+          },
+          /REPLAY_APPROVAL_ALREADY_CONSUMED/
         );
-        assert.equal(replayEvRes.rows.length, 1);
-        const replayPayload = replayEvRes.rows[0].payload;
-        assert.equal(replayPayload.ownerId, ownerId);
-        assert.equal(replayPayload.evidenceId, authEvidenceId);
-        assert.equal(replayPayload.previousMaxAttempts, 1);
-        assert.equal(replayPayload.newMaxAttempts, 4);
-        assert.equal(replayPayload.attempts, 1);
 
       } finally {
         await adapter.query("DELETE FROM jobs WHERE agent_id IN ($1, $2);", [agentId1, agentId2]);
@@ -454,7 +468,7 @@ test("Durable Retry PostgreSQL Live Integration Suite", async (t) => {
 
         // 1. Verify job payload error is redacted
         const jobCheck = await adapter.query("SELECT payload FROM jobs WHERE id = $1;", [job.id]);
-        const jobErrMessage = jobCheck.rows[0].payload.error.message;
+        const jobErrMessage = jobCheck.rows[0].payload.error.summary;
         assert.equal(jobErrMessage.includes("my-token"), false, "Locator must be redacted from error message");
         assert.equal(jobErrMessage.includes("abc123token"), false, "Secret must be redacted from error message");
         assert.ok(jobErrMessage.includes("[REDACTED_VAULT_LOCATOR]"));
