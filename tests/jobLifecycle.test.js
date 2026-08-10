@@ -647,13 +647,13 @@ test("Job Lifecycle Contract — Live PG Suite", async (t) => {
         // Claim & Fail 1
         const c1 = await claimJob(adapter, { agentId, capability: "retry-limit-test", leaseOwner: `worker-${unique}`, leaseDurationSeconds: 10 });
         assert.equal(c1.attempts, 1);
-        const f1 = await failJob(adapter, { jobId: j.id, leaseOwner: `worker-${unique}`, errorPayload: { err: "first" } });
+        const f1 = await failJob(adapter, { jobId: j.id, leaseOwner: `worker-${unique}`, errorPayload: { err: "first TIMEOUT" } });
         assert.equal(f1.status, "queued");
 
         // Claim & Fail 2
         const c2 = await claimJob(adapter, { agentId: "agent-life-test-retry-" + unique, capability: "retry-limit-test", leaseOwner: `worker-${unique}`, leaseDurationSeconds: 10 });
         assert.equal(c2.attempts, 2);
-        const f2 = await failJob(adapter, { jobId: j.id, leaseOwner: `worker-${unique}`, errorPayload: { err: "second" } });
+        const f2 = await failJob(adapter, { jobId: j.id, leaseOwner: `worker-${unique}`, errorPayload: { err: "second TIMEOUT" } });
         assert.equal(f2.status, "dead_letter");
 
         // Attempt to claim a dead_letter job (attempts >= max_attempts) should yield null
