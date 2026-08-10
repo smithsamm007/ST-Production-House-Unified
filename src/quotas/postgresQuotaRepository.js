@@ -183,8 +183,7 @@ export class PostgresQuotaRepository {
         if (row.quota_id !== quota.id || row.slot !== s.slot || row.provider !== s.provider || row.credential_key !== s.credentialKey) {
           throw new Error("QUOTA_IDEMPOTENCY_SCOPE_MISMATCH");
         }
-        if (row.status === "committed") throw new Error("QUOTA_IDEMPOTENCY_ALREADY_COMMITTED");
-        if (row.status === "reserved") throw new Error("QUOTA_RESERVATION_IN_PROGRESS");
+        return toReservation(row);
       }
 
       if (Number(quota.usage_count) + Number(quota.reserved_count) + units > Number(quota.quota_limit)) {
@@ -252,7 +251,9 @@ export class PostgresQuotaRepository {
       const row = result.rows[0];
 
       if (row.status === targetStatus) return toReservation(row);
-      if (row.status === "committed" || row.status === "released") return toReservation(row);
+      if (row.status === "committed" || row.status === "released") {
+        throw new Error("QUOTA_RESERVATION_TERMINAL_STATE_CONFLICT");
+      }
 
       const units = Number(row.units);
       if (Number(row.reserved_count) < units) throw new Error("QUOTA_RESERVATION_COUNT_CORRUPT");
@@ -297,7 +298,7 @@ export class PostgresQuotaRepository {
     });
   }
 
-  async recordCooldown(scope, { errorCode, retryAfterSeconds }) {
+  async recordCooldown(scope, { errorCode, retryAfterSeconds, recordFallback = false }) {
     const s = normalizeScope(scope);
     if (!VALID_COOLDOWN_CODES.has(errorCode)) throw new Error("INVALID_COOLDOWN_CODE");
     if (!Number.isSafeInteger(retryAfterSeconds) || retryAfterSeconds < 1 || retryAfterSeconds > 3600) {
@@ -318,6 +319,13 @@ export class PostgresQuotaRepository {
         payload:{ownerId:s.ownerId,agentId:s.agentId,slot:s.slot,provider:s.provider,
           credentialId:s.credentialId,cooldownCode:errorCode,cooldownUntil:quota.cooldownUntil}
       });
+      if (recordFallback) {
+        await appendEvidenceEventXact(client,{
+          subjectId:quota.id,kind:"provider_fallback_decision",classification:"approved_fallback",
+          payload:{ownerId:s.ownerId,agentId:s.agentId,slot:s.slot,provider:s.provider,
+            credentialId:s.credentialId,decision:"fallback",errorCode}
+        });
+      }
       return quota;
     });
   }
@@ -331,9 +339,9 @@ export class PostgresQuotaRepository {
          WHERE owner_id=$1 AND agent_id=$2 AND slot=$3 AND provider=$4 AND credential_key=$5;`,
         [s.ownerId,s.agentId,s.slot,s.provider,s.credentialKey]
       );
-      if(quota.rowCount!==1) throw new Error("QUOTA_NOT_CONFIGURED");
       await appendEvidenceEventXact(client,{
-        subjectId:quota.rows[0].id,kind:"provider_fallback_decision",classification:"approved_fallback",
+        subjectId:quota.rowCount===1 ? quota.rows[0].id : `${s.ownerId}:${s.agentId}:${s.slot}:${s.provider}`,
+        kind:"provider_fallback_decision",classification:"approved_fallback",
         payload:{ownerId:s.ownerId,agentId:s.agentId,slot:s.slot,provider:s.provider,
           credentialId:s.credentialId,decision:"fallback",errorCode:code}
       });
