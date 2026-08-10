@@ -174,16 +174,36 @@ class MockDatabase {
       return { rowCount: 0, rows: [] };
     }
 
-    // SELECT attempts, max_attempts FROM jobs FOR UPDATE
-    if (normalized.startsWith("SELECT attempts, max_attempts FROM jobs WHERE id = $1")) {
+    // SELECT attempts, max_attempts FROM jobs FOR UPDATE (or job details select)
+    if (normalized.includes("FROM jobs WHERE id = $1") && normalized.includes("lease_owner = $2")) {
       const [id, leaseOwner] = params;
       const job = this.jobs.find(
         (j) => j.id === id && j.lease_owner === leaseOwner && ["leased", "running"].includes(j.status)
       );
       if (job) {
-        return { rowCount: 1, rows: [{ attempts: job.attempts, max_attempts: job.max_attempts }] };
+        return {
+          rowCount: 1,
+          rows: [{
+            agent_id: job.agent_id,
+            capability: job.capability,
+            attempts: job.attempts,
+            max_attempts: job.max_attempts,
+            payload: job.payload,
+            backoff_metadata: job.backoff_metadata || {}
+          }]
+        };
       }
       return { rowCount: 0, rows: [] };
+    }
+
+    // SELECT event_hash FROM evidence_events
+    if (normalized.includes("FROM evidence_events")) {
+      return { rowCount: 0, rows: [] };
+    }
+
+    // INSERT INTO evidence_events
+    if (normalized.startsWith("INSERT INTO evidence_events")) {
+      return { rowCount: 1, rows: [] };
     }
 
     // UPDATE jobs SET status = 'failed'
@@ -358,7 +378,7 @@ test("Job Lifecycle Contract — Mock/Unit Suite", async (t) => {
     assert.equal(c1.attempts, 1);
 
     // Fail job -> status transitions back to queued because attempts (1) < max_attempts (2)
-    const failed1 = await failJob(db, { jobId: c1.id, leaseOwner: "worker", errorPayload: { err: "first error" } });
+    const failed1 = await failJob(db, { jobId: c1.id, leaseOwner: "worker", errorPayload: { err: "first error TIMEOUT" } });
     assert.equal(failed1.status, "queued");
 
     // Try 2
@@ -366,7 +386,7 @@ test("Job Lifecycle Contract — Mock/Unit Suite", async (t) => {
     assert.equal(c2.attempts, 2);
 
     // Fail job -> status transitions to dead_letter because attempts (2) >= max_attempts (2)
-    const failed2 = await failJob(db, { jobId: c2.id, leaseOwner: "worker", errorPayload: { err: "terminal error" } });
+    const failed2 = await failJob(db, { jobId: c2.id, leaseOwner: "worker", errorPayload: { err: "terminal error TIMEOUT" } });
     assert.equal(failed2.status, "dead_letter");
     assert.equal(failed2.leaseOwner, null);
   });
