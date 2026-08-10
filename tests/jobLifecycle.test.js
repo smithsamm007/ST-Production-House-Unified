@@ -30,7 +30,7 @@ class MockDatabase {
     this.queries.push({ text, params });
     const normalized = text.trim().replace(/\s+/g, " ");
 
-    // Custom Mock Helper to simulate expired lease (check this first!)
+    // Custom Mock Helper to simulate expired lease
     if (normalized.startsWith("UPDATE jobs SET lease_expires_at = now() -")) {
       const [id] = params;
       const job = this.jobs.find((j) => j.id === id);
@@ -61,6 +61,8 @@ class MockDatabase {
         max_attempts: maxAttempts || 3,
         lease_owner: null,
         lease_expires_at: null,
+        next_attempt_at: null,
+        backoff_metadata: {},
         payload,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -98,9 +100,17 @@ class MockDatabase {
     // SELECT id FROM jobs (next claimable job)
     if (normalized.includes("SELECT id FROM jobs") && normalized.includes("status = 'queued'")) {
       const [agentId, capability] = params;
-      // Filter out those with attempts >= max_attempts
       const queuedJobs = this.jobs
-        .filter((j) => j.agent_id === agentId && j.capability === capability && j.status === "queued" && j.attempts < j.max_attempts)
+        .filter((j) => {
+          if (j.agent_id !== agentId || j.capability !== capability || j.status !== "queued" || j.attempts >= j.max_attempts) {
+            return false;
+          }
+          // Validate next_attempt_at boundary (not future-scheduled)
+          if (j.next_attempt_at && new Date(j.next_attempt_at) > new Date()) {
+            return false;
+          }
+          return true;
+        })
         .sort((a, b) => {
           if (a.priority !== b.priority) return a.priority - b.priority;
           return new Date(a.created_at) - new Date(b.created_at);
@@ -120,6 +130,7 @@ class MockDatabase {
         job.status = "leased";
         job.lease_owner = leaseOwner;
         job.lease_expires_at = new Date(Date.now() + durationSeconds * 1000).toISOString();
+        job.next_attempt_at = null; // cleared on claim
         job.attempts += 1;
         job.updated_at = new Date().toISOString();
         return { rowCount: 1, rows: [job] };
@@ -134,9 +145,8 @@ class MockDatabase {
         (j) => j.id === id && j.lease_owner === leaseOwner && ["leased", "running"].includes(j.status)
       );
       if (job) {
-        // Mock checking already expired lease
         if (job.lease_expires_at && new Date(job.lease_expires_at) < new Date()) {
-          return { rowCount: 0, rows: [] }; // Simulation of already expired lease rejection
+          return { rowCount: 0, rows: [] };
         }
         job.lease_expires_at = new Date(Date.now() + durationSeconds * 1000).toISOString();
         job.updated_at = new Date().toISOString();
@@ -168,22 +178,48 @@ class MockDatabase {
         job.payload.result = JSON.parse(resultStr);
         job.lease_owner = null;
         job.lease_expires_at = null;
+        job.next_attempt_at = null; // cleared on terminal succeeded
         job.updated_at = new Date().toISOString();
         return { rowCount: 1, rows: [job] };
       }
       return { rowCount: 0, rows: [] };
     }
 
-    // SELECT attempts, max_attempts FROM jobs FOR UPDATE
-    if (normalized.startsWith("SELECT attempts, max_attempts FROM jobs WHERE id = $1")) {
+    // SELECT attempts, max_attempts FROM jobs FOR UPDATE (or job details select)
+    if (normalized.includes("FROM jobs WHERE id = $1") && normalized.includes("lease_owner = $2")) {
       const [id, leaseOwner] = params;
       const job = this.jobs.find(
         (j) => j.id === id && j.lease_owner === leaseOwner && ["leased", "running"].includes(j.status)
       );
       if (job) {
-        return { rowCount: 1, rows: [{ attempts: job.attempts, max_attempts: job.max_attempts }] };
+        return {
+          rowCount: 1,
+          rows: [{
+            agent_id: job.agent_id,
+            capability: job.capability,
+            attempts: job.attempts,
+            max_attempts: job.max_attempts,
+            payload: job.payload,
+            backoff_metadata: job.backoff_metadata || {}
+          }]
+        };
       }
       return { rowCount: 0, rows: [] };
+    }
+
+    // SELECT event_hash FROM evidence_events
+    if (normalized.includes("FROM evidence_events")) {
+      return { rowCount: 0, rows: [] };
+    }
+
+    // INSERT INTO evidence_events
+    if (normalized.startsWith("INSERT INTO evidence_events")) {
+      return { rowCount: 1, rows: [] };
+    }
+
+    // SELECT pg_advisory_xact_lock
+    if (normalized.includes("pg_advisory_xact_lock")) {
+      return { rowCount: 1, rows: [] };
     }
 
     // UPDATE jobs SET status = 'failed'
@@ -209,6 +245,7 @@ class MockDatabase {
       const job = this.jobs.find((j) => j.id === id);
       if (job) {
         job.status = "dead_letter";
+        job.next_attempt_at = null; // cleared on terminal dead_letter
         job.updated_at = new Date().toISOString();
         return { rowCount: 1, rows: [job] };
       }
@@ -217,10 +254,12 @@ class MockDatabase {
 
     // UPDATE jobs SET status = 'queued'
     if (normalized.startsWith("UPDATE jobs SET status = 'queued'")) {
-      const [id] = params;
+      const [id, delaySec, metadata] = params;
       const job = this.jobs.find((j) => j.id === id);
       if (job) {
         job.status = "queued";
+        job.next_attempt_at = new Date(Date.now() + (delaySec || 0) * 1000).toISOString();
+        job.backoff_metadata = JSON.parse(metadata || "{}");
         job.updated_at = new Date().toISOString();
         return { rowCount: 1, rows: [job] };
       }
@@ -229,7 +268,9 @@ class MockDatabase {
 
     // SELECT id, lease_owner, attempts, max_attempts FROM jobs WHERE status IN ('leased', 'running') AND lease_expires_at < now()
     if (normalized.includes("lease_expires_at < now()")) {
+      const [agentId] = params;
       const expired = this.jobs.filter((j) => {
+        if (j.agent_id !== agentId) return false;
         if (!["leased", "running"].includes(j.status)) return false;
         return j.lease_expires_at && new Date(j.lease_expires_at) < new Date();
       });
@@ -357,16 +398,22 @@ test("Job Lifecycle Contract — Mock/Unit Suite", async (t) => {
     const c1 = await claimJob(db, { agentId: "agent-03", capability: "post", leaseOwner: "worker", leaseDurationSeconds: 5 });
     assert.equal(c1.attempts, 1);
 
-    // Fail job -> status transitions back to queued because attempts (1) < max_attempts (2)
-    const failed1 = await failJob(db, { jobId: c1.id, leaseOwner: "worker", errorPayload: { err: "first error" } });
+    // Fail job -> status transitions back to queued because attempts (1) < max_attempts (2) and error is transient
+    const failed1 = await failJob(db, { jobId: c1.id, leaseOwner: "worker", errorPayload: { err: "TIMEOUT" } });
     assert.equal(failed1.status, "queued");
+
+    // Deterministically advance the mock clock/state so next claimable query succeeds
+    const mockJob = db.jobs.find(j => j.id === c1.id);
+    if (mockJob) {
+      mockJob.next_attempt_at = new Date(Date.now() - 5000).toISOString();
+    }
 
     // Try 2
     const c2 = await claimJob(db, { agentId: "agent-03", capability: "post", leaseOwner: "worker", leaseDurationSeconds: 5 });
     assert.equal(c2.attempts, 2);
 
     // Fail job -> status transitions to dead_letter because attempts (2) >= max_attempts (2)
-    const failed2 = await failJob(db, { jobId: c2.id, leaseOwner: "worker", errorPayload: { err: "terminal error" } });
+    const failed2 = await failJob(db, { jobId: c2.id, leaseOwner: "worker", errorPayload: { err: "TIMEOUT" } });
     assert.equal(failed2.status, "dead_letter");
     assert.equal(failed2.leaseOwner, null);
   });
@@ -379,7 +426,7 @@ test("Job Lifecycle Contract — Mock/Unit Suite", async (t) => {
     // Force expiration in mock using the specific matcher
     await db.query("UPDATE jobs SET lease_expires_at = now() - 5000 WHERE id = $1;", [claimed.id]);
 
-    const reclaimed = await reclaimExpiredLeases(db);
+    const reclaimed = await reclaimExpiredLeases(db, { agentId: "agent-01" });
     assert.equal(reclaimed.length, 1);
     assert.equal(reclaimed[0].status, "dead_letter"); // maxAttempts is 1, so it goes to dead_letter directly
   });
@@ -627,16 +674,22 @@ test("Job Lifecycle Contract — Live PG Suite", async (t) => {
         // Claim & Fail 1
         const c1 = await claimJob(adapter, { agentId, capability: "retry-limit-test", leaseOwner: `worker-${unique}`, leaseDurationSeconds: 10 });
         assert.equal(c1.attempts, 1);
-        const f1 = await failJob(adapter, { jobId: j.id, leaseOwner: `worker-${unique}`, errorPayload: { err: "first" } });
+        const f1 = await failJob(adapter, { jobId: j.id, leaseOwner: `worker-${unique}`, errorPayload: { err: "TIMEOUT" } });
         assert.equal(f1.status, "queued");
 
+        // Deterministically update next_attempt_at to the past in PG to enable Try 2 claim
+        await adapter.query(
+          "UPDATE jobs SET next_attempt_at = now() - interval '5 seconds' WHERE id = $1;",
+          [j.id]
+        );
+
         // Claim & Fail 2
-        const c2 = await claimJob(adapter, { agentId: "agent-life-test-retry-" + unique, capability: "retry-limit-test", leaseOwner: `worker-${unique}`, leaseDurationSeconds: 10 });
+        const c2 = await claimJob(adapter, { agentId, capability: "retry-limit-test", leaseOwner: `worker-${unique}`, leaseDurationSeconds: 10 });
         assert.equal(c2.attempts, 2);
-        const f2 = await failJob(adapter, { jobId: j.id, leaseOwner: `worker-${unique}`, errorPayload: { err: "second" } });
+        const f2 = await failJob(adapter, { jobId: j.id, leaseOwner: `worker-${unique}`, errorPayload: { err: "TIMEOUT" } });
         assert.equal(f2.status, "dead_letter");
 
-        // Attempt to claim a dead_letter job (attempts >= max_attempts) should yield null
+        // Attempt to claim a dead_letter job should yield null
         const c3 = await claimJob(adapter, { agentId, capability: "retry-limit-test", leaseOwner: `worker-${unique}`, leaseDurationSeconds: 10 });
         assert.equal(c3, null);
       } finally {
@@ -727,13 +780,13 @@ test("Job Lifecycle Contract — Live PG Suite", async (t) => {
           [j.id]
         );
 
-        // Reclaim expired lease
-        const reclaimed = await reclaimExpiredLeases(adapter);
+        // Reclaim expired lease scoped strictly to agentId
+        const reclaimed = await reclaimExpiredLeases(adapter, { agentId });
         assert.ok(reclaimed.length >= 1);
 
         const targetReclaimed = reclaimed.find((job) => job.id === j.id);
         assert.ok(targetReclaimed);
-        assert.equal(targetReclaimed.status, "queued"); // was try 1, so it is back to queued
+        assert.equal(targetReclaimed.status, "queued"); // back to queued
       } finally {
         await adapter.query("DELETE FROM jobs WHERE agent_id = $1;", [agentId]);
         await adapter.query("DELETE FROM agents WHERE id = $1;", [agentId]);

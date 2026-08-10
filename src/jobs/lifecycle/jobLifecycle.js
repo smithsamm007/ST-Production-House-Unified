@@ -1,4 +1,12 @@
 import { randomUUID } from "node:crypto";
+import crypto from "node:crypto";
+import {
+  classifyRetryError,
+  calculateNextAttemptDelay,
+  buildSecretSafeErrorPayload,
+  appendEvidenceEventXact,
+  deepRedactAndSanitize,
+} from "../retry/retryManager.js";
 
 /**
  * Normalizes an object for database operations.
@@ -19,6 +27,8 @@ function toJobObject(row) {
     payload: row.payload,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
+    nextAttemptAt: row.next_attempt_at ? new Date(row.next_attempt_at).toISOString() : null,
+    backoffMetadata: row.backoff_metadata || {},
   };
 }
 
@@ -67,7 +77,7 @@ export async function createJob(clientOrAdapter, { agentId, capability, idempote
 /**
  * Safe lease acquisition.
  * Checks agent's concurrency limit under locks, selects the highest priority queued job,
- * and leases it.
+ * and leases it. Clears next_attempt_at consistently on claim.
  */
 export async function claimJob(clientOrAdapter, { agentId, capability, leaseOwner, leaseDurationSeconds }) {
   validateLeaseDuration(leaseDurationSeconds);
@@ -100,12 +110,14 @@ export async function claimJob(clientOrAdapter, { agentId, capability, leaseOwne
     // 3. Find next claimable queued job for this agent and capability
     // Sorted by priority ASC, created_at ASC (matching index/standard)
     // Avoid claiming jobs that are already exhausted (attempts >= max_attempts)
+    // EXCLUDE future-scheduled jobs (next_attempt_at is NULL or <= now())
     const nextJobRes = await client.query(
       `SELECT id FROM jobs
        WHERE agent_id = $1
          AND capability = $2
          AND status = 'queued'
          AND attempts < max_attempts
+         AND (next_attempt_at IS NULL OR next_attempt_at <= now())
        ORDER BY priority ASC, created_at ASC
        LIMIT 1
        FOR UPDATE SKIP LOCKED;`,
@@ -118,13 +130,14 @@ export async function claimJob(clientOrAdapter, { agentId, capability, leaseOwne
 
     const targetJobId = nextJobRes.rows[0].id;
 
-    // 4. Update job to leased using safe interval arithmetic
+    // 4. Update job to leased, clearing/resetting next_attempt_at consistently
     const leasedJobRes = await client.query(
       `UPDATE jobs
        SET status = 'leased',
            lease_owner = $2,
            lease_expires_at = now() + ($3 * interval '1 second'),
            attempts = attempts + 1,
+           next_attempt_at = NULL,
            updated_at = now()
        WHERE id = $1
        RETURNING *;`,
@@ -208,6 +221,7 @@ export async function startJob(clientOrAdapter, { jobId, leaseOwner }) {
 /**
  * Complete job successfully.
  * Aligned with DB trigger: only running jobs can transition to succeeded.
+ * Clears next_attempt_at consistently on terminal transition.
  */
 export async function completeJob(clientOrAdapter, { jobId, leaseOwner, resultPayload }) {
   const run = async (client) => {
@@ -217,6 +231,7 @@ export async function completeJob(clientOrAdapter, { jobId, leaseOwner, resultPa
            payload = jsonb_set(payload, '{result}', $3::jsonb, true),
            lease_owner = NULL,
            lease_expires_at = NULL,
+           next_attempt_at = NULL,
            updated_at = now()
        WHERE id = $1
          AND lease_owner = $2
@@ -240,61 +255,139 @@ export async function completeJob(clientOrAdapter, { jobId, leaseOwner, resultPa
 
 /**
  * Helper fail function used internally to handle transition steps sequentially.
+ * Clears next_attempt_at on terminal transitions.
  */
-async function failJobInternal(client, { jobId, leaseOwner, errorPayload }) {
-  // 1. Check job attempts & max_attempts
+async function failJobInternal(client, { jobId, leaseOwner, errorPayload, isLeaseExpiry = false }, retryOptions = {}) {
+  // 1. Fetch details under pessimistic locking
   const checkRes = await client.query(
-    "SELECT attempts, max_attempts FROM jobs WHERE id = $1 AND lease_owner = $2 AND status IN ('leased', 'running') FOR UPDATE;",
+    `SELECT agent_id, capability, attempts, max_attempts, payload, backoff_metadata
+     FROM jobs
+     WHERE id = $1 AND lease_owner = $2 AND status IN ('leased', 'running')
+     FOR UPDATE;`,
     [jobId, leaseOwner]
   );
   if (checkRes.rowCount === 0) {
     throw new Error("JOB_NOT_FOUND_OR_LEASE_MISMATCH");
   }
-  const { attempts, max_attempts: maxAttempts } = checkRes.rows[0];
+  const {
+    agent_id: agentId,
+    capability,
+    attempts,
+    max_attempts: maxAttempts,
+    payload,
+    backoff_metadata: oldBackoffMetadata
+  } = checkRes.rows[0];
 
-  // 2. Transition status to failed to store error context & trigger valid transition
-  let res = await client.query(
+  // 2. Secret-safe error payload (no raw nested error payloads or arbitrary keys)
+  const safeErrorPayload = buildSecretSafeErrorPayload(errorPayload);
+  const errorMessage = errorPayload?.message || errorPayload?.err || String(errorPayload);
+  const classification = isLeaseExpiry ? "transient" : classifyRetryError(errorMessage);
+
+  // 3. Transition to 'failed' intermediate status to store sanitized error
+  await client.query(
     `UPDATE jobs
      SET status = 'failed',
          payload = jsonb_set(payload, '{error}', $3::jsonb, true),
          lease_owner = NULL,
          lease_expires_at = NULL,
          updated_at = now()
-     WHERE id = $1 AND lease_owner = $2 AND status IN ('leased', 'running')
-     RETURNING *;`,
-    [jobId, leaseOwner, JSON.stringify(errorPayload)]
+     WHERE id = $1 AND lease_owner = $2 AND status IN ('leased', 'running');`,
+    [jobId, leaseOwner, JSON.stringify(safeErrorPayload)]
   );
 
-  // 3. If attempts >= maxAttempts, transition to dead_letter, otherwise transition to queued
-  if (attempts >= maxAttempts) {
-    res = await client.query(
+  let finalRes;
+  const isFatal = classification === "fatal";
+  const isExhausted = attempts >= maxAttempts;
+  const newBackoffMetadata = { ...oldBackoffMetadata };
+
+  if (isFatal || isExhausted) {
+    // Terminal failure: transition to 'dead_letter' durably, clearing next_attempt_at
+    newBackoffMetadata.final_failure_reason = isFatal ? "fatal_error" : "attempts_exhausted";
+    newBackoffMetadata.last_classification = classification;
+
+    finalRes = await client.query(
       `UPDATE jobs
        SET status = 'dead_letter',
+           next_attempt_at = NULL,
+           backoff_metadata = $2,
            updated_at = now()
        WHERE id = $1
        RETURNING *;`,
-      [jobId]
+      [jobId, JSON.stringify(newBackoffMetadata)]
     );
+
+    // Append append-only dead_letter evidence event (safe, allowlisted fields only)
+    const evidencePayload = {
+      jobId,
+      agentId,
+      capability,
+      attempts,
+      maxAttempts,
+      classification,
+      reason: isFatal ? "fatal_error" : "attempts_exhausted",
+      error: safeErrorPayload.summary
+    };
+
+    await appendEvidenceEventXact(client, {
+      subjectId: jobId,
+      kind: "job_dead_letter",
+      classification: "exhausted_dead_letter",
+      payload: evidencePayload
+    });
+
   } else {
-    res = await client.query(
+    // Retryable transient failure: transition to 'queued' with exponential backoff scheduling
+    const delaySec = calculateNextAttemptDelay(attempts, retryOptions);
+
+    newBackoffMetadata.last_delay_sec = delaySec;
+    newBackoffMetadata.last_classification = classification;
+    newBackoffMetadata.retry_count = (newBackoffMetadata.retry_count || 0) + 1;
+
+    finalRes = await client.query(
       `UPDATE jobs
        SET status = 'queued',
+           next_attempt_at = now() + ($2 * interval '1 second'),
+           backoff_metadata = $3,
            updated_at = now()
        WHERE id = $1
        RETURNING *;`,
-      [jobId]
+      [jobId, delaySec, JSON.stringify(newBackoffMetadata)]
     );
+
+    // Read authoritative database-persisted next_attempt_at time
+    const persistedNextAttemptAt = finalRes.rows[0].next_attempt_at
+      ? new Date(finalRes.rows[0].next_attempt_at).toISOString()
+      : null;
+
+    // Append append-only retry evidence event (safe, allowlisted fields only)
+    const evidencePayload = {
+      jobId,
+      agentId,
+      capability,
+      attempts,
+      maxAttempts,
+      classification,
+      nextAttemptAt: persistedNextAttemptAt,
+      delaySec
+    };
+
+    await appendEvidenceEventXact(client, {
+      subjectId: jobId,
+      kind: "job_retry",
+      classification: "retry_scheduled",
+      payload: evidencePayload
+    });
   }
 
-  return toJobObject(res.rows[0]);
+  return toJobObject(finalRes.rows[0]);
 }
 
 /**
  * Fail a job due to error.
  */
-export async function failJob(clientOrAdapter, { jobId, leaseOwner, errorPayload }) {
+export async function failJob(clientOrAdapter, { jobId, leaseOwner, errorPayload }, retryOptions = {}) {
   const run = async (client) => {
-    return await failJobInternal(client, { jobId, leaseOwner, errorPayload });
+    return await failJobInternal(client, { jobId, leaseOwner, errorPayload, isLeaseExpiry: false }, retryOptions);
   };
 
   if (typeof clientOrAdapter.withTransaction === "function") {
@@ -306,14 +399,23 @@ export async function failJob(clientOrAdapter, { jobId, leaseOwner, errorPayload
 
 /**
  * Reclaim expired leases.
+ * Scoped and bounded by agentId. Deterministic ordering and batch limit of 100.
  */
-export async function reclaimExpiredLeases(clientOrAdapter) {
+export async function reclaimExpiredLeases(clientOrAdapter, { agentId, retryOptions = {} } = {}) {
+  if (!agentId) {
+    throw new Error("AGENT_ID_REQUIRED_FOR_SWEEPING");
+  }
+
   const run = async (client) => {
     const expiredRes = await client.query(
       `SELECT id, lease_owner, attempts, max_attempts FROM jobs
        WHERE status IN ('leased', 'running')
+         AND agent_id = $1
          AND lease_expires_at < now()
-       FOR UPDATE;`
+       ORDER BY priority ASC, created_at ASC
+       LIMIT 100
+       FOR UPDATE SKIP LOCKED;`,
+      [agentId]
     );
 
     const reclaimed = [];
@@ -321,11 +423,163 @@ export async function reclaimExpiredLeases(clientOrAdapter) {
       const updated = await failJobInternal(client, {
         jobId: row.id,
         leaseOwner: row.lease_owner,
-        errorPayload: { message: "Lease expired and reclaimed" },
-      });
+        errorPayload: { message: "LEASE_EXPIRED_AND_RECLAIMED" },
+        isLeaseExpiry: true
+      }, retryOptions);
       reclaimed.push(updated);
     }
     return reclaimed;
+  };
+
+  if (typeof clientOrAdapter.withTransaction === "function") {
+    return await clientOrAdapter.withTransaction(run);
+  } else {
+    return await run(clientOrAdapter);
+  }
+}
+
+/**
+ * Manual replay of a dead_letter job.
+ * Requires explicit owner-authorized evidence, never resets history silently,
+ * and enforces strict agent/job isolation.
+ */
+export async function replayJob(clientOrAdapter, { jobId, agentId, ownerId, evidenceId }) {
+  if (!jobId || !agentId || !ownerId || !evidenceId) {
+    throw new Error("MISSING_REPLAY_PARAMETERS");
+  }
+
+  const run = async (client) => {
+    // 1. Verify owner authorization exists in DB
+    const ownerRes = await client.query(
+      "SELECT id FROM owners WHERE id = $1;",
+      [ownerId]
+    );
+    if (ownerRes.rowCount === 0) {
+      throw new Error("OWNER_NOT_FOUND");
+    }
+
+    // 2. Verify agent belongs to owner in the canonical ownership model
+    const belongsRes = await client.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM communication_sessions WHERE owner_id = $1 AND agent_id = $2
+         UNION ALL
+         SELECT 1 FROM broker_credential_metadata WHERE owner_id = $1 AND agent_id = $2
+       ) AS belongs;`,
+      [ownerId, agentId]
+    );
+    if (!belongsRes.rows[0].belongs) {
+      throw new Error("AGENT_OWNERSHIP_VIOLATION");
+    }
+
+    // 3. Acquire a transaction-level advisory lock on evidenceId to prevent double-consumption
+    const lockId = crypto.createHash("sha256").update(evidenceId).digest().readInt32BE(0);
+    await client.query("SELECT pg_advisory_xact_lock($1);", [lockId]);
+
+    // 4. Verify explicit unconsumed owner-authorized approval exists in DB
+    const approvalRes = await client.query(
+      "SELECT * FROM evidence_events WHERE id = $1 AND kind = 'job_replay_authorized' AND classification = 'owner_authorized_replay';",
+      [evidenceId]
+    );
+    if (approvalRes.rowCount === 0) {
+      throw new Error("REPLAY_AUTHORIZATION_EVIDENCE_NOT_FOUND");
+    }
+
+    const approvalEvent = approvalRes.rows[0];
+    const evidencePayload = approvalEvent.payload || {};
+
+    // Validate approval binds atomically to exact owner + agent + job + replay action
+    if (
+      evidencePayload.ownerId !== ownerId ||
+      evidencePayload.agentId !== agentId ||
+      evidencePayload.jobId !== jobId ||
+      evidencePayload.action !== "replay"
+    ) {
+      throw new Error("REPLAY_AUTHORIZATION_MISMATCH");
+    }
+
+    // Check if already consumed by a job_replay_consumed event
+    const consumedRes = await client.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM evidence_events
+          WHERE kind = 'job_replay_consumed'
+            AND payload->>'approvalEvidenceId' = $1
+       ) AS already_consumed;`,
+      [evidenceId]
+    );
+    if (consumedRes.rows[0].already_consumed) {
+      throw new Error("REPLAY_APPROVAL_ALREADY_CONSUMED");
+    }
+
+    // Decode and validate budget carried by the approval record
+    const additionalAttempts = parseInt(evidencePayload.additionalAttempts, 10);
+    if (Number.isNaN(additionalAttempts) || additionalAttempts <= 0 || additionalAttempts > 10) {
+      throw new Error("INVALID_REPLAY_ATTEMPT_BUDGET");
+    }
+
+    // 5. Select and lock the job
+    const jobRes = await client.query(
+      "SELECT * FROM jobs WHERE id = $1 FOR UPDATE;",
+      [jobId]
+    );
+    if (jobRes.rowCount === 0) {
+      throw new Error("JOB_NOT_FOUND");
+    }
+    const job = jobRes.rows[0];
+
+    // Enforce strict agent isolation: prevent cross-agent replay
+    if (job.agent_id !== agentId) {
+      throw new Error("AGENT_ISOLATION_VIOLATION");
+    }
+
+    // Ensure job is in dead_letter status
+    if (job.status !== "dead_letter") {
+      throw new Error("JOB_NOT_IN_DEAD_LETTER_STATE");
+    }
+
+    // 6. Never reset history silently: increment max_attempts while leaving attempts intact
+    const originalMaxAttempts = job.max_attempts;
+    const newMaxAttempts = originalMaxAttempts + additionalAttempts;
+    const oldBackoffMetadata = job.backoff_metadata || {};
+
+    const newBackoffMetadata = {
+      ...oldBackoffMetadata,
+      replayed_by_owner: ownerId,
+      replay_evidence_id: evidenceId,
+      replayed_at: new Date().toISOString(),
+    };
+
+    const res = await client.query(
+      `UPDATE jobs
+       SET status = 'queued',
+           max_attempts = $2,
+           next_attempt_at = now(),
+           backoff_metadata = $3,
+           updated_at = now()
+       WHERE id = $1
+       RETURNING *;`,
+      [jobId, newMaxAttempts, JSON.stringify(newBackoffMetadata)]
+    );
+
+    // 7. Append append-only job replay consumed evidence event atomically
+    const consumedEventPayload = {
+      jobId,
+      agentId,
+      ownerId,
+      approvalEvidenceId: evidenceId,
+      previousMaxAttempts: originalMaxAttempts,
+      newMaxAttempts,
+      attempts: job.attempts,
+      consumedAt: new Date().toISOString()
+    };
+
+    await appendEvidenceEventXact(client, {
+      subjectId: jobId,
+      kind: "job_replay_consumed",
+      classification: "owner_authorized_replay_consumed",
+      payload: consumedEventPayload
+    });
+
+    return toJobObject(res.rows[0]);
   };
 
   if (typeof clientOrAdapter.withTransaction === "function") {
