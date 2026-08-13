@@ -1,0 +1,108 @@
+remaining_slices:
+  - slice_id: task-3.6
+    module: foundation-and-durable-orchestration
+    title: Durable provider quotas, cooldowns and approved fallback routing
+    user_value: Enforce per-agent/provider quota and cooldown rules with zero-cost fail-closed routing and approved fallback ordering.
+    current_status: implemented_unverified
+    canonical_issue: 36
+    canonical_pr: 37
+    branch: task-3.6-provider-quota-cooldowns
+    dependencies: ["Task 3.5 merged on main"]
+    owned_paths:
+      - src/providers/**
+      - src/quotas/**
+      - src/recovery/**
+      - tests/providerConfiguration.test.js
+      - tests/durableRetry.test.js
+    migration_reservation: "013"
+    acceptance_tests:
+      - npm ci
+      - npm run verify
+      - npm test
+      - npm run test:integration
+    security_requirements:
+      - no live providers or credentials
+      - no paid routes or automatic billing metadata
+      - secret redaction and fail-closed quota enforcement
+    production_evidence:
+      - PostgreSQL 15 integration evidence required
+      - exact-head CI required
+    owner_gate: true
+    merge_order: 1
+    notes: "This is the canonical open slice for issue #36 and PR #37; it must remain the only canonical PR for this scope."
+
+  - slice_id: task-3.7
+    module: foundation-and-durable-orchestration
+    title: Durable circuit breakers, quarantine, owner alerts and emergency pause
+    user_value: Persist resilience controls so provider failures trigger quarantine, owner alerts, and emergency pause without bypassing safety gates.
+    current_status: implemented_unverified
+    canonical_issue: 38
+    canonical_pr: 40
+    branch: task-3.7-resilience-controls
+    dependencies: ["task-3.6 merged to main"]
+    owned_paths:
+      - src/recovery/**
+      - src/providers/**
+      - src/jobs/**
+      - tests/**
+    migration_reservation: "014"
+    acceptance_tests:
+      - npm ci
+      - npm run verify
+      - npm test
+      - npm run test:integration
+    security_requirements:
+      - durable state must be fail-closed and immutable where required
+      - owner authorization and alert deduplication required
+      - emergency pause precedence must be deterministic
+    production_evidence:
+      - PostgreSQL 15 concurrency, restart, failure-injection evidence required
+      - no fabricated provider or publishing receipts
+    owner_gate: true
+    merge_order: 2
+    notes: "Stacked dependency-safe slice based on PR #37. It remains a draft until exact-head gates pass and the PR is refreshed to latest main."
+
+  - slice_id: task-3.8
+    module: foundation-and-durable-orchestration
+    title: Recovery-stack integration, adversarial testing and operational runbook
+    user_value: Prove the full recovery stack works under failure injection, restart, rollback, and operational documentation with real evidence.
+    current_status: implemented_unverified
+    canonical_issue: 39
+    canonical_pr: 41
+    branch: task-3.8-recovery-integration
+    dependencies: ["task-3.6 merged to main", "task-3.7 merged to main"]
+    owned_paths:
+      - src/**
+      - tests/**
+      - docs/task3/**
+      - docs/SECURITY.md
+    migration_reservation: "015 if a proven additive schema gap is required"
+    acceptance_tests:
+      - npm ci
+      - npm run verify
+      - npm test
+      - npm run test:integration
+    security_requirements:
+      - PostgreSQL 15 adversarial and restart testing
+      - no live secrets or publishing calls
+      - operational runbook and rollback requirement attached
+    production_evidence:
+      - exact-head CI evidence required
+      - recovery matrix and requirement-to-evidence ledger required
+    owner_gate: true
+    merge_order: 3
+    notes: "This is the final Task 3 acceptance gate. It is not a placeholder PR and must not be replaced with empty coordination work."
+
+verified_merged_task3_prs:
+  - 30
+  - 31
+  - 32
+  - 33
+  - 35
+
+verified_open_canonical_task3_prs:
+  - 37
+  - 40
+  - 41
+
+reconciliation_note: "The live GitHub baseline does not support a 118-slice remainder. The repository’s current canonical Task 3 ledger contains three remaining open acceptance slices, with exactly one canonical PR each and no replacement PRs allowed."
