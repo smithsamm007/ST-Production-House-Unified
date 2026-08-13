@@ -860,3 +860,92 @@ test("ProviderConfigurationRouter composes with the production CredentialBroker 
   assert.equal(observedSecret, "production-contract-secret");
   assert.equal(auditEvents.filter((event) => event.action === "resolve" && event.status === "success").length, 1);
 });
+
+test("ProviderConfigurationRouter passes the complete durable quota scope and records fallback evidence", async () => {
+  const calls = [];
+  const durableQuota = {
+    isProductionDurable: true,
+    async reserve(scope) {
+      calls.push({ op: "reserve", scope: { ...scope } });
+      return { id: `reservation-${scope.slot}`, ownerId: scope.ownerId, agentId: scope.agentId, status: "reserved" };
+    },
+    async commit(reservation) { calls.push({ op: "commit", id: reservation.id }); },
+    async release(reservation) { calls.push({ op: "release", id: reservation.id }); },
+    async recordCooldown(scope, detail) { calls.push({ op: "cooldown", scope: { ...scope }, detail: { ...detail } }); },
+    async recordFallback(scope, detail) { calls.push({ op: "fallback", scope: { ...scope }, detail: { ...detail } }); }
+  };
+  const recoveryManager = {
+    isHealthy: () => true,
+    recordSuccess: () => {},
+    recordFailure: () => {}
+  };
+  const credentialHealthRegistry = { isHealthy: () => true };
+  const broker = new MockCredentialBroker();
+  const slots = createValidSlots("owner-durable", "agent-durable");
+  const executors = new Map([
+    ["gemini", async () => { throw new Error("TIMEOUT"); }],
+    ["claude", async () => ({ output: "ok", evidence: { providerResponseId: "response-2" } })]
+  ]);
+  const router = new ProviderConfigurationRouter(executors, {
+    quotaLedger: durableQuota,
+    recoveryManager,
+    credentialHealthRegistry,
+    credentialBroker: broker
+  });
+
+  const result = await router.execute({
+    ownerId: "owner-durable",
+    agentId: "agent-durable",
+    taskId: "task-durable",
+    slots,
+    input: { safe: true }
+  });
+
+  assert.equal(result.selectedProvider, "claude");
+  assert.deepEqual(calls[0], {
+    op: "reserve",
+    scope: {
+      ownerId: "owner-durable",
+      agentId: "agent-durable",
+      slot: "primary",
+      provider: "gemini",
+      credentialId: "cred-gemini-01",
+      idempotencyKey: "task-durable:primary",
+      units: 1
+    }
+  });
+  assert.equal(calls.some((call) => call.op === "cooldown" && call.scope.slot === "primary" && call.detail.recordFallback), true);
+  assert.equal(calls.some((call) => call.op === "reserve" && call.scope.slot === "secondary"), true);
+  assert.equal(calls.some((call) => call.op === "commit" && call.id === "reservation-secondary"), true);
+});
+
+test("ProviderConfigurationRouter fails closed when durable fallback evidence cannot be appended", async () => {
+  const durableQuota = {
+    isProductionDurable: true,
+    async reserve(scope) { return { id: `reservation-${scope.slot}`, status: "reserved" }; },
+    async commit() {},
+    async release() {},
+    async recordCooldown() { throw new Error("AUDIT_FAILURE"); },
+    async recordFallback() { throw new Error("AUDIT_FAILURE"); }
+  };
+  const router = new ProviderConfigurationRouter(
+    new Map([["gemini", async () => { throw new Error("TIMEOUT"); }]]),
+    {
+      quotaLedger: durableQuota,
+      recoveryManager: { isHealthy: () => true, recordSuccess: () => {}, recordFailure: () => {} },
+      credentialHealthRegistry: { isHealthy: () => true },
+      credentialBroker: new MockCredentialBroker()
+    }
+  );
+
+  await assert.rejects(
+    router.execute({
+      ownerId: "owner-audit",
+      agentId: "agent-audit",
+      taskId: "task-audit",
+      slots: createValidSlots("owner-audit", "agent-audit"),
+      input: {}
+    }),
+    /AUDIT_FAILURE/
+  );
+});

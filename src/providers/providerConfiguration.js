@@ -36,6 +36,18 @@ export function getEnumErrorCode(error) {
   if (msg.includes("PROVIDER_IN_COOLDOWN")) {
     return "PROVIDER_IN_COOLDOWN";
   }
+  if (msg === "TIMEOUT" || msg.includes("ETIMEDOUT")) {
+    return "TIMEOUT";
+  }
+  if (msg === "RATE_LIMIT" || msg.includes("TOO_MANY_REQUESTS") || msg.includes("429")) {
+    return "RATE_LIMIT";
+  }
+  if (msg === "SERVICE_UNAVAILABLE" || msg.includes("503")) {
+    return "SERVICE_UNAVAILABLE";
+  }
+  if (msg === "TEMPORARY_NETWORK_FAILURE") {
+    return "TEMPORARY_NETWORK_FAILURE";
+  }
   if (msg.includes("EXECUTOR_NOT_REGISTERED")) {
     return "EXECUTOR_NOT_REGISTERED";
   }
@@ -244,6 +256,50 @@ export class ProviderConfigurationRouter {
     this.credentialBroker = credentialBroker;
   }
 
+  _quotaScope({ ownerId, agentId, taskId, slot, provider, credentialId }) {
+    return {
+      ownerId,
+      agentId,
+      slot,
+      provider,
+      credentialId,
+      idempotencyKey: `${taskId}:${slot}`,
+      units: 1
+    };
+  }
+
+  async _reserveQuota(scope, legacyAgentId) {
+    return this.quotaLedger.isProductionDurable
+      ? this.quotaLedger.reserve(scope)
+      : this.quotaLedger.reserve(legacyAgentId, scope.slot, scope.provider, scope.credentialId);
+  }
+
+  async _recordFallback(scope, errorCode) {
+    if (!this.quotaLedger.isProductionDurable) return;
+    if (typeof this.quotaLedger.recordFallback !== "function") {
+      throw new Error("DURABLE_FALLBACK_EVIDENCE_REQUIRED");
+    }
+    await this.quotaLedger.recordFallback(scope, { errorCode });
+  }
+
+  async _recordFailureRoutingState(scope, errorCode) {
+    const cooldownCodes = new Set([
+      "RATE_LIMIT", "TIMEOUT", "SERVICE_UNAVAILABLE", "TEMPORARY_NETWORK_FAILURE"
+    ]);
+    if (this.quotaLedger.isProductionDurable && cooldownCodes.has(errorCode)) {
+      if (typeof this.quotaLedger.recordCooldown !== "function") {
+        throw new Error("DURABLE_COOLDOWN_EVIDENCE_REQUIRED");
+      }
+      await this.quotaLedger.recordCooldown(scope, {
+        errorCode,
+        retryAfterSeconds: 60,
+        recordFallback: true
+      });
+      return;
+    }
+    await this._recordFallback(scope, errorCode);
+  }
+
   /**
    * Executes tasks through configured providers with bounded failover.
    * Enforces all secure fail-closed validations including paid-route blocks,
@@ -269,6 +325,7 @@ export class ProviderConfigurationRouter {
       const credentialId = slot.credentialRef?.credentialId ?? null;
       const capability = slot.credentialRef?.capability ?? null;
       const scopeAgentId = `${ownerId}:${agentId}`;
+      const quotaScope = this._quotaScope({ ownerId, agentId, taskId, slot: slot.slot, provider, credentialId });
 
       // 1. Paid, Overage, and Automatic Billing route rejection (Fail closed)
       const isPaidConfig = slot.isPaid === true ||
@@ -284,6 +341,7 @@ export class ProviderConfigurationRouter {
           outcome: "skipped",
           errorCode: "PAID_OR_OVERAGE_ROUTES_FORBIDDEN"
         });
+        await this._recordFallback(quotaScope, "PAID_OR_OVERAGE_ROUTES_FORBIDDEN");
         continue;
       }
 
@@ -297,6 +355,7 @@ export class ProviderConfigurationRouter {
             outcome: "skipped",
             errorCode: "UNHEALTHY_CREDENTIAL"
           });
+          await this._recordFallback(quotaScope, "UNHEALTHY_CREDENTIAL");
           continue;
         }
       }
@@ -311,6 +370,7 @@ export class ProviderConfigurationRouter {
             outcome: "skipped",
             errorCode: "PROVIDER_IN_COOLDOWN"
           });
+          await this._recordFallback(quotaScope, "PROVIDER_IN_COOLDOWN");
           continue;
         }
       }
@@ -330,13 +390,15 @@ export class ProviderConfigurationRouter {
             throw new Error("LEASE_EXPIRED_OR_REVOKED");
           }
         } catch (brokerError) {
+          const errorCode = getEnumErrorCode(brokerError);
           attempts.push({
             slot: slot.slot,
             provider: slot.provider,
             startedAt,
             outcome: "skipped",
-            errorCode: getEnumErrorCode(brokerError)
+            errorCode
           });
+          await this._recordFallback(quotaScope, errorCode);
           continue;
         }
       }
@@ -344,7 +406,10 @@ export class ProviderConfigurationRouter {
       // 5. Atomic Quota Reservation
       let reservation;
       try {
-        reservation = await this.quotaLedger.reserve(scopeAgentId, slot.slot, provider, credentialId);
+        reservation = await this._reserveQuota(quotaScope, scopeAgentId);
+        if (!reservation || reservation.status !== "reserved") {
+          throw new Error("QUOTA_IDEMPOTENCY_TERMINAL_RESERVATION");
+        }
       } catch (reserveError) {
         // If quota reservation fails, make sure we revoke the lease!
         if (lease) {
@@ -361,6 +426,7 @@ export class ProviderConfigurationRouter {
           outcome: "skipped",
           errorCode: getEnumErrorCode(reserveError)
         });
+        await this._recordFallback(quotaScope, getEnumErrorCode(reserveError));
         continue;
       }
 
@@ -479,6 +545,7 @@ export class ProviderConfigurationRouter {
           terminal.attempts = attempts;
           throw terminal;
         }
+        await this._recordFailureRoutingState(quotaScope, getEnumErrorCode(execOrCommitError));
       } finally {
         // Always revoke lease in both success/failure paths to guarantee cleanup
         if (lease) {
