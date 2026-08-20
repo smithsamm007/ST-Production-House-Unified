@@ -62,6 +62,8 @@ const EVIDENCE_PAYLOAD_FIELDS = new Set([
   "previousMaxAttempts", "newMaxAttempts", "additionalAttempts",
   "classification", "reason", "error", "nextAttemptAt", "delaySec",
   "approvalEvidenceId", "consumedAt", "action",
+  "reservationId", "slot", "provider", "credentialId", "units", "status",
+  "cooldownCode", "cooldownUntil", "decision", "fromSlot", "toSlot",
 ]);
 
 export function sanitizeEvidencePayload(payload) {
