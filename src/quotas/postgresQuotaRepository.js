@@ -239,12 +239,26 @@ export class PostgresQuotaRepository {
     const agentId = requiredString(reservation.agentId, "AGENT_ID_REQUIRED", 200);
 
     return this.adapter.withTransaction(async (client) => {
+      const precheck = await client.query(
+        `SELECT quota_id FROM provider_quota_reservations
+         WHERE id=$1 AND owner_id=$2 AND agent_id=$3;`,
+        [id, ownerId, agentId]
+      );
+      if (precheck.rowCount !== 1) throw new Error("RESERVATION_SCOPE_MISMATCH");
+
+      await client.query(
+        `SELECT id FROM provider_quota_limits
+         WHERE id=$1
+         FOR UPDATE;`,
+        [precheck.rows[0].quota_id]
+      );
+
       const result = await client.query(
         `SELECT r.*, q.usage_count, q.reserved_count, q.quota_limit
          FROM provider_quota_reservations r
          JOIN provider_quota_limits q ON q.id=r.quota_id
          WHERE r.id=$1 AND r.owner_id=$2 AND r.agent_id=$3
-         FOR UPDATE OF r, q;`,
+         FOR UPDATE OF r;`,
         [id, ownerId, agentId]
       );
       if (result.rowCount !== 1) throw new Error("RESERVATION_SCOPE_MISMATCH");
