@@ -64,6 +64,9 @@ const EVIDENCE_PAYLOAD_FIELDS = new Set([
   "approvalEvidenceId", "consumedAt", "action",
   "reservationId", "slot", "provider", "credentialId", "units", "status",
   "cooldownCode", "cooldownUntil", "decision", "fromSlot", "toSlot",
+  "targetType", "targetKey", "state", "failureCode", "operation",
+  "contentSha256", "quarantineCode", "approvalId", "scopeType",
+  "reasonCode", "alertCode",
 ]);
 
 export function sanitizeEvidencePayload(payload) {

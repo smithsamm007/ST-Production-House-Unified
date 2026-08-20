@@ -27,3 +27,5 @@ Run and report the exact head for:
 - `npm run test:integration` against PostgreSQL 15
 
 Zero required skips. Include migration forward/rerun/rollback safety, concurrency/failure-injection results, changed files, and the CI URL. Do not mark ready or merge.
+
+A fresh exact-head workflow run is mandatory after any GitHub Actions runner failure that occurs before checkout; a zero-step infrastructure failure is never acceptance evidence.

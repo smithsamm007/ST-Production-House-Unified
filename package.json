@@ -9,10 +9,10 @@
   },
   "scripts": {
     "test": "node --test --test-concurrency=1",
-    "test:integration": "node --test --test-concurrency=1 tests/postgresIntegration.integration.js tests/postgresAuthIntegration.integration.js tests/credentialBrokerPostgres.integration.js tests/durableRetryPostgres.integration.js tests/providerQuotaPostgres.integration.js",
+    "test:integration": "node --test --test-concurrency=1 tests/postgresIntegration.integration.js tests/postgresAuthIntegration.integration.js tests/credentialBrokerPostgres.integration.js tests/durableRetryPostgres.integration.js tests/providerQuotaPostgres.integration.js tests/resiliencePostgres.integration.js tests/recoveryIntegration.integration.js",
     "migrate": "node -e \"import('./src/db/index.js').then(m => m.runMigrations(m.createPostgresAdapter())).then(r => console.log(JSON.stringify({code:'MIGRATIONS_COMPLETE',appliedCount:r.appliedCount}))).catch(() => { console.error('MIGRATIONS_FAILED'); process.exit(1); })\"",
     "migrate:status": "node -e \"import('./src/db/index.js').then(m => m.getMigrationStatus(m.createPostgresAdapter())).then(s => console.log(JSON.stringify({code:'MIGRATION_STATUS',migrations:s}))).catch(() => { console.error('MIGRATION_STATUS_FAILED'); process.exit(1); })\"",
-    "verify": "node --check src/catalog/agents.js && node --check src/catalog/ownerAuthentication.js && node --check src/catalog/repositories.js && node --check src/catalog/server.js && node --check src/providers/providerRouter.js && node --check src/promotion/promotionPolicy.js && node --check src/evidence/evidenceLedger.js && node --check src/publishing/publishingService.js && node --check src/db/postgresAdapter.js && node --check src/db/migrationRunner.js && node --check src/db/index.js && node --test --test-concurrency=1"
+    "verify": "node --check src/catalog/agents.js && node --check src/catalog/ownerAuthentication.js && node --check src/catalog/repositories.js && node --check src/catalog/server.js && node --check src/providers/providerRouter.js && node --check src/promotion/promotionPolicy.js && node --check src/evidence/evidenceLedger.js && node --check src/publishing/publishingService.js && node --check src/db/postgresAdapter.js && node --check src/db/migrationRunner.js && node --check src/db/index.js && node --check src/resilience/postgresResilienceRepository.js && node --test --test-concurrency=1"
   },
   "dependencies": {
     "argon2": "^0.45.1",
