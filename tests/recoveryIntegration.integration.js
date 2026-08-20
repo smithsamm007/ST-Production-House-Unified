@@ -571,13 +571,24 @@ test("Task 3.8 Recovery Stack Integration and Adversarial Test Suite", async (t)
       const alert = alerts.rows[0];
       assert.equal(alert.alert_code, "CIRCUIT_OPEN");
 
-      // Deduplication: triggering failure again should not create duplicate alert (ON CONFLICT DO NOTHING)
+      // A later failure is a distinct alert event because its circuit-open window differs.
       await resRepo.recordFailure(scope, { failureCode: "TIMEOUT", threshold: 1, cooldownSeconds: 5 });
       const alertsDup = await adapter.query(
-        "SELECT COUNT(*) as count FROM owner_alerts WHERE owner_id = $1 AND agent_id = $2",
+        "SELECT COUNT(*) as count, COUNT(DISTINCT dedupe_key) AS unique_count FROM owner_alerts WHERE owner_id = $1 AND agent_id = $2",
         [ownerId, agentId]
       );
-      assert.equal(parseInt(alertsDup.rows[0].count, 10), 1, "Alerts should be deduplicated");
+      assert.equal(parseInt(alertsDup.rows[0].count, 10), 2);
+      assert.equal(parseInt(alertsDup.rows[0].unique_count, 10), 2);
+
+      // Re-delivery of the exact same event is suppressed by the durable key.
+      const duplicate = await adapter.query(
+        `INSERT INTO owner_alerts(owner_id, agent_id, severity, alert_code, dedupe_key, subject_id)
+         VALUES($1, $2, $3, $4, $5, $6)
+         ON CONFLICT(owner_id, agent_id, dedupe_key) DO NOTHING
+         RETURNING id`,
+        [ownerId, agentId, alert.severity, alert.alert_code, alert.dedupe_key, alert.subject_id]
+      );
+      assert.equal(duplicate.rowCount, 0, "An exact alert re-delivery must be deduplicated");
 
       // Non-owner acknowledgement fails
       await assert.rejects(
