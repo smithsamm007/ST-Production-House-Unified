@@ -110,7 +110,7 @@ test("Task 3.8 Recovery Stack Integration and Adversarial Test Suite", async (t)
       );
       await adapter.query(
         `INSERT INTO agents(id, name, namespace, concurrency_limit) VALUES ($1, $2, $3, 2)`,
-        [agentId, `AGENT_${agentId.replace(/-/g, '_')}`, `st.agent.${agentId}`, 2]
+        [agentId, `AGENT_${agentId.replace(/-/g, '_')}`, `st.agent.${agentId}`]
       );
       return { ownerId, agentId };
     }
