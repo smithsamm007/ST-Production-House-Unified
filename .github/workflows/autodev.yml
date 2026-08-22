@@ -1,0 +1,50 @@
+name: AutoDev
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  implement-issue:
+    if: github.event.label.name == 'auto-code'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.AUTODEV_TOKEN }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0, token: "${{ secrets.AUTODEV_TOKEN }}" }
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: npm ci || npm install
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: pipx install aider-chat
+
+      - name: Implement issue
+        run: |
+          BRANCH="auto/issue-${{ github.event.issue.number }}"
+          git checkout -b "$BRANCH"
+          git config user.name  "autodev-bot"
+          git config user.email "autodev[bot]@users.noreply.github.com"
+          gh issue view ${{ github.event.issue.number }} --json body -q .body > /tmp/task.md
+          aider --model openrouter/deepseek/deepseek-r1:free \
+                --yes-always --no-auto-commits \
+                --message-file /tmp/task.md \
+                CONVENTIONS.md
+          git add -A && git commit -m "feat: resolve #${{ github.event.issue.number }} [autodev]"
+          git push origin "$BRANCH"
+
+      - name: Open draft PR
+        run: |
+          gh pr create --draft --base main \
+            --head "auto/issue-${{ github.event.issue.number }}" \
+            --title "AutoDev: issue #${{ github.event.issue.number }}" \
+            --body "Closes #${{ github.event.issue.number }}. ⚠️ Automated implementation — owner review required."
