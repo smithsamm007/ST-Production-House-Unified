@@ -117,6 +117,7 @@ test("Credential Broker PostgreSQL Durable Metadata and Audit Log Integration Te
       ["005_creative_reference.sql", "2846bdd39a03b3421627ea28d148d4df79c06bd0200637bfe200117fe7ceac34"],
       ["006_seed_initial_creative_charters.sql", "9f2b801f2738862ea90eb5734693508189823f7f8343188560ea3cf71b578d65"],
       ["007_owner_agent_communication_studio.sql", "4d164008b597056fa7f70aa800ecdb503ca4dda31073493c8a25de3b533677ed"],
+      ["008_credential_metadata.sql", "6f61e0abb321886e9f3ad81cea0ea2eb8cb25f2175938c9c2c8cade0083460a1"],
       ["008_owner_authentication_and_sessions.sql", "39d76ebab5ab92133080a054af95f1ade5375c0c6f4c0993f7434d39863eba51"],
       ["009_add_owner_role.sql", "fde06a05a5290f4be439ce320d423af9fb746bda6a9eb4db34b02ff46d5d0541"],
       ["010_job_lifecycle.sql", "86a011779be5afe0eb1f48562faf96acb107e99f28c4ad34b0c8632f7d84d5c6"]
