@@ -8,26 +8,32 @@ export class LocatorError extends Error {
   }
 }
 
+class Locator {
+  constructor(id, issuedAt) {
+    this.id = id;
+    this.issuedAt = issuedAt;
+  }
+
+  toString() {
+    return this.id;
+  }
+
+  toJSON() {
+    return this.id;
+  }
+}
+
 /**
  * Mint a new opaque credential locator ID.
  * Pure random ID, containing NO provider name, NO agent name, NO secret.
- * @returns {{ id: string, issuedAt: string, toString: Function, toJSON: Function }}
+ * @returns {{ id: string, issuedAt: string }}
  */
 export function mintLocator() {
   const bytes = randomBytes(32);
   const id = `loc_v1_${bytes.toString("base64url")}`;
   const issuedAt = new Date().toISOString();
 
-  return {
-    id,
-    issuedAt,
-    toString() {
-      return this.id;
-    },
-    toJSON() {
-      return this.id;
-    }
-  };
+  return new Locator(id, issuedAt);
 }
 
 /**
