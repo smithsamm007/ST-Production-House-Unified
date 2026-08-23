@@ -1,0 +1,31 @@
+name: Autonomous Merge
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  test-and-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run full test suite (the referee)
+        run: |
+          npm test
+          npm run verify
+
+      - name: Enable auto-merge on pass
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge "${{ github.event.pull_request.number }}" \
+            --auto --squash --delete-branch || \
+          echo "::notice::Auto-merge armed; merges when all checks pass."

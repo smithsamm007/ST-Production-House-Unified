@@ -1,0 +1,51 @@
+name: Night Shift Agent
+on:
+  schedule:
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+
+jobs:
+  shift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+
+      - name: Single-lane gate — skip if any PR is open
+        id: gate
+        env: { GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}' }
+        run: |
+          OPEN=$(gh pr list --state open --limit 1 --json number -q 'length')
+          if [ "$OPEN" != "0" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::PR already open — lane busy, standing down."
+          fi
+
+      - name: Install coder
+        if: steps.gate.outputs.skip != 'true'
+        run: pip install aider-chat
+
+      - name: Run agent on next ready issue
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GEMINI_API_KEY: '${{ secrets.GEMINI_API_KEY }}'
+        run: |
+          git config user.name  "night-shift-agent"
+          git config user.email "actions@users.noreply.github.com"
+          gh issue list --label ready --state open --limit 1 > /tmp/task.txt || true
+          TASK=$(cat /tmp/task.txt)
+          [ -z "$TASK" ] && echo "::notice::Queue empty." && exit 0
+          aider --model gemini/gemini-2.5-flash \
+                --yes-always \
+                --message "Implement this issue fully per AGENTS.md rules: $TASK \
+                           Create branch task/<issue#>, commit, push, open PR \
+                           with 'Closes #N' and pasted npm test output." \
+                --no-auto-commits || true
