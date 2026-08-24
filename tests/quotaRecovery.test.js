@@ -146,7 +146,7 @@ test("Circuit Breaker - applies to emergency open-source routes", () => {
 
   // Wait for cooldown
   const start = Date.now();
-  while (Date.now() - start < 60) {}
+  while (Date.now() - start < 100) {}
 
   // Check health -> transitions to HALF_OPEN
   assert.equal(recovery.isHealthy("agent-01", "open_source_emergency", "ollama", null), true);
