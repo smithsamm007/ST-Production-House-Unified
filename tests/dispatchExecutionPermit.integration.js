@@ -105,6 +105,51 @@ test("PostgreSQL 15 execution permit is atomic, restart-safe, scoped, revocable,
     assert.equal((await quota.getQuotaState(quotaScope)).reservedCount, 1);
     assert.equal((await quota.getQuotaState(quotaScope)).usageCount, 0);
     assert.deepEqual(await new PostgresDispatchExecutionPermit(db).redeem(winningInput), created);
+
+    const claimInput = { ...winningInput, expectedPayloadHash: created.checkpointPayloadHash,
+      intentLeaseOwner: "intent-worker-1", intentClaimKey: "claim-1", intentLeaseSeconds: 30 };
+    await assert.rejects(new PostgresDispatchExecutionPermit(rollbackAdapter).claimIntent(claimInput), /INJECTED_EVIDENCE_FAILURE/);
+    assert.equal((await store.read(taskId)).data.state, "DISPATCH_EXECUTION_INTENT");
+    const claimAttempts = await Promise.allSettled([
+      new PostgresDispatchExecutionPermit(db).claimIntent(claimInput),
+      new PostgresDispatchExecutionPermit(db).claimIntent({ ...claimInput,
+        intentLeaseOwner: "intent-worker-2", intentClaimKey: "claim-2" })
+    ]);
+    assert.equal(claimAttempts.filter((entry) => entry.status === "fulfilled").length, 1);
+    assert.equal(claimAttempts.filter((entry) => entry.status === "rejected").length, 1);
+    const claimWinnerIndex = claimAttempts.findIndex((entry) => entry.status === "fulfilled");
+    const claimResult = claimAttempts[claimWinnerIndex].value;
+    const winningClaimInput = claimWinnerIndex === 0 ? claimInput : { ...claimInput,
+      intentLeaseOwner: "intent-worker-2", intentClaimKey: "claim-2" };
+    assert.equal(claimResult.checkpointState, "DISPATCH_INTENT_CLAIMED");
+    assert.equal(claimResult.intentClaimStatus, "active");
+    assert.equal(claimResult.executionStarted, false);
+    assert.equal(claimResult.providerCallStarted, false);
+    assert.deepEqual(await new PostgresDispatchExecutionPermit(db).claimIntent(winningClaimInput), claimResult);
+
+    const claimedRecord = await store.read(taskId);
+    const cancelInput = { ...winningClaimInput, expectedPayloadHash: claimedRecord.payloadHash };
+    const cancelledIntent = await new PostgresDispatchExecutionPermit(db).cancelIntent(cancelInput);
+    assert.equal(cancelledIntent.checkpointState, "DISPATCH_EXECUTION_INTENT");
+    assert.equal(cancelledIntent.intentClaimStatus, "cancelled");
+    assert.equal((await quota.getQuotaState(quotaScope)).reservedCount, 1);
+    assert.equal((await quota.getQuotaState(quotaScope)).usageCount, 0);
+    assert.deepEqual(await new PostgresDispatchExecutionPermit(db).cancelIntent(cancelInput), cancelledIntent);
+
+    const expiringClaimInput = { ...winningInput, expectedPayloadHash: cancelledIntent.checkpointPayloadHash,
+      intentLeaseOwner: "intent-worker-expired", intentClaimKey: "claim-expired", intentLeaseSeconds: 30 };
+    await new PostgresDispatchExecutionPermit(db).claimIntent(expiringClaimInput);
+    const claimedForExpiry = await store.read(taskId);
+    const expiredClaimRecord = await store.write(taskId, { step: claimedForExpiry.step,
+      progress: claimedForExpiry.progress,
+      data: { ...claimedForExpiry.data, intentClaimExpiresAt: "2000-01-01T00:00:00.000Z" },
+      artifactRefs: claimedForExpiry.artifactRefs, evidenceRefs: claimedForExpiry.evidenceRefs });
+    const recoveredIntent = await new PostgresDispatchExecutionPermit(db).reclaimExpiredIntent({
+      ...expiringClaimInput, expectedPayloadHash: expiredClaimRecord.payloadHash
+    });
+    assert.equal(recoveredIntent.checkpointState, "DISPATCH_EXECUTION_INTENT");
+    assert.equal(recoveredIntent.intentClaimStatus, "expired");
+    assert.equal((await quota.getQuotaState(quotaScope)).reservedCount, 1);
   } finally {
     if (pool) await pool.end().catch(() => {});
     await bootstrap.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {});
