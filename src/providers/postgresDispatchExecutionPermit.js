@@ -44,7 +44,7 @@ function validateInput(input = {}, action) {
     scope.ownerId, scope.agentId, scope.taskId, scope.capability, scope.reservationId, scope.slot,
     scope.provider, scope.credentialId, scope.units, scope.leaseOwner, scope.permitKey
   ])).digest("hex");
-  if (["redeem", "claim-intent", "cancel-intent", "expire-intent"].includes(action)) {
+  if (["redeem", "claim-intent", "cancel-intent", "expire-intent", "authorize-call", "cancel-call", "expire-call"].includes(action)) {
     scope.intentKey = required(input.intentKey, "DISPATCH_INTENT_KEY_REQUIRED", 100);
     scope.executionIntentId = createHash("sha256")
       .update(JSON.stringify([scope.permitId, scope.intentKey]))
