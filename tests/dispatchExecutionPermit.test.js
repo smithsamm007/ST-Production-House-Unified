@@ -77,3 +77,26 @@ test("rejects invalid lease, secret-bearing scope, and transaction failure", asy
   await assert.rejects(permit.issue(input), /DB_FAILED/);
   assert.equal(transactions, 1);
 });
+
+test("claims and recovers a bounded execution intent without starting a provider", () => {
+  const claimScope = { ...scope, executionIntentId: "e".repeat(64), intentKey: "intent-1",
+    intentClaimId: "f".repeat(64), intentLeaseOwner: "worker-intent-1",
+    intentClaimKey: "claim-1", intentLeaseSeconds: 60 };
+  const permitted = buildDispatchExecutionPermitTransition({ checkpointRecord: checkpoint(), scope: claimScope,
+    action: "issue", databaseNow: "2026-08-24T00:01:00.000Z" });
+  const intent = buildDispatchExecutionPermitTransition({ checkpointRecord: permitted, scope: claimScope,
+    action: "redeem", databaseNow: "2026-08-24T00:01:10.000Z" });
+  const claimed = buildDispatchExecutionPermitTransition({ checkpointRecord: intent, scope: claimScope,
+    action: "claim-intent", databaseNow: "2026-08-24T00:01:20.000Z" });
+  assert.equal(claimed.data.state, "DISPATCH_INTENT_CLAIMED");
+  assert.equal(claimed.data.intentClaimStatus, "active");
+  assert.equal(claimed.data.intentClaimExpiresAt, "2026-08-24T00:02:20.000Z");
+  assert.equal(claimed.data.executionStarted, false);
+  assert.equal(claimed.data.providerCallStarted, false);
+  const cancelled = buildDispatchExecutionPermitTransition({ checkpointRecord: claimed, scope: claimScope,
+    action: "cancel-intent", databaseNow: "2026-08-24T00:01:30.000Z" });
+  assert.equal(cancelled.data.state, "DISPATCH_EXECUTION_INTENT");
+  assert.equal(cancelled.data.executionIntentStatus, "ready");
+  assert.equal(cancelled.data.intentClaimStatus, "cancelled");
+  assert.equal(cancelled.data.reservationStatus, "reserved");
+});

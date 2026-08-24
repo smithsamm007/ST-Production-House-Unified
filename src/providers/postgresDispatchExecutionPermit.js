@@ -8,6 +8,7 @@ const SECRET_PATTERN = /vault:\/\/|opaque:\/\/|password|api[_ -]?key|bearer\s/i;
 const ADMITTED = "DISPATCH_ADMITTED";
 const PERMITTED = "DISPATCH_PERMITTED";
 const EXECUTION_INTENT = "DISPATCH_EXECUTION_INTENT";
+const INTENT_CLAIMED = "DISPATCH_INTENT_CLAIMED";
 
 export class DispatchExecutionPermitError extends Error {
   constructor(code) { super(code); this.name = "DispatchExecutionPermitError"; this.code = code; }
@@ -42,10 +43,21 @@ function validateInput(input = {}, action) {
     scope.ownerId, scope.agentId, scope.taskId, scope.capability, scope.reservationId, scope.slot,
     scope.provider, scope.credentialId, scope.units, scope.leaseOwner, scope.permitKey
   ])).digest("hex");
-  if (action === "redeem") {
+  if (["redeem", "claim-intent", "cancel-intent", "expire-intent"].includes(action)) {
     scope.intentKey = required(input.intentKey, "DISPATCH_INTENT_KEY_REQUIRED", 100);
     scope.executionIntentId = createHash("sha256")
       .update(JSON.stringify([scope.permitId, scope.intentKey]))
+      .digest("hex");
+  }
+  if (["claim-intent", "cancel-intent", "expire-intent"].includes(action)) {
+    scope.intentLeaseOwner = required(input.intentLeaseOwner, "DISPATCH_INTENT_LEASE_OWNER_REQUIRED", 100);
+    scope.intentClaimKey = required(input.intentClaimKey, "DISPATCH_INTENT_CLAIM_KEY_REQUIRED", 100);
+    scope.intentLeaseSeconds = input.intentLeaseSeconds;
+    if (!Number.isSafeInteger(scope.intentLeaseSeconds) || scope.intentLeaseSeconds < 30 || scope.intentLeaseSeconds > 300) {
+      fail("DISPATCH_INTENT_LEASE_INVALID");
+    }
+    scope.intentClaimId = createHash("sha256")
+      .update(JSON.stringify([scope.executionIntentId, scope.intentLeaseOwner, scope.intentClaimKey]))
       .digest("hex");
   }
   return scope;
@@ -88,6 +100,30 @@ export function buildDispatchExecutionPermitTransition({ checkpointRecord, scope
       permitConsumedAt: now.toISOString(), executionIntentId: scope.executionIntentId,
       executionIntentStatus: "ready", executionIntentCreatedAt: now.toISOString(),
       executionStarted: false, providerCallStarted: false };
+  } else if (action === "claim-intent") {
+    if (data.state !== EXECUTION_INTENT || data.executionIntentStatus !== "ready" ||
+        data.executionIntentId !== scope.executionIntentId || data.permitId !== scope.permitId ||
+        data.permitStatus !== "consumed") fail("DISPATCH_INTENT_NOT_READY");
+    current.step = "dispatch_execution_intent_claimed";
+    current.data = { ...data, state: INTENT_CLAIMED, executionIntentStatus: "claimed",
+      intentClaimId: scope.intentClaimId, intentLeaseOwner: scope.intentLeaseOwner,
+      intentClaimedAt: now.toISOString(),
+      intentClaimExpiresAt: new Date(now.getTime() + scope.intentLeaseSeconds * 1000).toISOString(),
+      intentClaimStatus: "active", lastIntentClaimId: null, lastIntentLeaseOwner: null,
+      executionStarted: false, providerCallStarted: false };
+  } else if (action === "cancel-intent" || action === "expire-intent") {
+    if (data.state !== INTENT_CLAIMED || data.executionIntentId !== scope.executionIntentId ||
+        data.intentClaimId !== scope.intentClaimId || data.intentLeaseOwner !== scope.intentLeaseOwner ||
+        data.intentClaimStatus !== "active") fail("DISPATCH_INTENT_CLAIM_CONFLICT");
+    if (action === "expire-intent" && new Date(data.intentClaimExpiresAt).getTime() > now.getTime()) {
+      fail("DISPATCH_INTENT_CLAIM_NOT_EXPIRED");
+    }
+    current.step = "dispatch_execution_intent_ready";
+    current.data = { ...data, state: EXECUTION_INTENT, executionIntentStatus: "ready",
+      intentClaimId: null, intentLeaseOwner: null, intentClaimedAt: null, intentClaimExpiresAt: null,
+      intentClaimStatus: action === "expire-intent" ? "expired" : "cancelled",
+      lastIntentClaimId: scope.intentClaimId, lastIntentLeaseOwner: scope.intentLeaseOwner,
+      executionStarted: false, providerCallStarted: false };
   } else if (action === "revoke" || action === "expire") {
     if (data.state !== PERMITTED || data.permitId !== scope.permitId || data.permitLeaseOwner !== scope.leaseOwner) fail("DISPATCH_PERMIT_REVOKE_CONFLICT");
     if (action === "expire" && new Date(data.permitExpiresAt).getTime() > now.getTime()) fail("DISPATCH_PERMIT_NOT_EXPIRED");
@@ -114,6 +150,9 @@ export class PostgresDispatchExecutionPermit {
   revoke(input) { return this.#transition(input, "revoke"); }
   reclaimExpired(input) { return this.#transition(input, "expire"); }
   redeem(input) { return this.#transition(input, "redeem"); }
+  claimIntent(input) { return this.#transition(input, "claim-intent"); }
+  cancelIntent(input) { return this.#transition(input, "cancel-intent"); }
+  reclaimExpiredIntent(input) { return this.#transition(input, "expire-intent"); }
   async #transition(input, action) {
     const scope = validateInput(input, action);
     return this.adapter.withTransaction(async (client) => {
@@ -143,10 +182,22 @@ export class PostgresDispatchExecutionPermit {
         const redeemed = action === "redeem" && record.data?.state === EXECUTION_INTENT &&
           record.data?.permitId === scope.permitId && record.data?.executionIntentId === scope.executionIntentId &&
           record.data?.permitStatus === "consumed";
+        const intentClaimed = action === "claim-intent" && record.data?.state === INTENT_CLAIMED &&
+          record.data?.executionIntentId === scope.executionIntentId &&
+          record.data?.intentClaimId === scope.intentClaimId &&
+          record.data?.intentLeaseOwner === scope.intentLeaseOwner && record.data?.intentClaimStatus === "active";
+        if (intentClaimed && new Date(record.data.intentClaimExpiresAt).getTime() <= new Date(checkpoint.database_now).getTime()) {
+          fail("DISPATCH_INTENT_CLAIM_EXPIRED_RECLAIM_REQUIRED");
+        }
+        const intentRecovered = (action === "cancel-intent" || action === "expire-intent") &&
+          record.data?.state === EXECUTION_INTENT && record.data?.executionIntentId === scope.executionIntentId &&
+          record.data?.lastIntentClaimId === scope.intentClaimId &&
+          record.data?.lastIntentLeaseOwner === scope.intentLeaseOwner &&
+          record.data?.intentClaimStatus === (action === "expire-intent" ? "expired" : "cancelled");
         const completed = action !== "issue" && action !== "redeem" && record.data?.state === ADMITTED &&
           record.data?.lastPermitId === scope.permitId && record.data?.lastPermitLeaseOwner === scope.leaseOwner &&
           record.data?.permitStatus === (action === "expire" ? "expired" : "revoked");
-        if (retry || redeemed || completed) return this.#result(record, scope);
+        if (retry || redeemed || intentClaimed || intentRecovered || completed) return this.#result(record, scope);
         fail("DISPATCH_PERMIT_STALE_CHECKPOINT");
       }
       const next = buildDispatchExecutionPermitTransition({ checkpointRecord: record, scope, action, databaseNow: checkpoint.database_now });
@@ -156,10 +207,17 @@ export class PostgresDispatchExecutionPermit {
         [scope.taskId, scope.ownerId, scope.agentId, JSON.stringify(next), next.payloadHash, next.checksum, scope.expectedPayloadHash]);
       if (updated.rowCount !== 1) fail("DISPATCH_PERMIT_STALE_CHECKPOINT");
       await appendEvidenceEventXact(client, { subjectId: scope.permitId,
-        kind: action === "issue" ? "dispatch_execution_permit_issued" : action === "redeem" ? "dispatch_execution_intent_created" : action === "expire" ? "dispatch_execution_permit_expired" : "dispatch_execution_permit_revoked",
+        kind: action === "issue" ? "dispatch_execution_permit_issued" :
+          action === "redeem" ? "dispatch_execution_intent_created" :
+          action === "claim-intent" ? "dispatch_execution_intent_claimed" :
+          action === "cancel-intent" ? "dispatch_execution_intent_cancelled" :
+          action === "expire-intent" ? "dispatch_execution_intent_claim_expired" :
+          action === "expire" ? "dispatch_execution_permit_expired" : "dispatch_execution_permit_revoked",
         classification: "dispatch_execution_permit", payload: { reservationId: scope.reservationId, ownerId: scope.ownerId,
           agentId: scope.agentId, slot: scope.slot, provider: scope.provider,
-          status: action === "issue" ? "active" : action === "redeem" ? "ready" : action === "expire" ? "expired" : "revoked",
+          status: action === "issue" ? "active" : action === "redeem" ? "ready" :
+            action === "claim-intent" ? "claimed" : action === "cancel-intent" ? "cancelled" :
+            (action === "expire-intent" || action === "expire") ? "expired" : "revoked",
           state: next.data.state, operation: action } });
       return this.#result(next, scope);
     });
@@ -169,6 +227,10 @@ export class PostgresDispatchExecutionPermit {
       permitStatus: record.data.permitStatus, permitExpiresAt: record.data.permitExpiresAt,
       executionIntentId: record.data.executionIntentId ?? null,
       executionIntentStatus: record.data.executionIntentStatus ?? null,
+      intentClaimId: record.data.intentClaimId ?? record.data.lastIntentClaimId ?? null,
+      intentLeaseOwner: record.data.intentLeaseOwner ?? record.data.lastIntentLeaseOwner ?? null,
+      intentClaimStatus: record.data.intentClaimStatus ?? null,
+      intentClaimExpiresAt: record.data.intentClaimExpiresAt ?? null,
       checkpointTaskId: record.taskId, checkpointPayloadHash: record.payloadHash, checkpointState: record.data.state,
       reservationId: scope.reservationId, reservationStatus: "reserved", executionStarted: false,
       providerCallStarted: false, providerSelection: "not_performed" });

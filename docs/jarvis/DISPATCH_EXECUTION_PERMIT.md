@@ -32,3 +32,17 @@ key, replay, stale hash, expired lease, or scope mismatch fails closed. The
 reservation remains `reserved` and quota usage remains zero. This state is only
 pre-call intent: provider selection is `not_performed`, execution and provider
 calls remain unstarted, and credentials are not resolved.
+
+## Bounded intent claim and recovery
+
+A ready execution intent can be claimed by exactly one worker as
+`DISPATCH_INTENT_CLAIMED`. The claim re-locks the free quota, reserved
+reservation, integrity-checked checkpoint, consumed permit, intent identity,
+and database clock. Its deterministic identifier and 30–300 second lease are
+stored in the checkpoint with secret-safe evidence.
+
+The identical claim is restart-safe. Competing workers and intent keys fail
+closed. Cancellation or database-clock expiry recovery returns the same intent
+to `DISPATCH_EXECUTION_INTENT` with status `ready`; the approved-free
+reservation remains reserved and quota usage stays zero. Claiming and recovery
+do not resolve credentials, select or call a provider, or start execution.
