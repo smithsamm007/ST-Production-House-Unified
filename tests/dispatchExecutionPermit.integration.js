@@ -79,6 +79,32 @@ test("PostgreSQL 15 execution permit is atomic, restart-safe, scoped, revocable,
     assert.equal(expired.checkpointState, "DISPATCH_ADMITTED");
     assert.equal(expired.permitStatus, "expired");
     assert.equal((await quota.getQuotaState(quotaScope)).reservedCount, 1);
+
+    const intentPermitInput = { ...input, permitKey: "attempt-intent",
+      expectedPayloadHash: expired.checkpointPayloadHash };
+    await permit.issue(intentPermitInput);
+    const intentReady = await store.read(taskId);
+    const intentInput = { ...intentPermitInput, expectedPayloadHash: intentReady.payloadHash, intentKey: "intent-1" };
+    await assert.rejects(new PostgresDispatchExecutionPermit(rollbackAdapter).redeem(intentInput), /INJECTED_EVIDENCE_FAILURE/);
+    assert.equal((await store.read(taskId)).data.state, "DISPATCH_PERMITTED");
+
+    const competing = await Promise.allSettled([
+      new PostgresDispatchExecutionPermit(db).redeem(intentInput),
+      new PostgresDispatchExecutionPermit(db).redeem({ ...intentInput, intentKey: "intent-2" })
+    ]);
+    assert.equal(competing.filter((entry) => entry.status === "fulfilled").length, 1);
+    assert.equal(competing.filter((entry) => entry.status === "rejected").length, 1);
+    const winningIndex = competing.findIndex((entry) => entry.status === "fulfilled");
+    const created = competing[winningIndex].value;
+    const winningInput = winningIndex === 0 ? intentInput : { ...intentInput, intentKey: "intent-2" };
+    assert.equal(created.checkpointState, "DISPATCH_EXECUTION_INTENT");
+    assert.equal(created.permitStatus, "consumed");
+    assert.equal(created.executionIntentStatus, "ready");
+    assert.equal(created.executionStarted, false);
+    assert.equal(created.providerCallStarted, false);
+    assert.equal((await quota.getQuotaState(quotaScope)).reservedCount, 1);
+    assert.equal((await quota.getQuotaState(quotaScope)).usageCount, 0);
+    assert.deepEqual(await new PostgresDispatchExecutionPermit(db).redeem(winningInput), created);
   } finally {
     if (pool) await pool.end().catch(() => {});
     await bootstrap.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {});
