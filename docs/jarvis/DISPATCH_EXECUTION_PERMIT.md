@@ -46,3 +46,21 @@ closed. Cancellation or database-clock expiry recovery returns the same intent
 to `DISPATCH_EXECUTION_INTENT` with status `ready`; the approved-free
 reservation remains reserved and quota usage stays zero. Claiming and recovery
 do not resolve credentials, select or call a provider, or start execution.
+
+## Bounded pre-call authorization
+
+An active, unexpired intent claim can authorize one bounded pre-call handoff as
+`DISPATCH_CALL_AUTHORIZED`. Authorization atomically re-locks the approved-free
+quota, still-reserved reservation, integrity-checked checkpoint, consumed
+permit, execution intent, and exact worker claim. Its deterministic identifier
+and 30–300 second database-clock lease are recorded with secret-safe evidence;
+the authorization can never outlive its parent intent claim.
+
+An identical authorization retry is restart-safe. Competing keys, workers,
+stale hashes, expired claims, replayed or cross-scope state, and secret-bearing
+inputs fail closed. Cancellation or expiry recovery returns the intent to
+`DISPATCH_EXECUTION_INTENT` / `ready`, retains the approved-free reservation,
+and keeps quota usage at zero. Authorization is not provider execution:
+provider selection remains `not_performed`, `executionStarted` and
+`providerCallStarted` remain `false`, and no credential is resolved or provider
+or network call is made.

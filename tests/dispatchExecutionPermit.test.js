@@ -100,3 +100,35 @@ test("claims and recovers a bounded execution intent without starting a provider
   assert.equal(cancelled.data.intentClaimStatus, "cancelled");
   assert.equal(cancelled.data.reservationStatus, "reserved");
 });
+
+test("authorizes and recovers a bounded pre-call handoff without starting execution", () => {
+  const authorizationScope = { ...scope, executionIntentId: "e".repeat(64), intentKey: "intent-1",
+    intentClaimId: "f".repeat(64), intentLeaseOwner: "worker-intent-1",
+    intentClaimKey: "claim-1", intentLeaseSeconds: 90,
+    authorizationId: "1".repeat(64), authorizationKey: "authorization-1",
+    authorizationLeaseSeconds: 30 };
+  const permitted = buildDispatchExecutionPermitTransition({ checkpointRecord: checkpoint(), scope: authorizationScope,
+    action: "issue", databaseNow: "2026-08-24T00:01:00.000Z" });
+  const intent = buildDispatchExecutionPermitTransition({ checkpointRecord: permitted, scope: authorizationScope,
+    action: "redeem", databaseNow: "2026-08-24T00:01:10.000Z" });
+  const claimed = buildDispatchExecutionPermitTransition({ checkpointRecord: intent, scope: authorizationScope,
+    action: "claim-intent", databaseNow: "2026-08-24T00:01:20.000Z" });
+  const authorized = buildDispatchExecutionPermitTransition({ checkpointRecord: claimed, scope: authorizationScope,
+    action: "authorize-call", databaseNow: "2026-08-24T00:01:30.000Z" });
+  assert.equal(authorized.data.state, "DISPATCH_CALL_AUTHORIZED");
+  assert.equal(authorized.data.authorizationStatus, "active");
+  assert.equal(authorized.data.authorizationExpiresAt, "2026-08-24T00:02:00.000Z");
+  assert.equal(authorized.data.intentClaimStatus, "consumed");
+  assert.equal(authorized.data.executionStarted, false);
+  assert.equal(authorized.data.providerCallStarted, false);
+  assert.equal(authorized.data.providerSelection, "not_performed");
+  assert.throws(() => buildDispatchExecutionPermitTransition({ checkpointRecord: authorized,
+    scope: authorizationScope, action: "expire-call", databaseNow: "2026-08-24T00:01:59.999Z" }),
+  /DISPATCH_CALL_AUTHORIZATION_NOT_EXPIRED/);
+  const cancelled = buildDispatchExecutionPermitTransition({ checkpointRecord: authorized,
+    scope: authorizationScope, action: "cancel-call", databaseNow: "2026-08-24T00:01:40.000Z" });
+  assert.equal(cancelled.data.state, "DISPATCH_EXECUTION_INTENT");
+  assert.equal(cancelled.data.executionIntentStatus, "ready");
+  assert.equal(cancelled.data.authorizationStatus, "cancelled");
+  assert.equal(cancelled.data.reservationStatus, "reserved");
+});
