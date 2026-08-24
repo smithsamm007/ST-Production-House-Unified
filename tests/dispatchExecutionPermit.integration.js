@@ -107,7 +107,7 @@ test("PostgreSQL 15 execution permit is atomic, restart-safe, scoped, revocable,
     assert.deepEqual(await new PostgresDispatchExecutionPermit(db).redeem(winningInput), created);
 
     const claimInput = { ...winningInput, expectedPayloadHash: created.checkpointPayloadHash,
-      intentLeaseOwner: "intent-worker-1", intentClaimKey: "claim-1", intentLeaseSeconds: 30 };
+      intentLeaseOwner: "intent-worker-1", intentClaimKey: "claim-1", intentLeaseSeconds: 90 };
     await assert.rejects(new PostgresDispatchExecutionPermit(rollbackAdapter).claimIntent(claimInput), /INJECTED_EVIDENCE_FAILURE/);
     assert.equal((await store.read(taskId)).data.state, "DISPATCH_EXECUTION_INTENT");
     const claimAttempts = await Promise.allSettled([
@@ -128,7 +128,48 @@ test("PostgreSQL 15 execution permit is atomic, restart-safe, scoped, revocable,
     assert.deepEqual(await new PostgresDispatchExecutionPermit(db).claimIntent(winningClaimInput), claimResult);
 
     const claimedRecord = await store.read(taskId);
-    const cancelInput = { ...winningClaimInput, expectedPayloadHash: claimedRecord.payloadHash };
+    const authorizeInput = { ...winningClaimInput, expectedPayloadHash: claimedRecord.payloadHash,
+      authorizationKey: "authorization-1", authorizationLeaseSeconds: 30 };
+    await assert.rejects(new PostgresDispatchExecutionPermit(rollbackAdapter).authorizeCall(authorizeInput),
+      /INJECTED_EVIDENCE_FAILURE/);
+    assert.equal((await store.read(taskId)).data.state, "DISPATCH_INTENT_CLAIMED");
+    const authorizationAttempts = await Promise.allSettled([
+      new PostgresDispatchExecutionPermit(db).authorizeCall(authorizeInput),
+      new PostgresDispatchExecutionPermit(db).authorizeCall({ ...authorizeInput,
+        authorizationKey: "authorization-2" })
+    ]);
+    assert.equal(authorizationAttempts.filter((entry) => entry.status === "fulfilled").length, 1);
+    assert.equal(authorizationAttempts.filter((entry) => entry.status === "rejected").length, 1);
+    const authorizationWinnerIndex = authorizationAttempts.findIndex((entry) => entry.status === "fulfilled");
+    const authorizationResult = authorizationAttempts[authorizationWinnerIndex].value;
+    const winningAuthorizationInput = authorizationWinnerIndex === 0 ? authorizeInput : {
+      ...authorizeInput, authorizationKey: "authorization-2" };
+    assert.equal(authorizationResult.checkpointState, "DISPATCH_CALL_AUTHORIZED");
+    assert.equal(authorizationResult.authorizationStatus, "active");
+    assert.equal(authorizationResult.executionStarted, false);
+    assert.equal(authorizationResult.providerCallStarted, false);
+    assert.equal((await quota.getQuotaState(quotaScope)).reservedCount, 1);
+    assert.equal((await quota.getQuotaState(quotaScope)).usageCount, 0);
+    assert.deepEqual(await new PostgresDispatchExecutionPermit(db).authorizeCall(winningAuthorizationInput),
+      authorizationResult);
+    const authorizedRecord = await store.read(taskId);
+    const cancelAuthorizationInput = { ...winningAuthorizationInput,
+      expectedPayloadHash: authorizedRecord.payloadHash };
+    const cancelledAuthorization = await new PostgresDispatchExecutionPermit(db)
+      .cancelCallAuthorization(cancelAuthorizationInput);
+    assert.equal(cancelledAuthorization.checkpointState, "DISPATCH_EXECUTION_INTENT");
+    assert.equal(cancelledAuthorization.authorizationStatus, "cancelled");
+    assert.equal((await quota.getQuotaState(quotaScope)).reservedCount, 1);
+    assert.equal((await quota.getQuotaState(quotaScope)).usageCount, 0);
+    assert.deepEqual(await new PostgresDispatchExecutionPermit(db)
+      .cancelCallAuthorization(cancelAuthorizationInput), cancelledAuthorization);
+
+    const cancellationClaimInput = { ...winningInput,
+      expectedPayloadHash: cancelledAuthorization.checkpointPayloadHash,
+      intentLeaseOwner: "intent-worker-cancel", intentClaimKey: "claim-cancel", intentLeaseSeconds: 60 };
+    await new PostgresDispatchExecutionPermit(db).claimIntent(cancellationClaimInput);
+    const claimedForCancellation = await store.read(taskId);
+    const cancelInput = { ...cancellationClaimInput, expectedPayloadHash: claimedForCancellation.payloadHash };
     const cancelledIntent = await new PostgresDispatchExecutionPermit(db).cancelIntent(cancelInput);
     assert.equal(cancelledIntent.checkpointState, "DISPATCH_EXECUTION_INTENT");
     assert.equal(cancelledIntent.intentClaimStatus, "cancelled");
@@ -136,7 +177,30 @@ test("PostgreSQL 15 execution permit is atomic, restart-safe, scoped, revocable,
     assert.equal((await quota.getQuotaState(quotaScope)).usageCount, 0);
     assert.deepEqual(await new PostgresDispatchExecutionPermit(db).cancelIntent(cancelInput), cancelledIntent);
 
-    const expiringClaimInput = { ...winningInput, expectedPayloadHash: cancelledIntent.checkpointPayloadHash,
+    const authorizationExpiryClaimInput = { ...winningInput,
+      expectedPayloadHash: cancelledIntent.checkpointPayloadHash,
+      intentLeaseOwner: "intent-worker-auth-expired", intentClaimKey: "claim-auth-expired",
+      intentLeaseSeconds: 90 };
+    const authorizationExpiryClaim = await new PostgresDispatchExecutionPermit(db)
+      .claimIntent(authorizationExpiryClaimInput);
+    const authorizationExpiryInput = { ...authorizationExpiryClaimInput,
+      expectedPayloadHash: authorizationExpiryClaim.checkpointPayloadHash,
+      authorizationKey: "authorization-expired", authorizationLeaseSeconds: 30 };
+    await new PostgresDispatchExecutionPermit(db).authorizeCall(authorizationExpiryInput);
+    const authorizationForExpiry = await store.read(taskId);
+    const expiredAuthorizationRecord = await store.write(taskId, { step: authorizationForExpiry.step,
+      progress: authorizationForExpiry.progress,
+      data: { ...authorizationForExpiry.data, authorizationExpiresAt: "2000-01-01T00:00:00.000Z" },
+      artifactRefs: authorizationForExpiry.artifactRefs, evidenceRefs: authorizationForExpiry.evidenceRefs });
+    const recoveredAuthorization = await new PostgresDispatchExecutionPermit(db)
+      .reclaimExpiredCallAuthorization({ ...authorizationExpiryInput,
+        expectedPayloadHash: expiredAuthorizationRecord.payloadHash });
+    assert.equal(recoveredAuthorization.checkpointState, "DISPATCH_EXECUTION_INTENT");
+    assert.equal(recoveredAuthorization.authorizationStatus, "expired");
+    assert.equal((await quota.getQuotaState(quotaScope)).reservedCount, 1);
+    assert.equal((await quota.getQuotaState(quotaScope)).usageCount, 0);
+
+    const expiringClaimInput = { ...winningInput, expectedPayloadHash: recoveredAuthorization.checkpointPayloadHash,
       intentLeaseOwner: "intent-worker-expired", intentClaimKey: "claim-expired", intentLeaseSeconds: 30 };
     await new PostgresDispatchExecutionPermit(db).claimIntent(expiringClaimInput);
     const claimedForExpiry = await store.read(taskId);

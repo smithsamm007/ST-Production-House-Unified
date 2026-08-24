@@ -9,6 +9,7 @@ const ADMITTED = "DISPATCH_ADMITTED";
 const PERMITTED = "DISPATCH_PERMITTED";
 const EXECUTION_INTENT = "DISPATCH_EXECUTION_INTENT";
 const INTENT_CLAIMED = "DISPATCH_INTENT_CLAIMED";
+const CALL_AUTHORIZED = "DISPATCH_CALL_AUTHORIZED";
 
 export class DispatchExecutionPermitError extends Error {
   constructor(code) { super(code); this.name = "DispatchExecutionPermitError"; this.code = code; }
@@ -49,7 +50,7 @@ function validateInput(input = {}, action) {
       .update(JSON.stringify([scope.permitId, scope.intentKey]))
       .digest("hex");
   }
-  if (["claim-intent", "cancel-intent", "expire-intent"].includes(action)) {
+  if (["claim-intent", "cancel-intent", "expire-intent", "authorize-call", "cancel-call", "expire-call"].includes(action)) {
     scope.intentLeaseOwner = required(input.intentLeaseOwner, "DISPATCH_INTENT_LEASE_OWNER_REQUIRED", 100);
     scope.intentClaimKey = required(input.intentClaimKey, "DISPATCH_INTENT_CLAIM_KEY_REQUIRED", 100);
     scope.intentLeaseSeconds = input.intentLeaseSeconds;
@@ -58,6 +59,17 @@ function validateInput(input = {}, action) {
     }
     scope.intentClaimId = createHash("sha256")
       .update(JSON.stringify([scope.executionIntentId, scope.intentLeaseOwner, scope.intentClaimKey]))
+      .digest("hex");
+  }
+  if (["authorize-call", "cancel-call", "expire-call"].includes(action)) {
+    scope.authorizationKey = required(input.authorizationKey, "DISPATCH_CALL_AUTHORIZATION_KEY_REQUIRED", 100);
+    scope.authorizationLeaseSeconds = input.authorizationLeaseSeconds;
+    if (!Number.isSafeInteger(scope.authorizationLeaseSeconds) ||
+        scope.authorizationLeaseSeconds < 30 || scope.authorizationLeaseSeconds > 300) {
+      fail("DISPATCH_CALL_AUTHORIZATION_LEASE_INVALID");
+    }
+    scope.authorizationId = createHash("sha256")
+      .update(JSON.stringify([scope.intentClaimId, scope.intentLeaseOwner, scope.authorizationKey]))
       .digest("hex");
   }
   return scope;
@@ -111,6 +123,41 @@ export function buildDispatchExecutionPermitTransition({ checkpointRecord, scope
       intentClaimExpiresAt: new Date(now.getTime() + scope.intentLeaseSeconds * 1000).toISOString(),
       intentClaimStatus: "active", lastIntentClaimId: null, lastIntentLeaseOwner: null,
       executionStarted: false, providerCallStarted: false };
+  } else if (action === "authorize-call") {
+    if (data.state !== INTENT_CLAIMED || data.executionIntentId !== scope.executionIntentId ||
+        data.executionIntentStatus !== "claimed" || data.intentClaimId !== scope.intentClaimId ||
+        data.intentLeaseOwner !== scope.intentLeaseOwner || data.intentClaimStatus !== "active") {
+      fail("DISPATCH_CALL_INTENT_CLAIM_INVALID");
+    }
+    const claimExpiry = new Date(data.intentClaimExpiresAt).getTime();
+    const authorizationExpiry = now.getTime() + scope.authorizationLeaseSeconds * 1000;
+    if (claimExpiry <= now.getTime()) fail("DISPATCH_CALL_INTENT_CLAIM_EXPIRED");
+    if (authorizationExpiry > claimExpiry) fail("DISPATCH_CALL_AUTHORIZATION_EXCEEDS_CLAIM");
+    current.step = "dispatch_call_authorized";
+    current.data = { ...data, state: CALL_AUTHORIZED, executionIntentStatus: "authorized",
+      intentClaimStatus: "consumed", authorizationId: scope.authorizationId,
+      authorizationKey: scope.authorizationKey, authorizationStatus: "active",
+      authorizationIssuedAt: now.toISOString(),
+      authorizationExpiresAt: new Date(authorizationExpiry).toISOString(),
+      lastAuthorizationId: null, executionStarted: false, providerCallStarted: false };
+  } else if (action === "cancel-call" || action === "expire-call") {
+    if (data.state !== CALL_AUTHORIZED || data.executionIntentId !== scope.executionIntentId ||
+        data.intentClaimId !== scope.intentClaimId || data.intentLeaseOwner !== scope.intentLeaseOwner ||
+        data.authorizationId !== scope.authorizationId || data.authorizationStatus !== "active") {
+      fail("DISPATCH_CALL_AUTHORIZATION_CONFLICT");
+    }
+    if (action === "expire-call" && new Date(data.authorizationExpiresAt).getTime() > now.getTime()) {
+      fail("DISPATCH_CALL_AUTHORIZATION_NOT_EXPIRED");
+    }
+    current.step = "dispatch_execution_intent_ready";
+    current.data = { ...data, state: EXECUTION_INTENT, executionIntentStatus: "ready",
+      intentClaimId: null, intentLeaseOwner: null, intentClaimedAt: null, intentClaimExpiresAt: null,
+      intentClaimStatus: action === "expire-call" ? "authorization_expired" : "authorization_cancelled",
+      lastIntentClaimId: scope.intentClaimId, lastIntentLeaseOwner: scope.intentLeaseOwner,
+      authorizationId: null, authorizationKey: null,
+      authorizationStatus: action === "expire-call" ? "expired" : "cancelled",
+      authorizationIssuedAt: null, authorizationExpiresAt: null,
+      lastAuthorizationId: scope.authorizationId, executionStarted: false, providerCallStarted: false };
   } else if (action === "cancel-intent" || action === "expire-intent") {
     if (data.state !== INTENT_CLAIMED || data.executionIntentId !== scope.executionIntentId ||
         data.intentClaimId !== scope.intentClaimId || data.intentLeaseOwner !== scope.intentLeaseOwner ||
@@ -153,6 +200,9 @@ export class PostgresDispatchExecutionPermit {
   claimIntent(input) { return this.#transition(input, "claim-intent"); }
   cancelIntent(input) { return this.#transition(input, "cancel-intent"); }
   reclaimExpiredIntent(input) { return this.#transition(input, "expire-intent"); }
+  authorizeCall(input) { return this.#transition(input, "authorize-call"); }
+  cancelCallAuthorization(input) { return this.#transition(input, "cancel-call"); }
+  reclaimExpiredCallAuthorization(input) { return this.#transition(input, "expire-call"); }
   async #transition(input, action) {
     const scope = validateInput(input, action);
     return this.adapter.withTransaction(async (client) => {
@@ -194,10 +244,23 @@ export class PostgresDispatchExecutionPermit {
           record.data?.lastIntentClaimId === scope.intentClaimId &&
           record.data?.lastIntentLeaseOwner === scope.intentLeaseOwner &&
           record.data?.intentClaimStatus === (action === "expire-intent" ? "expired" : "cancelled");
+        const callAuthorized = action === "authorize-call" && record.data?.state === CALL_AUTHORIZED &&
+          record.data?.executionIntentId === scope.executionIntentId &&
+          record.data?.intentClaimId === scope.intentClaimId &&
+          record.data?.authorizationId === scope.authorizationId &&
+          record.data?.authorizationStatus === "active";
+        if (callAuthorized && new Date(record.data.authorizationExpiresAt).getTime() <= new Date(checkpoint.database_now).getTime()) {
+          fail("DISPATCH_CALL_AUTHORIZATION_EXPIRED_RECLAIM_REQUIRED");
+        }
+        const callRecovered = (action === "cancel-call" || action === "expire-call") &&
+          record.data?.state === EXECUTION_INTENT && record.data?.executionIntentId === scope.executionIntentId &&
+          record.data?.lastIntentClaimId === scope.intentClaimId &&
+          record.data?.lastAuthorizationId === scope.authorizationId &&
+          record.data?.authorizationStatus === (action === "expire-call" ? "expired" : "cancelled");
         const completed = action !== "issue" && action !== "redeem" && record.data?.state === ADMITTED &&
           record.data?.lastPermitId === scope.permitId && record.data?.lastPermitLeaseOwner === scope.leaseOwner &&
           record.data?.permitStatus === (action === "expire" ? "expired" : "revoked");
-        if (retry || redeemed || intentClaimed || intentRecovered || completed) return this.#result(record, scope);
+        if (retry || redeemed || intentClaimed || intentRecovered || callAuthorized || callRecovered || completed) return this.#result(record, scope);
         fail("DISPATCH_PERMIT_STALE_CHECKPOINT");
       }
       const next = buildDispatchExecutionPermitTransition({ checkpointRecord: record, scope, action, databaseNow: checkpoint.database_now });
@@ -212,12 +275,16 @@ export class PostgresDispatchExecutionPermit {
           action === "claim-intent" ? "dispatch_execution_intent_claimed" :
           action === "cancel-intent" ? "dispatch_execution_intent_cancelled" :
           action === "expire-intent" ? "dispatch_execution_intent_claim_expired" :
+          action === "authorize-call" ? "dispatch_call_authorized" :
+          action === "cancel-call" ? "dispatch_call_authorization_cancelled" :
+          action === "expire-call" ? "dispatch_call_authorization_expired" :
           action === "expire" ? "dispatch_execution_permit_expired" : "dispatch_execution_permit_revoked",
         classification: "dispatch_execution_permit", payload: { reservationId: scope.reservationId, ownerId: scope.ownerId,
           agentId: scope.agentId, slot: scope.slot, provider: scope.provider,
           status: action === "issue" ? "active" : action === "redeem" ? "ready" :
             action === "claim-intent" ? "claimed" : action === "cancel-intent" ? "cancelled" :
-            (action === "expire-intent" || action === "expire") ? "expired" : "revoked",
+            action === "authorize-call" ? "authorized" : action === "cancel-call" ? "cancelled" :
+            (action === "expire-call" || action === "expire-intent" || action === "expire") ? "expired" : "revoked",
           state: next.data.state, operation: action } });
       return this.#result(next, scope);
     });
@@ -231,6 +298,9 @@ export class PostgresDispatchExecutionPermit {
       intentLeaseOwner: record.data.intentLeaseOwner ?? record.data.lastIntentLeaseOwner ?? null,
       intentClaimStatus: record.data.intentClaimStatus ?? null,
       intentClaimExpiresAt: record.data.intentClaimExpiresAt ?? null,
+      authorizationId: record.data.authorizationId ?? record.data.lastAuthorizationId ?? null,
+      authorizationStatus: record.data.authorizationStatus ?? null,
+      authorizationExpiresAt: record.data.authorizationExpiresAt ?? null,
       checkpointTaskId: record.taskId, checkpointPayloadHash: record.payloadHash, checkpointState: record.data.state,
       reservationId: scope.reservationId, reservationStatus: "reserved", executionStarted: false,
       providerCallStarted: false, providerSelection: "not_performed" });
