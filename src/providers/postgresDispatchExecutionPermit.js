@@ -7,6 +7,7 @@ const SAFE_TOKEN = /^[A-Za-z0-9._:-]+$/;
 const SECRET_PATTERN = /vault:\/\/|opaque:\/\/|password|api[_ -]?key|bearer\s/i;
 const ADMITTED = "DISPATCH_ADMITTED";
 const PERMITTED = "DISPATCH_PERMITTED";
+const EXECUTION_INTENT = "DISPATCH_EXECUTION_INTENT";
 
 export class DispatchExecutionPermitError extends Error {
   constructor(code) { super(code); this.name = "DispatchExecutionPermitError"; this.code = code; }
@@ -16,7 +17,7 @@ function required(value, code, max = 200) {
   if (typeof value !== "string" || value.length < 1 || value.length > max || !SAFE_TOKEN.test(value)) fail(code);
   return value;
 }
-function validateInput(input = {}) {
+function validateInput(input = {}, action) {
   const reservation = input.reservation;
   if (!reservation || typeof reservation !== "object" || Array.isArray(reservation)) fail("DISPATCH_PERMIT_RESERVATION_REQUIRED");
   const scope = {
@@ -41,6 +42,12 @@ function validateInput(input = {}) {
     scope.ownerId, scope.agentId, scope.taskId, scope.capability, scope.reservationId, scope.slot,
     scope.provider, scope.credentialId, scope.units, scope.leaseOwner, scope.permitKey
   ])).digest("hex");
+  if (action === "redeem") {
+    scope.intentKey = required(input.intentKey, "DISPATCH_INTENT_KEY_REQUIRED", 100);
+    scope.executionIntentId = createHash("sha256")
+      .update(JSON.stringify([scope.permitId, scope.intentKey]))
+      .digest("hex");
+  }
   return scope;
 }
 function validateReservation(row, scope) {
@@ -70,6 +77,17 @@ export function buildDispatchExecutionPermitTransition({ checkpointRecord, scope
       permitIssuedAt: now.toISOString(), permitExpiresAt: new Date(now.getTime() + scope.leaseSeconds * 1000).toISOString(),
       permitStatus: "active", lastPermitId: null, lastPermitLeaseOwner: null,
       executionStarted: false, providerCallStarted: false };
+  } else if (action === "redeem") {
+    if (data.state !== PERMITTED || data.permitStatus !== "active" ||
+        data.permitId !== scope.permitId || data.permitLeaseOwner !== scope.leaseOwner) {
+      fail("DISPATCH_INTENT_PERMIT_INVALID");
+    }
+    if (new Date(data.permitExpiresAt).getTime() <= now.getTime()) fail("DISPATCH_INTENT_PERMIT_EXPIRED");
+    current.step = "dispatch_execution_intent_ready";
+    current.data = { ...data, state: EXECUTION_INTENT, permitStatus: "consumed",
+      permitConsumedAt: now.toISOString(), executionIntentId: scope.executionIntentId,
+      executionIntentStatus: "ready", executionIntentCreatedAt: now.toISOString(),
+      executionStarted: false, providerCallStarted: false };
   } else if (action === "revoke" || action === "expire") {
     if (data.state !== PERMITTED || data.permitId !== scope.permitId || data.permitLeaseOwner !== scope.leaseOwner) fail("DISPATCH_PERMIT_REVOKE_CONFLICT");
     if (action === "expire" && new Date(data.permitExpiresAt).getTime() > now.getTime()) fail("DISPATCH_PERMIT_NOT_EXPIRED");
@@ -95,8 +113,9 @@ export class PostgresDispatchExecutionPermit {
   issue(input) { return this.#transition(input, "issue"); }
   revoke(input) { return this.#transition(input, "revoke"); }
   reclaimExpired(input) { return this.#transition(input, "expire"); }
+  redeem(input) { return this.#transition(input, "redeem"); }
   async #transition(input, action) {
-    const scope = validateInput(input);
+    const scope = validateInput(input, action);
     return this.adapter.withTransaction(async (client) => {
       const precheck = await client.query(`SELECT quota_id FROM provider_quota_reservations WHERE id=$1 AND owner_id=$2 AND agent_id=$3;`,
         [scope.reservationId, scope.ownerId, scope.agentId]);
@@ -121,10 +140,13 @@ export class PostgresDispatchExecutionPermit {
         if (retry && new Date(record.data.permitExpiresAt).getTime() <= new Date(checkpoint.database_now).getTime()) {
           fail("DISPATCH_PERMIT_EXPIRED_RECLAIM_REQUIRED");
         }
-        const completed = action !== "issue" && record.data?.state === ADMITTED &&
+        const redeemed = action === "redeem" && record.data?.state === EXECUTION_INTENT &&
+          record.data?.permitId === scope.permitId && record.data?.executionIntentId === scope.executionIntentId &&
+          record.data?.permitStatus === "consumed";
+        const completed = action !== "issue" && action !== "redeem" && record.data?.state === ADMITTED &&
           record.data?.lastPermitId === scope.permitId && record.data?.lastPermitLeaseOwner === scope.leaseOwner &&
           record.data?.permitStatus === (action === "expire" ? "expired" : "revoked");
-        if (retry || completed) return this.#result(record, scope);
+        if (retry || redeemed || completed) return this.#result(record, scope);
         fail("DISPATCH_PERMIT_STALE_CHECKPOINT");
       }
       const next = buildDispatchExecutionPermitTransition({ checkpointRecord: record, scope, action, databaseNow: checkpoint.database_now });
@@ -134,9 +156,10 @@ export class PostgresDispatchExecutionPermit {
         [scope.taskId, scope.ownerId, scope.agentId, JSON.stringify(next), next.payloadHash, next.checksum, scope.expectedPayloadHash]);
       if (updated.rowCount !== 1) fail("DISPATCH_PERMIT_STALE_CHECKPOINT");
       await appendEvidenceEventXact(client, { subjectId: scope.permitId,
-        kind: action === "issue" ? "dispatch_execution_permit_issued" : action === "expire" ? "dispatch_execution_permit_expired" : "dispatch_execution_permit_revoked",
+        kind: action === "issue" ? "dispatch_execution_permit_issued" : action === "redeem" ? "dispatch_execution_intent_created" : action === "expire" ? "dispatch_execution_permit_expired" : "dispatch_execution_permit_revoked",
         classification: "dispatch_execution_permit", payload: { reservationId: scope.reservationId, ownerId: scope.ownerId,
-          agentId: scope.agentId, slot: scope.slot, provider: scope.provider, status: action === "issue" ? "active" : action === "expire" ? "expired" : "revoked",
+          agentId: scope.agentId, slot: scope.slot, provider: scope.provider,
+          status: action === "issue" ? "active" : action === "redeem" ? "ready" : action === "expire" ? "expired" : "revoked",
           state: next.data.state, operation: action } });
       return this.#result(next, scope);
     });
@@ -144,6 +167,8 @@ export class PostgresDispatchExecutionPermit {
   #result(record, scope) {
     return Object.freeze({ schemaVersion: 1, permitId: scope.permitId, leaseOwner: scope.leaseOwner,
       permitStatus: record.data.permitStatus, permitExpiresAt: record.data.permitExpiresAt,
+      executionIntentId: record.data.executionIntentId ?? null,
+      executionIntentStatus: record.data.executionIntentStatus ?? null,
       checkpointTaskId: record.taskId, checkpointPayloadHash: record.payloadHash, checkpointState: record.data.state,
       reservationId: scope.reservationId, reservationStatus: "reserved", executionStarted: false,
       providerCallStarted: false, providerSelection: "not_performed" });

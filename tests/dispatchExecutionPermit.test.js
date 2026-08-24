@@ -47,6 +47,24 @@ test("expiry recovery is database-clock bounded and fails before expiry", () => 
   assert.equal(expired.data.permitStatus, "expired");
 });
 
+test("redeems an active permit once into a truthful pre-call execution intent", () => {
+  const redeemScope = { ...scope, executionIntentId: "e".repeat(64), intentKey: "intent-1" };
+  const permitted = buildDispatchExecutionPermitTransition({ checkpointRecord: checkpoint(), scope: redeemScope,
+    action: "issue", databaseNow: "2026-08-24T00:01:00.000Z" });
+  const intent = buildDispatchExecutionPermitTransition({ checkpointRecord: permitted, scope: redeemScope,
+    action: "redeem", databaseNow: "2026-08-24T00:01:10.000Z" });
+  assert.equal(intent.data.state, "DISPATCH_EXECUTION_INTENT");
+  assert.equal(intent.data.permitStatus, "consumed");
+  assert.equal(intent.data.executionIntentId, redeemScope.executionIntentId);
+  assert.equal(intent.data.executionIntentStatus, "ready");
+  assert.equal(intent.data.reservationStatus, "reserved");
+  assert.equal(intent.data.executionStarted, false);
+  assert.equal(intent.data.providerCallStarted, false);
+  assert.equal(intent.data.providerSelection, "not_performed");
+  assert.throws(() => buildDispatchExecutionPermitTransition({ checkpointRecord: intent, scope: redeemScope,
+    action: "redeem", databaseNow: "2026-08-24T00:01:11.000Z" }), /DISPATCH_INTENT_PERMIT_INVALID/);
+});
+
 test("rejects invalid lease, secret-bearing scope, and transaction failure", async () => {
   let transactions = 0;
   const permit = new PostgresDispatchExecutionPermit({ async withTransaction() { transactions += 1; throw new Error("DB_FAILED"); } });
