@@ -31,11 +31,11 @@ function stable(value) {
   return value;
 }
 
-function stableHash(value) {
+export function stableDispatchCheckpointHash(value) {
   return createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
 }
 
-function validateRecordIntegrity(record, taskId, storedPayloadHash, storedChecksum) {
+export function validateDispatchCheckpointIntegrity(record, taskId, storedPayloadHash, storedChecksum) {
   if (!record || typeof record !== "object" || Array.isArray(record) || record.taskId !== taskId) {
     fail("DISPATCH_ADMISSION_CHECKPOINT_RECORD_INVALID");
   }
@@ -48,12 +48,12 @@ function validateRecordIntegrity(record, taskId, storedPayloadHash, storedChecks
     fail("DISPATCH_ADMISSION_CHECKPOINT_HASH_MISMATCH");
   }
   const { checksum, taskId: recordTaskId, payloadHash, ...stateFields } = record;
-  if (stableHash({ taskId: recordTaskId, ...stateFields, payloadHash }) !== checksum) {
+  if (stableDispatchCheckpointHash({ taskId: recordTaskId, ...stateFields, payloadHash }) !== checksum) {
     fail("DISPATCH_ADMISSION_CHECKPOINT_CHECKSUM_INVALID");
   }
   const { step, progress, data, artifactRefs, evidenceRefs, updatedAt } = stateFields;
   if (
-    stableHash({ step, progress, data, artifactRefs, evidenceRefs }) !== payloadHash ||
+    stableDispatchCheckpointHash({ step, progress, data, artifactRefs, evidenceRefs }) !== payloadHash ||
     typeof updatedAt !== "string" ||
     !data ||
     typeof data !== "object"
@@ -169,8 +169,8 @@ export function buildDispatchAdmissionCheckpointTransition({
     artifactRefs: current.artifactRefs,
     evidenceRefs: current.evidenceRefs
   };
-  current.payloadHash = stableHash(core);
-  current.checksum = stableHash({ ...current, checksum: undefined });
+  current.payloadHash = stableDispatchCheckpointHash(core);
+  current.checksum = stableDispatchCheckpointHash({ ...current, checksum: undefined });
   // JSON serialization omits undefined; this mirrors CheckpointStore's checksum input.
   return current;
 }
@@ -230,7 +230,7 @@ export class PostgresDispatchAdmissionLifecycle {
       if (checkpointResult.rowCount !== 1) fail("DISPATCH_ADMISSION_CHECKPOINT_SCOPE_MISMATCH");
       const checkpointRow = checkpointResult.rows[0];
       const record = checkpointRow.checkpoint_record;
-      validateRecordIntegrity(record, scope.checkpointTaskId, checkpointRow.payload_hash, checkpointRow.checksum);
+      validateDispatchCheckpointIntegrity(record, scope.checkpointTaskId, checkpointRow.payload_hash, checkpointRow.checksum);
 
       if (record.payloadHash !== scope.expectedPayloadHash) {
         const alreadyClaimed = action === "claim" &&
