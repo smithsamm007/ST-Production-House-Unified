@@ -49,7 +49,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          issue_json="$(gh issue list --label ready --state open --limit 1 --json number,title --jq '.[0] // empty')"
+          issue_json="$(gh issue list --label ready --state open --limit 100 --json number,title,labels --jq '[.[] | select((.labels | map(.name) | any(. == "blocked" or . == "owner-action-required" or . == "credentials-required" or . == "oauth-required" or . == "publishing-approval-required" or . == "security-approval-required")) | not)][0] // empty')"
           if [ -z "$issue_json" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Ready queue empty."
