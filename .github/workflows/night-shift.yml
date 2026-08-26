@@ -6,16 +6,20 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
-  issues: read
-
-concurrency:
-  group: night-shift-single-lane
-  cancel-in-progress: false
+  issues: write
 
 jobs:
   shift:
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [lane-1, lane-2, lane-3]
+    concurrency:
+      group: night-shift-${{ matrix.lane }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -32,15 +36,16 @@ jobs:
           node-version: '20'
           cache: npm
 
-      - name: Single-lane gate
+      - name: Lane capacity gate
         id: gate
         shell: bash
         run: |
           set -euo pipefail
-          open_count="$(gh pr list --state open --limit 1 --json number --jq 'length')"
+          lane="${{ matrix.lane }}"
+          open_count="$(gh pr list --state open --label "$lane" --limit 1 --json number --jq 'length')"
           if [ "$open_count" != "0" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::PR already open; lane busy."
+            echo "::notice::$lane already has its canonical PR; lane busy."
           fi
 
       - name: Resolve next ready issue
@@ -49,7 +54,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          issue_json="$(gh issue list --label ready --state open --limit 100 --json number,title,labels --jq '[.[] | select((.labels | map(.name) | any(. == "blocked" or . == "owner-action-required" or . == "credentials-required" or . == "oauth-required" or . == "publishing-approval-required" or . == "security-approval-required")) | not)][0] // empty')"
+          lane="${{ matrix.lane }}"
+          issue_json="$(gh issue list --label ready --label "$lane" --state open --limit 100 --json number,title,labels --jq '[.[] | select((.labels | map(.name) | any(. == "blocked" or . == "in-progress" or . == "owner-action-required" or . == "credentials-required" or . == "oauth-required" or . == "publishing-approval-required" or . == "security-approval-required")) | not)][0] // empty')"
           if [ -z "$issue_json" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Ready queue empty."
@@ -61,10 +67,13 @@ jobs:
           slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' | cut -c1-48)"
           branch="task/${number}-${slug}"
 
+          gh issue edit "$number" --remove-label ready --add-label in-progress
+
           gh issue view "$number" --json number,title,body,labels --jq             '"# Issue #\(.number): \(.title)\n\n\(.body)\n\nImplement fully under AGENTS.md. Do not modify files outside the permitted territory. Do not create mocks, placeholders, fake evidence, or skipped required tests."'             > /tmp/task.md
 
           echo "number=$number" >> "$GITHUB_OUTPUT"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "lane=$lane" >> "$GITHUB_OUTPUT"
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies and coding agent
@@ -122,5 +131,20 @@ jobs:
           } > /tmp/pr-body.md
 
           pr_url="$(gh pr create             --draft             --base main             --head "$branch"             --title "Task #${number}: governed autonomous implementation"             --body-file /tmp/pr-body.md)"
+          gh pr edit "$pr_url" --add-label "${{ steps.task.outputs.lane }}" --add-label autopilot
           gh pr ready "$pr_url"
-          echo "::notice::Opened ready PR $pr_url; exact-head gates now control merging."
+          gh issue edit "$number" --remove-label in-progress
+
+          pr_number="$(gh pr view "$pr_url" --json number --jq '.number')"
+          expected_head="$(git rev-parse HEAD)"
+          gh workflow run ci.yml --ref "$branch" -f pr_number="$pr_number" -f expected_head="$expected_head"
+          gh workflow run pr-gate.yml --ref "$branch" -f pr_number="$pr_number" -f expected_head="$expected_head"
+          gh workflow run autonomous-merge.yml --ref "$branch" -f pr_number="$pr_number" -f expected_head="$expected_head"
+          echo "::notice::Opened ready PR $pr_url and explicitly dispatched its exact-head gates."
+
+      - name: Return failed issue to a recoverable queue
+        if: failure() && steps.task.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue edit "${{ steps.task.outputs.number }}" --remove-label in-progress --add-label ready || true

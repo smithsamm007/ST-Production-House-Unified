@@ -6,9 +6,19 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Optional pull request number for autonomous exact-head verification
+        required: false
+        type: string
+      expected_head:
+        description: Optional exact pull request head SHA
+        required: false
+        type: string
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   test:
@@ -34,8 +44,31 @@ jobs:
           --health-retries 5
 
     steps:
+    - name: Validate dispatched pull request identity
+      if: inputs.pr_number != ''
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ inputs.pr_number }}
+        EXPECTED_HEAD: ${{ inputs.expected_head }}
+      run: |
+        set -euo pipefail
+        [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+        actual="$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER")"
+        test "$(jq -r '.state' <<<"$actual")" = open
+        test "$(jq -r '.draft' <<<"$actual")" = false
+        test "$(jq -r '.base.ref' <<<"$actual")" = main
+        test "$(jq -r '.head.sha' <<<"$actual")" = "$EXPECTED_HEAD"
+
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.expected_head || github.sha }}
+        fetch-depth: 0
+
+    - name: Integrate current main for autonomous dispatched verification
+      if: inputs.pr_number != ''
+      run: git merge --no-commit --no-ff origin/main
 
     - name: Set up Node.js
       uses: actions/setup-node@v4

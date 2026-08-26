@@ -6,6 +6,7 @@ const REQUIRED_WORKFLOWS = Object.freeze([
 
 const SUCCESS = 'success';
 const COMPLETED = 'completed';
+const ALLOWED_EVENTS = new Set(['pull_request', 'workflow_dispatch']);
 
 function latestRunsByName(workflowRuns) {
   const latest = new Map();
@@ -43,7 +44,7 @@ export function evaluateMergeEligibility({
       continue;
     }
     if (run.head_sha !== expectedHeadSha) reasons.push(`stale_workflow:${name}`);
-    if (run.event !== 'pull_request') reasons.push(`wrong_event:${name}`);
+    if (!ALLOWED_EVENTS.has(run.event)) reasons.push(`wrong_event:${name}`);
     if (run.status !== COMPLETED) reasons.push(`incomplete_workflow:${name}:${run.status ?? 'missing'}`);
     if (run.conclusion !== SUCCESS) reasons.push(`unsuccessful_workflow:${name}:${run.conclusion ?? 'missing'}`);
   }

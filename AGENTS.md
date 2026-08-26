@@ -69,8 +69,13 @@ autonomous AI agents (Jules, night-shift agent) and human helpers.
 | Jules | src/broker/**, src/providers/**, credential sql/* | read-only |
 | Night-shift agent | src/api/**, src/repos/** | read-only |
 
-## Single-Lane Mode
-Only ONE open PR at a time across the repo. Never start a new issue while any PR is open.
+## Governed Three-Lane Mode
+At most THREE autonomous implementation PRs may be open, one per label:
+`lane-1`, `lane-2`, and `lane-3`. A lane may start only an open issue carrying
+both `ready` and its exact lane label. Issues with owner/security/credential/
+OAuth/publishing blockers remain ineligible. Lanes may develop in parallel,
+but merges are globally serialized. After every merge, all remaining lane PRs
+must be reverified against the new `main` before another merge is allowed.
 
 ## Definition of Done
 - [ ] npm test && npm run verify pass
