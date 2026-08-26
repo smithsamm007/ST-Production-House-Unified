@@ -16,6 +16,9 @@ test('night shift exposes exactly three governed lanes and dispatches every exac
 
 test('wake controller never bypasses owner-only gates and wakes only a free labeled lane', () => {
   const workflow = read('.github/workflows/awake-resume.yml');
+  assert.match(workflow, /GH_REPO: \$\{\{ github\.repository \}\}/);
+  assert.match(workflow, /JULES_KEY: \$\{\{ secrets\.JULES_API_KEY \}\}/);
+  assert.match(workflow, /workflow run jules-command-files\.yml/);
   assert.match(workflow, /for lane in lane-1 lane-2 lane-3/);
   assert.match(workflow, /startsWith|startswith\(\"task\/\"\)/i);
   assert.match(workflow, /gh workflow run pr-gate\.yml/);
