@@ -21,6 +21,7 @@ jobs:
   evaluate-and-merge:
     if: github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Check out trusted controller from main
         uses: actions/checkout@v4
