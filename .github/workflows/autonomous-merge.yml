@@ -1,35 +1,59 @@
-name: Autonomous Merge
+name: Autonomous Merge Referee
+
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
-  test-and-merge:
+  referee:
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://st_app:st_test_password@localhost:5432/st_production_test
+      POSTGRES_TEST_URL: postgresql://st_app:st_test_password@localhost:5432/st_production_test
+      MFA_ENCRYPTION_KEY: 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: st_app
+          POSTGRES_PASSWORD: st_test_password
+          POSTGRES_DB: st_production_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
+      - name: Reject draft pull requests
+        if: github.event.pull_request.draft
+        run: |
+          echo "::error::Draft pull requests are never merge-eligible."
+          exit 1
+
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install dependencies
+      - name: Install exact-head dependencies
         run: npm ci
 
-      - name: Run full test suite (the referee)
-        run: |
-          npm test
-          npm run verify
+      - name: Verify exact head
+        run: npm run verify
 
-      - name: Enable auto-merge on pass
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh pr ready "${{ github.event.pull_request.number }}" 2>/dev/null || true
-          gh pr merge "${{ github.event.pull_request.number }}" \
-            --auto --squash --delete-branch || \
-          echo "::notice::Auto-merge armed; merges when all checks pass."
+      - name: Run exact-head unit and policy tests
+        run: npm test
+
+      - name: Run exact-head PostgreSQL integration
+        run: npm run test:integration
