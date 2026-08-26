@@ -81,6 +81,27 @@ test('rejects pending workflows', () => {
   assert.ok(result.reasons.some((reason) => reason.startsWith('incomplete_workflow:ST Production House CI')));
 });
 
+test('accepts explicitly dispatched exact-head verification', () => {
+  const result = evaluateMergeEligibility({
+    pullRequest: pull(),
+    expectedHeadSha: HEAD,
+    workflowRuns: successfulRuns(Object.fromEntries(
+      REQUIRED_WORKFLOWS.map((name) => [name, { event: 'workflow_dispatch' }])
+    ))
+  });
+  assert.equal(result.eligible, true);
+});
+
+test('rejects workflow events outside the trusted pull-request and dispatch paths', () => {
+  const result = evaluateMergeEligibility({
+    pullRequest: pull(),
+    expectedHeadSha: HEAD,
+    workflowRuns: successfulRuns({ 'PR Gate': { event: 'push' } })
+  });
+  assert.equal(result.eligible, false);
+  assert.ok(result.reasons.includes('wrong_event:PR Gate'));
+});
+
 test('rejects a missing required workflow', () => {
   const result = evaluateMergeEligibility({
     pullRequest: pull(),

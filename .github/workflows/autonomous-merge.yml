@@ -4,9 +4,20 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to verify
+        required: true
+        type: string
+      expected_head:
+        description: Exact forty-character PR head SHA
+        required: true
+        type: string
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   referee:
@@ -32,15 +43,36 @@ jobs:
           --health-retries 5
 
     steps:
+      - name: Validate dispatched pull request identity
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          actual="$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER")"
+          test "$(jq -r '.state' <<<"$actual")" = open
+          test "$(jq -r '.draft' <<<"$actual")" = false
+          test "$(jq -r '.base.ref' <<<"$actual")" = main
+          test "$(jq -r '.head.sha' <<<"$actual")" = "$EXPECTED_HEAD"
+
       - name: Reject draft pull requests
-        if: github.event.pull_request.draft
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft
         run: |
           echo "::error::Draft pull requests are never merge-eligible."
           exit 1
 
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_head || github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Integrate current main for dispatched verification
+        if: github.event_name == 'workflow_dispatch'
+        run: git merge --no-commit --no-ff origin/main
 
       - uses: actions/setup-node@v4
         with:
