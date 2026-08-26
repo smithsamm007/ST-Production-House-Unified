@@ -9,7 +9,7 @@ on:
     types: [completed]
 
 permissions:
-  actions: read
+  actions: write
   contents: write
   pull-requests: write
 
@@ -94,3 +94,4 @@ jobs:
           current_head="$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
           test "$current_head" = "$EXPECTED_HEAD"
           gh pr merge "$PR_NUMBER" --repo "$REPOSITORY" --squash --delete-branch --match-head-commit "$EXPECTED_HEAD"
+          gh workflow run ci.yml --repo "$REPOSITORY" --ref main
