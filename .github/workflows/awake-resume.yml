@@ -21,7 +21,9 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
       CODER_KEY: ${{ secrets.GEMINI_API_KEY }}
+      JULES_KEY: ${{ secrets.JULES_API_KEY }}
 
     steps:
       - name: Reconcile and reverify existing autonomous pull requests
@@ -71,8 +73,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "$CODER_KEY" ]; then
-            echo "::notice::Paused: coding credential is not configured. A later wake will recheck."
+          if [ -z "$CODER_KEY" ] && [ -z "$JULES_KEY" ]; then
+            echo "::notice::Paused: neither governed coding credential is configured. A later wake will recheck."
             exit 0
           fi
 
@@ -98,8 +100,13 @@ jobs:
             exit 0
           fi
 
-          gh workflow run night-shift.yml --ref main
-          echo "::notice::Woke the three-lane Night Shift Agent for eligible issue #$issue_number."
+          if [ -n "$CODER_KEY" ]; then
+            gh workflow run night-shift.yml --ref main
+            echo "::notice::Woke the three-lane Night Shift Agent for eligible issue #$issue_number."
+          else
+            gh workflow run jules-command-files.yml --ref main
+            echo "::notice::Woke the governed Jules dispatcher; Gemini coding credential is unavailable."
+          fi
 
       - name: Explain fail-closed owner gates
         if: always()
