@@ -1,0 +1,63 @@
+name: Awake Resume Controller
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: awake-resume-controller
+  cancel-in-progress: false
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CODER_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+    steps:
+      - name: Evaluate resumability and wake worker
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "$CODER_KEY" ]; then
+            echo "::notice::Paused: coding credential is not configured. A later wake will recheck."
+            exit 0
+          fi
+
+          open_count="$(gh pr list --state open --limit 1 --json number --jq 'length')"
+          if [ "$open_count" != "0" ]; then
+            echo "::notice::Paused: canonical PR lane is occupied. Merge governance owns progress."
+            exit 0
+          fi
+
+          active_count="$(gh run list             --workflow night-shift.yml             --limit 20             --json status             --jq '[.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "pending")] | length')"
+          if [ "$active_count" != "0" ]; then
+            echo "::notice::Paused: Night Shift Agent is already active."
+            exit 0
+          fi
+
+          issue_json="$(gh issue list             --label ready             --state open             --limit 100             --json number,title,labels             --jq '[.[] | select((.labels | map(.name) | any(. == "blocked" or . == "owner-action-required" or . == "credentials-required" or . == "oauth-required" or . == "publishing-approval-required" or . == "security-approval-required")) | not)][0] // empty')"
+
+          if [ -z "$issue_json" ]; then
+            echo "::notice::Paused: no ungated ready issue exists. A later wake will recheck."
+            exit 0
+          fi
+
+          issue_number="$(jq -r '.number' <<<"$issue_json")"
+          gh workflow run night-shift.yml --ref main
+          echo "::notice::Woke Night Shift Agent for eligible issue #$issue_number."
+
+      - name: Explain fail-closed owner gates
+        if: always()
+        run: |
+          echo "::notice::Credentials, OAuth, publishing approval, paid usage, and security authorization are never fabricated or bypassed."
