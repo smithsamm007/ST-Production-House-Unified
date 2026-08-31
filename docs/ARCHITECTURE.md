@@ -90,3 +90,12 @@ Affiliate links are campaign/platform placements, not new videos. Every link req
 ## Canonical Database Foundation
 
 The PostgreSQL integration layer implemented in `src/db/postgresAdapter.js` and `src/db/migrationRunner.js` represents the canonical PostgreSQL foundation for the entire ST Production House platform. Any concurrent or future branches (such as PR #5) must be rebased and adapted to this canonical foundation, and must utilize the existing adapter and migration runner rather than introducing competing or redundant database access layers.
+
+## Continuous Development Pipeline & Autonomous Orchestration
+
+The autonomous pipeline architecture (documented in `docs/CONTINUOUS_DEVELOPMENT_PIPELINE.md` and `ROADMAP.md`) coordinates:
+- Automated planning and roadmap task extraction (`src/orchestration/roadmapParser.js`).
+- Governed three-lane execution with territory guards (`src/orchestration/taskEnvelope.js`).
+- Automated fault tolerance and test-fix retry loops (`src/orchestration/testFixLoop.js`).
+- Continuous delivery orchestration with tamper-evident evidence ledgers (`src/orchestration/pipelineController.js`).
+

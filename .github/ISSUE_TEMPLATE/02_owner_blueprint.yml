@@ -1,0 +1,35 @@
+name: "Owner Strategic Blueprint"
+description: "Submit an architectural or strategic blueprint for review and phase planning"
+title: "[BLUEPRINT]: "
+labels: ["owner-action-required", "blueprint"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### Owner Strategic Blueprint
+        Blueprints define strategic direction across Creative Universes, Reference Catalogs, and Platform Gateways.
+  - type: input
+    id: blueprint_title
+    attributes:
+      label: Blueprint Title
+      placeholder: "e.g., Expansion of Long-Form Mythology Reference Profiles"
+    validations:
+      required: true
+  - type: textarea
+    id: strategic_intent
+    attributes:
+      label: Strategic Intent & Architecture
+      description: "Explain the high-level purpose and target phase"
+    validations:
+      required: true
+  - type: textarea
+    id: candidate_tasks
+    attributes:
+      label: Candidate Autonomous Tasks
+      description: "List the prospective tasks to break down into lanes"
+      placeholder: |
+        1. [lane-1] Core schema migration
+        2. [lane-2] Provider integration adapter
+        3. [lane-3] Owner control studio interface
+    validations:
+      required: true

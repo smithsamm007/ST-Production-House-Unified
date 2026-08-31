@@ -1,0 +1,68 @@
+name: Continuous Development Pipeline
+
+on:
+  issues:
+    types: [opened, labeled, reopened]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Pipeline action to execute (plan, test-fix, reverify)"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - "plan"
+          - "test-fix"
+          - "reverify"
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run Automated Task Planner
+        id: planner
+        run: node .github/scripts/task-planner.mjs
+
+  verify-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci || npm install
+      - name: Run Test-Fix Verification Suite
+        run: node .github/scripts/test-fix-runner.mjs "npm test"
+      - name: Run Verify Suite
+        run: npm run verify
+
+  merge-gate:
+    needs: [verify-and-test]
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Check Merge Eligibility
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Checking exact-head merge eligibility for PR #${{ github.event.pull_request.number }}"
