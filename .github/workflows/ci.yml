@@ -40,7 +40,7 @@ jobs:
         run: npm cache clean --force
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-cache
 
       - name: Run Repository Linter & Health Audit
         run: node .github/scripts/repo-lint.mjs
@@ -65,7 +65,7 @@ jobs:
         run: npm cache clean --force
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-cache
 
       - name: Run verification checks
         run: npm run verify
@@ -139,7 +139,7 @@ jobs:
         run: npm cache clean --force
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-cache
 
       - name: Run PostgreSQL Integration Tests
         run: npm run test:integration
