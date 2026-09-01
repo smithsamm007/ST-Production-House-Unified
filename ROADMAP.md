@@ -1,4 +1,33 @@
-# ST Production House — Unified Continuous Development Roadmap
+# Continuous Development Roadmap
+
+## Goal
+Deliver the secure production control plane through small, isolated, evidence-backed changes that can be planned, implemented, verified, recovered, and merged by automation.
+
+## Current Baseline
+The repository contains the Phase 1 policy foundation, PostgreSQL migrations through 016, authenticated API foundations, durable worker/checkpoint contracts, provider routing, and bounded Jules recovery workflows. Live providers, accounts, publishing, and production credentials remain intentionally unavailable.
+
+## Tasks
+- [x] PLAN-1: Define a machine-validated Markdown task contract
+- [ ] PLAN-2: Validate task issues before implementation starts (depends on: PLAN-1)
+- [ ] EXEC-1: Add a governed implementation trigger for approved task issues (depends on: PLAN-2)
+- [ ] EXEC-2: Run unit, verification, integration, and policy checks on every pull request (depends on: EXEC-1)
+- [ ] REC-1: Add bounded CI failure diagnosis and retry handoff (depends on: EXEC-2)
+- [ ] MERGE-1: Enable auto-merge only for exact-head pull requests with required checks (depends on: EXEC-2, REC-1)
+- [ ] API-1: Complete authenticated API and PostgreSQL repository wiring (depends on: MERGE-1)
+- [ ] WORK-1: Add leased production workers with dead-letter recovery (depends on: API-1)
+- [ ] MEDIA-1: Integrate verified media adapters and artifact validation (depends on: WORK-1)
+- [ ] PUBLISH-1: Add owner-approved campaign publishing and receipt reconciliation (depends on: MEDIA-1)
+- [ ] HARDEN-1: Complete staging, backup, restore, security, and rights verification (depends on: PUBLISH-1)
+
+## Operating Rules
+
+- Every task becomes one issue and one isolated pull request.
+- Automated implementation may open or update a draft PR, but it may not bypass required checks, owner approval, or security policy.
+- A failed dependency or provider is represented honestly and routed to bounded recovery or owner handoff; no fake success is emitted.
+- The roadmap is valid only when `npm run plan:check` and the repository verification commands pass.
+\n+## Governed Execution Matrix
+
+The repository's detailed phase, lane, and acceptance matrix is maintained in the implementation roadmap and issue specifications. Each task remains isolated to one pull request, uses the repository's security contract, and must pass exact-head verification before merge.
 
 This document serves as the single source of truth for the continuous, autonomous, and governed development lifecycle of ST Production House. It coordinates automated planning, task generation, three-lane parallel execution, self-healing test-fix loops, and exact-head merge gates.
 
@@ -86,7 +115,7 @@ Tasks declared in this roadmap or generated via `.github/ISSUE_TEMPLATE/` confor
 
 ## 4. Engineering Contract Hard Rules (Summary)
 
-1. **Zero Runtime Dependencies**: Standard Node.js (`node:test`, `node:crypto`, `node:http`, `node:fs`).
-2. **Immutable Migrations**: Append-only `sql/NNN_name.sql`. Never edit applied migrations.
-3. **Safe DTO Serialization**: All outbound data scrubbed of internal agent names (Rule 15) and secrets (Rule 17).
-4. **Governed Merge Order**: All PRs must pass `npm test`, `npm run verify`, and the Autonomous Merge Referee.
+1. **Zero Runtime Dependencies**: Standard Node.js APIs for the development planner.
+2. **Immutable Migrations**: Append-only `sql/NNN_name.sql`; never edit applied migrations.
+3. **Safe DTO Serialization**: Outbound data excludes internal names and secrets.
+4. **Governed Merge Order**: Pull requests pass `npm run plan:check`, `npm test`, `npm run verify`, and integration checks where PostgreSQL is available.

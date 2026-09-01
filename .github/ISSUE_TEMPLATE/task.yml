@@ -1,0 +1,38 @@
+name: Isolated development task
+description: A small, verifiable unit of continuous development
+labels: ["auto-code"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Automated implementation is bounded by CI, repository policy, and owner approval. Do not include credentials, provider tokens, or live account details.
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: One measurable outcome for this task.
+      placeholder: Complete one isolated repository change.
+    validations:
+      required: true
+  - type: textarea
+    id: tasks
+    attributes:
+      label: Tasks
+      description: Use one line per task: - [ ] TASK-ID: short action (depends on: OTHER-ID)
+      placeholder: "- [ ] TASK-1: Implement the focused change"
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification
+      description: Exact tests or commands that prove completion.
+    validations:
+      required: true
+  - type: checkboxes
+    id: policy
+    attributes:
+      label: Policy acknowledgement
+      options:
+        - label: This task does not require live credentials, fake provider receipts, or bypassing owner approval.
+          required: true

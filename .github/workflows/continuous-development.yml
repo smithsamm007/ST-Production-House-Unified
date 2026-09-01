@@ -1,0 +1,69 @@
+name: Continuous Development Gate
+
+on:
+  issues:
+    types: [labeled]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: continuous-development-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-plan:
+    if: github.event_name != 'issues' || github.event.label.name == 'auto-code'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm ci
+      - name: Validate roadmap contract
+        run: npm run plan:check
+
+  verify:
+    if: github.event_name == 'pull_request'
+    needs: validate-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: Run repository verification
+        run: npm run verify
+
+  report-failure:
+    if: failure() && github.event_name == 'pull_request'
+    needs: [validate-plan, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Record bounded recovery handoff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          marker="continuous-development-failure head=${{ github.event.pull_request.head.sha }}"
+          existing="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" | jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))] | length')"
+          if [[ "$existing" == "0" ]]; then
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "<!-- $marker -->
+          Automated verification failed for this exact PR head. The PR remains unmergeable; investigate the failing check and push a correction. Recovery is bounded by the existing Jules watchdog and owner handoff policy."
+          fi

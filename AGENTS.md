@@ -81,3 +81,10 @@ must be reverified against the new `main` before another merge is allowed.
 - [ ] npm test && npm run verify pass
 - [ ] New behavior has new tests
 - [ ] Docs updated + PR evidence posted
+
+## Amendment — post-merge reality (supersedes Part 2 where they conflict)
+1. The zero-dependency rule is retired: the repo now ships express, pg, argon2,
+   and supertest. Prefer built-ins; add a dependency only when the task truly
+   requires it, and justify it in the PR body.
+2. PR bodies MUST contain `Closes #<issue>` so issues auto-close on merge.
+3. ONE PR in flight at a time. Never open a second while one is open.

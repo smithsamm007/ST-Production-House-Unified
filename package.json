@@ -14,6 +14,7 @@
     "lint": "node .github/scripts/repo-lint.mjs",
     "ci": "npm run lint && npm run verify",
     "test": "node --test --test-concurrency=1",
+  "plan:check": "node automation/validate-plan.mjs",
     "test:integration": "node --test --test-concurrency=1 tests/postgresIntegration.integration.js tests/postgresAuthIntegration.integration.js tests/credentialBrokerPostgres.integration.js tests/durableRetryPostgres.integration.js tests/providerQuotaPostgres.integration.js tests/resiliencePostgres.integration.js tests/recoveryIntegration.integration.js tests/postgresCheckpointAdapter.integration.js tests/jarvisDeterministicWorkflow.integration.js tests/jarvisDurableScriptDispatchCheckpoint.integration.js tests/jarvisDurableVisualDispatchCheckpoint.integration.js tests/jarvisDurableAudioDispatchCheckpoint.integration.js tests/providerDispatchAdmission.integration.js tests/dispatchAdmissionLifecycle.integration.js tests/dispatchExecutionPermit.integration.js",
     "migrate": "node -e \"import('./src/db/index.js').then(m => m.runMigrations(m.createPostgresAdapter())).then(r => console.log(JSON.stringify({code:'MIGRATIONS_COMPLETE',appliedCount:r.appliedCount}))).catch(() => { console.error('MIGRATIONS_FAILED'); process.exit(1); })\"",
     "migrate:status": "node -e \"import('./src/db/index.js').then(m => m.getMigrationStatus(m.createPostgresAdapter())).then(s => console.log(JSON.stringify({code:'MIGRATION_STATUS',migrations:s}))).catch(() => { console.error('MIGRATION_STATUS_FAILED'); process.exit(1); })\"",
