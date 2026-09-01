@@ -1,51 +1,150 @@
 name: Night Shift Agent
+
 on:
   schedule:
     - cron: '0 */4 * * *'
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
-  issues: read
+  issues: write
 
 jobs:
   shift:
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [lane-1, lane-2, lane-3]
+    concurrency:
+      group: night-shift-${{ matrix.lane }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
-        with: { node-version: '20' }
+        with:
+          node-version: '20'
+          cache: npm
 
-      - name: Single-lane gate — skip if any PR is open
+      - name: Lane capacity gate
         id: gate
-        env: { GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}' }
+        shell: bash
         run: |
-          OPEN=$(gh pr list --state open --limit 1 --json number -q 'length')
-          if [ "$OPEN" != "0" ]; then
+          set -euo pipefail
+          lane="${{ matrix.lane }}"
+          open_count="$(gh pr list --state open --label "$lane" --limit 1 --json number --jq 'length')"
+          if [ "$open_count" != "0" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::PR already open — lane busy, standing down."
+            echo "::notice::$lane already has its canonical PR; lane busy."
           fi
 
-      - name: Install coder
+      - name: Resolve next ready issue
         if: steps.gate.outputs.skip != 'true'
-        run: pip install aider-chat
-
-      - name: Run agent on next ready issue
-        if: steps.gate.outputs.skip != 'true'
-        env:
-          GEMINI_API_KEY: '${{ secrets.GEMINI_API_KEY }}'
+        id: task
+        shell: bash
         run: |
-          git config user.name  "night-shift-agent"
+          set -euo pipefail
+          lane="${{ matrix.lane }}"
+          issue_json="$(gh issue list --label ready --label "$lane" --state open --limit 100 --json number,title,labels --jq '[.[] | select((.labels | map(.name) | any(. == "blocked" or . == "in-progress" or . == "owner-action-required" or . == "credentials-required" or . == "oauth-required" or . == "publishing-approval-required" or . == "security-approval-required")) | not)][0] // empty')"
+          if [ -z "$issue_json" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Ready queue empty."
+            exit 0
+          fi
+
+          number="$(jq -r '.number' <<<"$issue_json")"
+          title="$(jq -r '.title' <<<"$issue_json")"
+          slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' | cut -c1-48)"
+          branch="task/${number}-${slug}"
+
+          gh issue edit "$number" --remove-label ready --add-label in-progress
+
+          gh issue view "$number" --json number,title,body,labels --jq             '"# Issue #\(.number): \(.title)\n\n\(.body)\n\nImplement fully under AGENTS.md. Do not modify files outside the permitted territory. Do not create mocks, placeholders, fake evidence, or skipped required tests."'             > /tmp/task.md
+
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "lane=$lane" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies and coding agent
+        if: steps.gate.outputs.skip != 'true' && steps.task.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          npm ci
+          python -m pip install --disable-pip-version-check aider-chat
+
+      - name: Implement ready issue
+        if: steps.gate.outputs.skip != 'true' && steps.task.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -b "${{ steps.task.outputs.branch }}"
+          git config user.name "night-shift-agent"
           git config user.email "actions@users.noreply.github.com"
-          gh issue list --label ready --state open --limit 1 > /tmp/task.txt || true
-          TASK=$(cat /tmp/task.txt)
-          [ -z "$TASK" ] && echo "::notice::Queue empty." && exit 0
-          aider --model gemini/gemini-2.5-flash \
-                --yes-always \
-                --message "Implement this issue fully per AGENTS.md rules: $TASK \
-                           Create branch task/<issue#>, commit, push, open PR \
-                           with 'Closes #N' and pasted npm test output." \
-                --no-auto-commits || true
+
+          aider             --model gemini/gemini-2.5-flash             --yes-always             --no-auto-commits             --message-file /tmp/task.md             AGENTS.md CONVENTIONS.md
+
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "::error::Coding agent produced no repository change."
+            exit 1
+          fi
+
+      - name: Verify exact proposed tree
+        if: steps.gate.outputs.skip != 'true' && steps.task.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm test 2>&1 | tee /tmp/npm-test.log
+          npm run verify 2>&1 | tee /tmp/npm-verify.log
+
+      - name: Commit, push, and open canonical PR
+        if: steps.gate.outputs.skip != 'true' && steps.task.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          number="${{ steps.task.outputs.number }}"
+          branch="${{ steps.task.outputs.branch }}"
+
+          git add -A
+          git commit -m "feat: resolve #${number} [night-shift]"
+          git push --set-upstream origin "$branch"
+
+          {
+            printf 'Closes #%s\n\n' "$number"
+            printf 'Automated implementation produced by the governed Night Shift Agent.\n\n'
+            printf '## Verification\n\n'
+            printf '### npm test\n\n```text\n'
+            tail -n 40 /tmp/npm-test.log
+            printf '\n```\n\n### npm run verify\n\n```text\n'
+            tail -n 40 /tmp/npm-verify.log
+            printf '\n```\n'
+          } > /tmp/pr-body.md
+
+          pr_url="$(gh pr create             --draft             --base main             --head "$branch"             --title "Task #${number}: governed autonomous implementation"             --body-file /tmp/pr-body.md)"
+          gh pr edit "$pr_url" --add-label "${{ steps.task.outputs.lane }}" --add-label autopilot
+          gh pr ready "$pr_url"
+          gh issue edit "$number" --remove-label in-progress
+
+          pr_number="$(gh pr view "$pr_url" --json number --jq '.number')"
+          expected_head="$(git rev-parse HEAD)"
+          gh workflow run ci.yml --ref "$branch" -f pr_number="$pr_number" -f expected_head="$expected_head"
+          gh workflow run pr-gate.yml --ref "$branch" -f pr_number="$pr_number" -f expected_head="$expected_head"
+          gh workflow run autonomous-merge.yml --ref "$branch" -f pr_number="$pr_number" -f expected_head="$expected_head"
+          echo "::notice::Opened ready PR $pr_url and explicitly dispatched its exact-head gates."
+
+      - name: Return failed issue to a recoverable queue
+        if: failure() && steps.task.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue edit "${{ steps.task.outputs.number }}" --remove-label in-progress --add-label ready || true

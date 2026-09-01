@@ -1,0 +1,64 @@
+name: "Autonomous Coding Task"
+description: "Submit a scoped, isolated task for autonomous execution in lane-1, lane-2, or lane-3"
+title: "[TASK]: "
+labels: ["ready"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### Autonomous Task Submission
+        Ensure tasks are strictly isolated, carry no unapproved secrets, and adhere to the zero-runtime-dependency rule.
+  - type: dropdown
+    id: lane
+    attributes:
+      label: Target Execution Lane
+      description: "Select the governed lane matching the domain territory"
+      options:
+        - "lane-1 (Core Infrastructure & Credential Brokerage - Jules)"
+        - "lane-2 (Provider Routing, Quotas & Resilience - Jules)"
+        - "lane-3 (Control Plane, Workflows & Catalog - Night-shift)"
+    validations:
+      required: true
+  - type: input
+    id: task_id
+    attributes:
+      label: Task Identifier
+      description: "e.g., TASK-2.8, TASK-3.1"
+      placeholder: "TASK-X.Y"
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal & Functional Scope
+      description: "Clear, isolated description of the desired outcome"
+    validations:
+      required: true
+  - type: textarea
+    id: deliverables
+    attributes:
+      label: Deliverables
+      description: "Exact file paths to create or modify"
+      placeholder: |
+        - NEW `src/module/name.js`
+        - NEW `tests/moduleName.test.js`
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: "Testable requirements and verification checks"
+      placeholder: |
+        - [ ] Feature unit tests added and pass offline
+        - [ ] Zero new npm dependencies introduced
+        - [ ] All DTO outputs scrubbed of internal names and secrets
+        - [ ] npm test && npm run verify pass
+    validations:
+      required: true
+  - type: input
+    id: dependencies
+    attributes:
+      label: Dependency Task IDs
+      description: "Comma-separated list of prerequisite tasks (if any)"
+      placeholder: "TASK-2.4, TASK-2.6"

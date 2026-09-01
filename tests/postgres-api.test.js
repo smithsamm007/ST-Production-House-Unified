@@ -59,6 +59,16 @@ test("Owner bootstrap safety refuses missing credentials and behaves predictably
   process.env.BOOTSTRAP_OWNER_PASSWORD = prevPwd;
 });
 
+test("API: GET / returns overview payload", async () => {
+  const res = await request(app)
+    .get("/")
+    .expect(200);
+
+  assert.equal(res.body.service, "ST Production House Unified");
+  assert.equal(res.body.status, "healthy");
+  assert.ok(res.body.endpoints);
+});
+
 test("API: GET /api/health returns status healthy", async () => {
   const res = await request(app)
     .get("/api/health")

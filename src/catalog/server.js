@@ -188,6 +188,29 @@ async function requireCsrf(req, res, next) {
 // API ROUTES
 // ----------------------------------------------------
 
+// 0. Service Root Overview
+app.get("/", (req, res) => {
+  res.json({
+    service: "ST Production House Unified",
+    status: "healthy",
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      health: "/api/health",
+      ready: "/api/ready",
+      auth: {
+        register: "POST /api/auth/register",
+        login: "POST /api/auth/login",
+        logout: "POST /api/auth/logout",
+        me: "GET /api/auth/me",
+        sessions: "GET /api/auth/sessions",
+        mfa: "/api/auth/mfa/*"
+      },
+      agents: "/api/agents",
+      evidence: "/api/evidence"
+    }
+  });
+});
+
 // 1. Health & Readiness Check Endpoints
 app.get("/api/health", (req, res) => {
   res.json({ status: "healthy", timestamp: new Date().toISOString() });

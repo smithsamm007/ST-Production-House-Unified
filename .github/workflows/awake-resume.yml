@@ -1,0 +1,114 @@
+name: Awake Resume Controller
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+  issues: read
+  pull-requests: write
+
+concurrency:
+  group: awake-resume-controller
+  cancel-in-progress: false
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      CODER_KEY: ${{ secrets.GEMINI_API_KEY }}
+      JULES_KEY: ${{ secrets.JULES_API_KEY }}
+
+    steps:
+      - name: Reconcile and reverify existing autonomous pull requests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh pr list --state open --limit 100 --json number,body,headRefName,headRefOid,labels --jq '.[] | select(.headRefName | startswith("task/")) | @base64' |
+          while read -r encoded; do
+            pr="$(base64 --decode <<<"$encoded")"
+            number="$(jq -r '.number' <<<"$pr")"
+            branch="$(jq -r '.headRefName' <<<"$pr")"
+            lane="$(jq -r '[.labels[].name | select(. == "lane-1" or . == "lane-2" or . == "lane-3")][0] // empty' <<<"$pr")"
+
+            if [ -z "$lane" ]; then
+              issue="$(jq -r '.body | capture("Closes #[ ]*(?<number>[0-9]+)"; "i").number // empty' <<<"$pr" 2>/dev/null || true)"
+              [ -n "$issue" ] || continue
+              lane="$(gh issue view "$issue" --json labels --jq '[.labels[].name | select(. == "lane-1" or . == "lane-2" or . == "lane-3")][0] // empty')"
+              [ -n "$lane" ] || continue
+              gh pr edit "$number" --add-label "$lane" --add-label autopilot
+            fi
+
+            merge_code="$(gh api -X POST "repos/$GITHUB_REPOSITORY/merges" -f base="$branch" -f head=main -f commit_message="chore(autopilot): refresh $branch from verified main" --silent --include | head -n 1 | awk '{print $2}' || true)"
+            if [ "$merge_code" = 409 ]; then
+              echo "::warning::PR #$number conflicts with main and requires correction in its existing lane."
+              continue
+            fi
+            if [ "$merge_code" != 201 ] && [ "$merge_code" != 204 ]; then
+              echo "::warning::Could not safely refresh PR #$number from main (HTTP ${merge_code:-unknown})."
+              continue
+            fi
+
+            head="$(gh pr view "$number" --json headRefOid --jq '.headRefOid')"
+            active="$(gh run list --commit "$head" --limit 100 --json workflowName,status --jq '[.[] | select((.workflowName == "ST Production House CI" or .workflowName == "PR Gate" or .workflowName == "Autonomous Merge Referee") and (.status != "completed"))] | length')"
+            [ "$active" = 0 ] || continue
+            passed="$(gh run list --commit "$head" --limit 100 --json workflowName,status,conclusion --jq '[.[] | select((.workflowName == "ST Production House CI" or .workflowName == "PR Gate" or .workflowName == "Autonomous Merge Referee") and .status == "completed" and .conclusion == "success") | .workflowName] | unique | length')"
+            [ "$passed" = 3 ] && continue
+
+            gh workflow run ci.yml --ref "$branch" -f pr_number="$number" -f expected_head="$head"
+            gh workflow run pr-gate.yml --ref "$branch" -f pr_number="$number" -f expected_head="$head"
+            gh workflow run autonomous-merge.yml --ref "$branch" -f pr_number="$number" -f expected_head="$head"
+            echo "::notice::Re-dispatched exact-head verification for PR #$number at $head."
+          done
+
+      - name: Evaluate resumability and wake worker
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "$CODER_KEY" ] && [ -z "$JULES_KEY" ]; then
+            echo "::notice::Paused: neither governed coding credential is configured. A later wake will recheck."
+            exit 0
+          fi
+
+          active_count="$(gh run list             --workflow night-shift.yml             --limit 20             --json status             --jq '[.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "pending")] | length')"
+          if [ "$active_count" != "0" ]; then
+            echo "::notice::Paused: Night Shift Agent is already active."
+            exit 0
+          fi
+
+          issue_number=""
+          for lane in lane-1 lane-2 lane-3; do
+            occupied="$(gh pr list --state open --label "$lane" --limit 1 --json number --jq 'length')"
+            [ "$occupied" = 0 ] || continue
+            candidate="$(gh issue list --label ready --label "$lane" --state open --limit 100 --json number,labels --jq '[.[] | select((.labels | map(.name) | any(. == "blocked" or . == "in-progress" or . == "owner-action-required" or . == "credentials-required" or . == "oauth-required" or . == "publishing-approval-required" or . == "security-approval-required")) | not)][0].number // empty')"
+            if [ -n "$candidate" ]; then
+              issue_number="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$issue_number" ]; then
+            echo "::notice::Paused: no free lane has an ungated ready issue. A later wake will recheck."
+            exit 0
+          fi
+
+          if [ -n "$CODER_KEY" ]; then
+            gh workflow run night-shift.yml --ref main
+            echo "::notice::Woke the three-lane Night Shift Agent for eligible issue #$issue_number."
+          else
+            gh workflow run jules-command-files.yml --ref main
+            echo "::notice::Woke the governed Jules dispatcher; Gemini coding credential is unavailable."
+          fi
+
+      - name: Explain fail-closed owner gates
+        if: always()
+        run: |
+          echo "::notice::Credentials, OAuth, publishing approval, paid usage, and security authorization are never fabricated or bypassed."

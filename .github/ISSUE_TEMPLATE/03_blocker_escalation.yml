@@ -1,0 +1,43 @@
+name: "Blocker & Failure Escalation"
+description: "Report an automated loop stall, test failure after 3 attempts, or security block"
+title: "[BLOCKER]: "
+labels: ["blocked"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### Automated Pipeline Blocker Escalation
+        In accordance with Rule R9: when CI fails after 3 automated attempts, an issue must be labeled `blocked` with explicit failure logs.
+  - type: input
+    id: task_ref
+    attributes:
+      label: Blocked Task / PR Reference
+      placeholder: "e.g., #42 / PR-15 / TASK-2.7"
+    validations:
+      required: true
+  - type: dropdown
+    id: failure_category
+    attributes:
+      label: Failure Category
+      options:
+        - "CI Test Failure (Exceeded 3 retry attempts)"
+        - "Merge Conflict / Non-Exact Head"
+        - "Secret or Internal Name Leak Detected"
+        - "Credential / OAuth Setup Required"
+        - "Schema Migration Conflict"
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostic_logs
+    attributes:
+      label: Diagnostic Error Output
+      description: "Paste sanitized failure logs or runner output"
+    validations:
+      required: true
+  - type: textarea
+    id: remediation_needed
+    attributes:
+      label: Required Owner Remediation
+      description: "Explain what manual decision or fix is necessary to unblock"
+    validations:
+      required: true

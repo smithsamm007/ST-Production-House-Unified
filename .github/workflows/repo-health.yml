@@ -1,0 +1,30 @@
+name: Repository Health & Contract Audit
+
+on:
+  schedule:
+    # Run once daily at 00:00 UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  health-audit:
+    name: Daily Health & Policy Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run Repository Linter & Health Audit
+        run: node .github/scripts/repo-lint.mjs
+
+      - name: Verify Roadmap Dispatch Readiness
+        run: node .github/scripts/task-planner.mjs

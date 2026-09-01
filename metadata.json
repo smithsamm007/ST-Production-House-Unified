@@ -1,0 +1,8 @@
+{
+  "name": "ST Production House Unified",
+  "description": "Secure control-plane foundation and API catalog service for ST Production House.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

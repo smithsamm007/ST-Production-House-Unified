@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: ST Production House Engineering Documentation
+    url: https://github.com/smithsamm007/ST-Production-House-Unified/tree/main/docs
+    about: Read the engineering contract and autonomous architecture guidelines.

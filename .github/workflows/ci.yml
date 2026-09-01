@@ -5,12 +5,72 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Optional pull request number for autonomous exact-head verification
+        required: false
+        type: string
+      expected_head:
+        description: Optional exact pull request head SHA
+        required: false
+        type: string
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
+  issues: write
 
 jobs:
-  test:
+  lint-and-validate:
+    name: Lint & Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.expected_head || github.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run Repository Linter & Health Audit
+        run: node .github/scripts/repo-lint.mjs
+
+  unit-and-policy-tests:
+    name: Unit & Policy Tests
+    needs: [lint-and-validate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.expected_head || github.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run verification checks
+        run: npm run verify
+
+      - name: Run Unit Tests
+        run: npm test
+
+      - name: Record Step Status
+        if: always()
+        run: |
+          node .github/scripts/ci-reporter.mjs "${{ job.status }}" "Unit & Policy Tests"
+
+  integration-tests:
+    name: PostgreSQL Integration Tests
+    needs: [lint-and-validate]
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: postgresql://st_app:st_test_password@localhost:5432/st_production_test
@@ -33,22 +93,70 @@ jobs:
           --health-retries 5
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Validate dispatched pull request identity
+        if: inputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          actual="$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER")"
+          test "$(jq -r '.state' <<<"$actual")" = open
+          test "$(jq -r '.draft' <<<"$actual")" = false
+          test "$(jq -r '.base.ref' <<<"$actual")" = main
+          test "$(jq -r '.head.sha' <<<"$actual")" = "$EXPECTED_HEAD"
 
-    - name: Set up Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: 20
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.expected_head || github.sha }}
+          fetch-depth: 0
 
-    - name: Install dependencies
-      run: npm ci
+      - name: Integrate current main for autonomous dispatched verification
+        if: inputs.pr_number != ''
+        run: git merge --no-commit --no-ff origin/main
 
-    - name: Run verification checks
-      run: npm run verify
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
-    - name: Run unit and policy tests
-      run: npm test
+      - name: Install dependencies
+        run: npm ci
 
-    - name: Run PostgreSQL Integration Tests
-      run: npm run test:integration
+      - name: Run PostgreSQL Integration Tests
+        run: npm run test:integration
+
+      - name: Record Step Status
+        if: always()
+        run: |
+          node .github/scripts/ci-reporter.mjs "${{ job.status }}" "PostgreSQL Integration Tests"
+
+  ci-summary:
+    name: CI Pipeline Summary & Reporting
+    needs: [lint-and-validate, unit-and-policy-tests, integration-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate Consolidated CI Status Report
+        run: |
+          echo "### 🏁 CI Workflow Complete" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Lint & Security Audit | ${{ needs.lint-and-validate.result == 'success' && '✅ PASSED' || '❌ FAILED' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit & Policy Tests | ${{ needs.unit-and-policy-tests.result == 'success' && '✅ PASSED' || '❌ FAILED' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| PostgreSQL Integration Tests | ${{ needs.integration-tests.result == 'success' && '✅ PASSED' || '❌ FAILED' }} |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Post PR Comment on Failure or Status Change
+        if: github.event_name == 'pull_request' && failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr comment "$PR_NUMBER" --body "⚠️ **CI Pipeline Check Failed.** Please inspect the GitHub Actions run logs and review Rule R9 guidelines." || true
