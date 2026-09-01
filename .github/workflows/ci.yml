@@ -36,6 +36,12 @@ jobs:
         with:
           node-version: 20
 
+      - name: Clear npm cache
+        run: npm cache clean --force
+
+      - name: Install dependencies
+        run: npm ci --no-cache
+
       - name: Run Repository Linter & Health Audit
         run: node .github/scripts/repo-lint.mjs
 
@@ -53,9 +59,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'npm'
+
+      - name: Clear npm cache
+        run: npm cache clean --force
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-cache
 
       - name: Run verification checks
         run: npm run verify
@@ -123,9 +133,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'npm'
+
+      - name: Clear npm cache
+        run: npm cache clean --force
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-cache
 
       - name: Run PostgreSQL Integration Tests
         run: npm run test:integration
