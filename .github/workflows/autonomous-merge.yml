@@ -7,6 +7,10 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: autonomous-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
   test-and-merge:
     runs-on: ubuntu-latest
@@ -22,6 +26,7 @@ jobs:
 
       - name: Run full test suite (the referee)
         run: |
+          npm run plan:check
           npm test
           npm run verify
 
@@ -31,5 +36,6 @@ jobs:
         run: |
           gh pr ready "${{ github.event.pull_request.number }}" 2>/dev/null || true
           gh pr merge "${{ github.event.pull_request.number }}" \
-            --auto --squash --delete-branch || \
+            --auto --squash --delete-branch \
+            --match-head-commit "${{ github.event.pull_request.head.sha }}" || \
           echo "::notice::Auto-merge armed; merges when all checks pass."
