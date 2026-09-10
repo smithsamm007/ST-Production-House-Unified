@@ -145,6 +145,14 @@ export function createOwnerApp(options = {}) {
     }
   });
 
+  // Malformed / oversized JSON bodies fail closed as a clean 4xx (never 500, never leaked internals).
+  app.use((err, req, res, next) => {
+    if (err?.type === "entity.parse.failed" || err?.type === "entity.too.large" || err?.status === 400 || err?.status === 413) {
+      return res.status(err.status === 413 ? 413 : 400).json({ error: "REQUEST_BODY_INVALID" });
+    }
+    return next(err);
+  });
+
   // Generic 404 for unknown endpoints
   app.use((req, res) => {
     res.status(404).json({ error: "NOT_FOUND" });
