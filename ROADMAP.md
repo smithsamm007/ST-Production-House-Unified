@@ -4,7 +4,7 @@
 Deliver the secure production control plane through small, isolated, evidence-backed changes that can be planned, implemented, verified, recovered, and merged by automation.
 
 ## Current Baseline
-The repository contains the Phase 1 policy foundation, PostgreSQL migrations through 016, authenticated API foundations, durable worker/checkpoint contracts, provider routing, and bounded Jules recovery workflows. Live providers, accounts, publishing, and production credentials remain intentionally unavailable.
+The repository contains the Phase 1 policy foundation, PostgreSQL migrations through 016, authenticated API foundations, durable worker/checkpoint contracts, provider routing, and bounded Jules recovery workflows. Phase 2 is complete: adversarial fuzzing, the SQL-injection matrix, and the production runbook (`docs/RUNBOOK.md`) close the milestone. Live providers, accounts, publishing, and production credentials remain intentionally unavailable.
 
 ## Tasks
 - [x] PLAN-1: Define a machine-validated Markdown task contract
@@ -25,7 +25,7 @@ The repository contains the Phase 1 policy foundation, PostgreSQL migrations thr
 - Automated implementation may open or update a draft PR, but it may not bypass required checks, owner approval, or security policy.
 - A failed dependency or provider is represented honestly and routed to bounded recovery or owner handoff; no fake success is emitted.
 - The roadmap is valid only when `npm run plan:check` and the repository verification commands pass.
-\n+## Governed Execution Matrix
+## Governed Execution Matrix
 
 The repository's detailed phase, lane, and acceptance matrix is maintained in the implementation roadmap and issue specifications. Each task remains isolated to one pull request, uses the repository's security contract, and must pass exact-head verification before merge.
 
@@ -61,7 +61,7 @@ The autonomous pipeline executes across three strictly isolated lanes. Each lane
 - [x] **TASK-2.5** `[lane-2]`: Provider Quota Windows, Cooldowns & Recovery Engine (`src/quotas/`, `sql/013`, `specs/issue-05.md`).
 - [x] **TASK-2.6** `[lane-2]`: Provider Circuit Breaker, Quarantine & Emergency Pause (`src/resilience/`, `sql/014`, `specs/issue-06.md`).
 - [x] **TASK-2.7** `[lane-3]`: Continuous Development Pipeline & Automated Test-Fix Orchestrator (`src/orchestration/`, `ROADMAP.md`).
-- [ ] **TASK-2.8** `[lane-1]`: Adversarial fuzzing, security review & production runbook (`specs/issue-07.md`).
+- [x] **TASK-2.8** `[lane-1]`: Adversarial fuzzing, security review & production runbook (`specs/issue-07.md`).
 
 ### Phase 3 — Media Production & Deterministic Workers (Upcoming)
 - [ ] **TASK-3.1** `[lane-3]`: ViMax Motion Adapter & deterministic frame interpolation worker.

@@ -53,3 +53,21 @@ No agent may access another agent's locator. The local emergency provider has no
 Default mode is draft/private. Approval binds owner, artifact hash, caption, affiliate disclosures, destination, schedule, and expiry. Any mutation after approval invalidates it. Only a platform response can create a publish receipt.
 
 If public publishing is attempted but no active primary brand or primary social channel attribution is configured, publishing is blocked with a `PUBLIC_PUBLISHING_IDENTITY_REQUIRED` error.
+
+## Adversarial Hardening (TASK-2.8)
+
+The following surfaces are continuously exercised by the offline adversarial suite in `tests/adversarial/`, which runs as part of `npm test`:
+
+- **Locator fuzzing (`fuzz-locators.test.js`)** — mutated locator strings (oversized inputs, hostile unicode, traversal and injection-shaped payloads) never crash the parser unhandled and never leak raw input material in error responses beyond the locator's own short version tag.
+- **API header and body fuzzing (`api-header-fuzz.test.js`)** — oversized and malformed `Authorization` headers, hostile cookies, injected auxiliary headers, hostile query strings, oversized/malformed JSON bodies, and unknown routes always produce clean 4xx responses from the owner API. Error bodies are drawn from a fixed public error-code allowlist; no stack traces, SQL fragments, or reflected input are returned. A valid bootstrap token still authenticates after the gauntlet (no false lockout).
+- **SQL injection matrix (`sql-injection-matrix.test.js`)** — classic injection payloads (`' OR 1=1 --`, `'; DROP TABLE`, UNION SELECT, stacked statements, JSON/boolean/time-based shapes) are pushed through every credential, audit, and quota repository function and asserted to arrive as bound parameters; nothing is interpolated into SQL text.
+- **Body parse errors fail closed** — malformed or oversized JSON is handled by a dedicated body-parser error handler in the owner API so it yields a clean 4xx instead of surfacing as a 500 from the global error path.
+- **Checkpoint replay is scope-bound** — durable `WAITING_FOR_QUOTA` checkpoints reject resume attempts from foreign owners (`SCOPE_MISMATCH`), so a leaked checkpoint id cannot be replayed across tenants.
+
+Operational response guidance for these surfaces lives in `docs/RUNBOOK.md` (alert triage, emergency pause, rotation drill, migration rollback policy).
+
+## Durable Recovery Semantics
+
+- A restarted worker detects completed stages from the checkpoint store and never regenerates or republishes finished artifacts; duplicate prevention is enforced by checkpoint replay, not operator discipline.
+- Quota exhaustion across the full provider chain produces a truthful `WAITING_FOR_QUOTA` checkpoint (`APPROVED_FREE_CAPACITY_UNAVAILABLE`, execution not started, provider selection not performed) rather than a fabricated success or silent skip.
+- The full acceptance chain — provider exhaustion, secondary and open-source fallback attempted, all-capacity-unavailable checkpoint, scheduler resume after quota reset, artifact produced exactly once, no duplicate generation — is demonstrated by `tests/waitingForQuotaAcceptance.test.js`.
