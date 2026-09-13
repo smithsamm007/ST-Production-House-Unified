@@ -62,6 +62,7 @@ npm run verify
 
 Read:
 
+- `docs/MASTER_BLUEPRINT.md`
 - `docs/ARCHITECTURE.md`
 - `docs/REPOSITORY_AUDIT_AND_REUSE.md`
 - `docs/SECURITY.md`
