@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 1,
+  "manifestType": "st_health_manifest",
+  "description": "Truthful cloud-operations manifest for ST Production House autonomous workflows. Each entry lists the workflow file and the EXTERNAL secrets it requires, as verified from the workflow's own secrets usage. The runner-provided GITHUB_TOKEN is intentionally not listed. The scheduled self-audit classifies each workflow RUNNABLE (all required external secrets configured) or PAUSED (missing credentials) and never fabricates availability (AGENTS.md Rules 1-3).",
+  "workflows": [
+    {
+      "workflowId": "operations-health",
+      "path": ".github/workflows/operations-health.yml",
+      "requiredSecrets": [],
+      "critical": false,
+      "description": "Scheduled truthful self-audit classifying every autonomous workflow as RUNNABLE or PAUSED (missing credentials) and uploading the report as a run artifact."
+    },
+    {
+      "workflowId": "ci",
+      "path": ".github/workflows/ci.yml",
+      "requiredSecrets": [],
+      "critical": true,
+      "description": "Lint, security audit, unit/policy tests, PostgreSQL 15 integration tests, and consolidated PR reporting."
+    },
+    {
+      "workflowId": "pr-gate",
+      "path": ".github/workflows/pr-gate.yml",
+      "requiredSecrets": [],
+      "critical": true,
+      "description": "Pull-request verification gate running the repository verification suite before merge."
+    },
+    {
+      "workflowId": "repo-health",
+      "path": ".github/workflows/repo-health.yml",
+      "requiredSecrets": [],
+      "critical": false,
+      "description": "Scheduled daily repository health audit (syntax, contract security invariants, migration sequence integrity)."
+    },
+    {
+      "workflowId": "backlog-feeder",
+      "path": ".github/workflows/backlog-feeder.yml",
+      "requiredSecrets": [],
+      "critical": true,
+      "description": "Governed backlog promotion loop: validates the slice manifest, promotes eligible slices to issues, and durably records completions in the lifecycle file."
+    },
+    {
+      "workflowId": "post-merge-reverify",
+      "path": ".github/workflows/post-merge-reverify.yml",
+      "requiredSecrets": [],
+      "critical": true,
+      "description": "Reverifies all remaining lane work against the new main after every merge."
+    },
+    {
+      "workflowId": "exact-head-merge",
+      "path": ".github/workflows/exact-head-merge.yml",
+      "requiredSecrets": [],
+      "critical": true,
+      "description": "Exact-head merge controller ensuring only the verified commit head is merged."
+    },
+    {
+      "workflowId": "autonomous-merge",
+      "path": ".github/workflows/autonomous-merge.yml",
+      "requiredSecrets": [],
+      "critical": true,
+      "description": "Autonomous merge controller for governed lane merges."
+    },
+    {
+      "workflowId": "continuous-pipeline",
+      "path": ".github/workflows/continuous-pipeline.yml",
+      "requiredSecrets": [],
+      "critical": false,
+      "description": "Continuous development pipeline runner triggered on issue events, PR syncs, schedules, and workflow dispatch."
+    },
+    {
+      "workflowId": "continuous-development",
+      "path": ".github/workflows/continuous-development.yml",
+      "requiredSecrets": [],
+      "critical": false,
+      "description": "Continuous development orchestration workflow."
+    },
+    {
+      "workflowId": "awake-resume",
+      "path": ".github/workflows/awake-resume.yml",
+      "requiredSecrets": ["JULES_API_KEY", "GEMINI_API_KEY"],
+      "critical": false,
+      "description": "Hourly wake/resume controller reconciling and reverifying autonomous pull requests; dispatches coding-agent sessions."
+    },
+    {
+      "workflowId": "night-shift",
+      "path": ".github/workflows/night-shift.yml",
+      "requiredSecrets": ["JULES_API_KEY", "GEMINI_API_KEY"],
+      "critical": false,
+      "description": "Night-shift autonomous implementation agent; requires coding-agent credentials."
+    },
+    {
+      "workflowId": "autodev",
+      "path": ".github/workflows/autodev.yml",
+      "requiredSecrets": ["AUTODEV_TOKEN", "OPENROUTER_API_KEY"],
+      "critical": false,
+      "description": "Autonomous development bridge; requires its own token and an OpenRouter key."
+    },
+    {
+      "workflowId": "jules-api-bridge",
+      "path": ".github/workflows/jules-api-bridge.yml",
+      "requiredSecrets": ["JULES_API_KEY"],
+      "critical": false,
+      "description": "Jules API bridge for bounded coding-agent sessions."
+    },
+    {
+      "workflowId": "jules-command-files",
+      "path": ".github/workflows/jules-command-files.yml",
+      "requiredSecrets": ["JULES_API_KEY"],
+      "critical": false,
+      "description": "Jules command-file dispatch workflow."
+    },
+    {
+      "workflowId": "jules-pr-command",
+      "path": ".github/workflows/jules-pr-command.yml",
+      "requiredSecrets": ["JULES_API_KEY"],
+      "critical": false,
+      "description": "Jules PR command workflow for correction attempts."
+    },
+    {
+      "workflowId": "jules-session-watchdog",
+      "path": ".github/workflows/jules-session-watchdog.yml",
+      "requiredSecrets": ["JULES_API_KEY"],
+      "critical": false,
+      "description": "Watchdog keeping the Jules session count within the governed cap."
+    },
+    {
+      "workflowId": "jules-tracking-issue-watchdog",
+      "path": ".github/workflows/jules-tracking-issue-watchdog.yml",
+      "requiredSecrets": ["JULES_API_KEY"],
+      "critical": false,
+      "description": "Watchdog for the Jules tracking issue lifecycle."
+    }
+  ]
+}
