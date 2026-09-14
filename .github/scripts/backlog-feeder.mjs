@@ -25,6 +25,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { buildIssuePayload, planPromotions, validateManifest } from "../../src/automation/backlogFeeder.js";
 
@@ -67,11 +68,57 @@ function loadLifecycle() {
   return stored;
 }
 
-function recordPromotion(lifecycle, sliceId) {
-  if (!lifecycle.promotedSliceIds.includes(sliceId)) {
-    lifecycle.promotedSliceIds.push(sliceId);
-    writeJson(LIFECYCLE_PATH, lifecycle);
+/**
+ * Adds a slice id to the in-memory lifecycle. Returns true when the id was
+ * newly recorded (the caller persists the file); false when it was already
+ * recorded (idempotent, honest no-op).
+ */
+export function recordPromotion(lifecycle, sliceId) {
+  if (lifecycle.promotedSliceIds.includes(sliceId)) {
+    return false;
   }
+  lifecycle.promotedSliceIds.push(sliceId);
+  return true;
+}
+
+function git(args) {
+  return execFileSync("git", args, {
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024
+  });
+}
+
+/**
+ * Durability contract (S-AUT-01): completion credit recorded during this run
+ * is committed and pushed to the default branch BEFORE any further GitHub
+ * state changes. An unchanged lifecycle is an honest no-op. A failed commit
+ * or push is loud and non-zero — completion credit is never silently dropped
+ * and success is never fabricated (AGENTS.md Rule 1).
+ */
+export function persistLifecycleToGit({ changed, sliceIds, branch, runGit = git }) {
+  if (!changed) {
+    console.log(JSON.stringify({ code: "BACKLOG_LIFECYCLE_UNCHANGED" }));
+    return { committed: false };
+  }
+  try {
+    runGit(["add", "automation/backlog/lifecycle.json"]);
+    runGit([
+      "-c", "user.name=github-actions[bot]",
+      "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
+      "commit",
+      "-m", `chore(automation): record slice completion in lifecycle [${sliceIds.join(", ")}]`
+    ]);
+    runGit(["push", "origin", `HEAD:refs/heads/${branch}`]);
+  } catch (error) {
+    console.error(
+      JSON.stringify({ code: "BACKLOG_LIFECYCLE_PUSH_FAILED", detail: String(error?.message ?? error) })
+    );
+    const failure = new Error("BACKLOG_LIFECYCLE_PUSH_FAILED");
+    failure.code = "BACKLOG_LIFECYCLE_PUSH_FAILED";
+    throw failure;
+  }
+  console.log(JSON.stringify({ code: "BACKLOG_LIFECYCLE_COMMITTED", sliceIds, branch }));
+  return { committed: true };
 }
 
 // --- manifest + slice tags -------------------------------------------------
@@ -168,20 +215,27 @@ function relabelReady(number, lane) {
 // --- closed-loop handling --------------------------------------------------
 
 function handleCloseEvents(lifecycle, manifest) {
+  const promoted = [];
   const event = process.env.GITHUB_EVENT_NAME;
-  if (event !== "issues") return;
+  if (event !== "issues") return promoted;
   const payload = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
-  if (payload.action !== "closed") return;
+  if (payload.action !== "closed") return promoted;
   const issue = payload.issue;
   const tag = sliceTagFromTitle(issue?.title);
-  if (!tag) return;
+  if (!tag) return promoted;
   const slice = manifest.slices.find((candidate) => candidate.sliceId === tag);
-  if (!slice) return;
+  if (!slice) return promoted;
 
   const closeReason = issue.state_reason || "completed";
   if (closeReason === "completed") {
-    recordPromotion(lifecycle, tag);
-    console.log(JSON.stringify({ code: "BACKLOG_SLICE_PROMOTED", sliceId: tag, issue: issue.number }));
+    const added = recordPromotion(lifecycle, tag);
+    if (added) {
+      writeJson(LIFECYCLE_PATH, lifecycle);
+      promoted.push(tag);
+      console.log(JSON.stringify({ code: "BACKLOG_SLICE_PROMOTED", sliceId: tag, issue: issue.number }));
+    } else {
+      console.log(JSON.stringify({ code: "BACKLOG_SLICE_ALREADY_RECORDED", sliceId: tag, issue: issue.number }));
+    }
   } else {
     // Honest re-feed: not completed => back to the ready queue with a reason.
     // Dependencies are NOT marked satisfied; the promotion planner will
@@ -200,6 +254,7 @@ function handleCloseEvents(lifecycle, manifest) {
     }
     console.log(JSON.stringify({ code: "BACKLOG_SLICE_REFED", sliceId: tag, issue: issue.number, closeReason }));
   }
+  return promoted;
 }
 
 // --- digest of owner-gated slices ------------------------------------------
@@ -236,7 +291,12 @@ function main() {
 
   // Closed-event handling runs first: a just-closed slice issue either gets
   // promotion credit or is honestly re-fed.
-  handleCloseEvents(lifecycle, manifest);
+  const promotedDuringRun = handleCloseEvents(lifecycle, manifest);
+
+  // Durability (S-AUT-01): credit recorded in this run is committed and
+  // pushed to the default branch before any further GitHub state changes.
+  const branch = process.env.GITHUB_REF_NAME || "main";
+  persistLifecycleToGit({ changed: promotedDuringRun.length > 0, sliceIds: promotedDuringRun, branch });
 
   const state = observeState();
   const plan = planPromotions(manifest, state);
@@ -265,4 +325,8 @@ function main() {
   );
 }
 
-main();
+// Only auto-run when executed directly; importing the module (tests) must
+// not trigger GitHub side effects.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}
