@@ -1,0 +1,153 @@
+{
+  "schemaVersion": 1,
+  "manifestType": "st_backlog_manifest",
+  "description": "Governed slice backlog for the autonomous production loop. Slices with ownerGated=true are recorded for the owner and are NEVER auto-promoted by the feeder. Promotable slices are offline-doable, fail-closed, deterministic work; live provider, OAuth, publishing, and analytics slices stay owner-gated per AGENTS.md Rules 7, 16, and 17.",
+  "limits": {
+    "maxPerLanePerRun": 1,
+    "maxTotalPerRun": 3,
+    "maxOpenReadyIssues": 6
+  },
+  "slices": [
+    {
+      "sliceId": "S-M21-01",
+      "module": 21,
+      "lane": "lane-3",
+      "ownerGated": false,
+      "title": "AI News narration input registry and deterministic subtitle plan stage",
+      "brief": "Stage 4 of the AI News pipeline (Module 27/21). Add src/aiNews/deterministicSubtitlePlan.js: a narration-input registry that validates owner/agent-supplied timed narration segments (monotonic, non-overlapping, bounded start/end/text, no invented content) and converts an approved editorial plan plus registered segments into a deterministic subtitle plan. Fail closed with stable reason codes; no provider calls; no media generation; publication stays not_requested; Rules 15/17 enforced.",
+      "acceptance": [
+        "Registry validates timed segments: strictly ordered, non-overlapping, bounded durations and text lengths; malformed input throws stable codes",
+        "Subtitle plan is deterministic (SHA-256 plan id) and echoes supplied segment text only",
+        "Blocked or tampered upstream plans yield truthful blocked results, never drafts",
+        "Unit tests cover happy path, determinism, and fail-closed rejections; npm test and npm run verify pass",
+        "docs/aiNews/SUBTITLE_PLAN_CONTRACT.md documents the contract; no new dependencies"
+      ],
+      "dependsOn": []
+    },
+    {
+      "sliceId": "S-M27-01",
+      "module": 27,
+      "lane": "lane-3",
+      "ownerGated": false,
+      "title": "AI News content package orchestrator chaining verified stages",
+      "brief": "Generalize the proven JARVIS orchestrator pattern (src/jarvis/contentPackageOrchestrator.js) to AI News: src/aiNews/contentPackageOrchestrator.js chains research brief -> editorial plan -> metadata/thumbnail plan -> subtitle plan into one deterministic package with stage-by-stage integrity (recomputed ids), truthful blocked propagation, and zero generation or publication.",
+      "acceptance": [
+        "Chains the four existing AI News stage modules via their public contracts only",
+        "Each stage's plan id is recomputed and verified before the next stage runs; tampering fails closed",
+        "A blocked upstream stage yields a truthful blocked package with the original reason code",
+        "Package provenance reports zero provider calls, zero generated assets, publication not_requested",
+        "Unit tests cover determinism, chaining, blocked propagation, and tamper rejection; docs updated"
+      ],
+      "dependsOn": ["S-M21-01"]
+    },
+    {
+      "sliceId": "S-M18-01",
+      "module": 18,
+      "lane": "lane-3",
+      "ownerGated": false,
+      "title": "Owner API: content package runs and evidence timeline read routes",
+      "brief": "Module 18 owner-dashboard surface, part 1. Add authenticated, safe-DTO read routes to the owner API (src/api/**) exposing content package runs and the evidence timeline (hash chain positions, artifact hashes, provider attempt metadata) for the requesting owner only. Cross-owner access fails closed; secrets, locators, and internal agent names are never serialized.",
+      "acceptance": [
+        "Routes require a valid authenticated session and scope every query to the session owner",
+        "Responses use an explicit safe DTO allowlist; unknown, secret-bearing, and internal-name fields are blocked",
+        "Malformed or cross-scope requests yield clean 4xx with allowlisted error codes",
+        "Unit tests cover auth, scoping, DTO allowlist, and error shapes; docs updated; no new dependencies"
+      ],
+      "dependsOn": []
+    },
+    {
+      "sliceId": "S-M18-02",
+      "module": 18,
+      "lane": "lane-3",
+      "ownerGated": false,
+      "title": "Owner API: job control, approval queue, and emergency pause routes",
+      "brief": "Module 18 owner-dashboard surface, part 2. Add authenticated mutation routes (CSRF-protected) for job retry/cancel within owner scope, listing the pending owner-approval queue, and triggering the existing emergency-pause contract (src/resilience/**). Every mutation writes an audit event. Approvals bind exact artifact hashes; publishing approval remains out of scope for this slice.",
+      "acceptance": [
+        "All mutations require session + CSRF + ownership + audit event (AGENTS.md Rule 6)",
+        "Job retry/cancel operates only on jobs owned by the session owner and respects terminal states",
+        "Emergency pause reuses the existing resilience contract; status is reflected in read routes",
+        "Unit tests cover auth, CSRF, scoping, audit, and fail-closed paths; docs updated"
+      ],
+      "dependsOn": ["S-M18-01"]
+    },
+    {
+      "sliceId": "S-M28-01",
+      "module": 28,
+      "lane": "lane-3",
+      "ownerGated": false,
+      "title": "Cloud operation health manifest and truthful scheduled self-audit",
+      "brief": "Module 28 offline portion. Add a health manifest (automation/operations/health-manifest.json) listing the autonomous workflows and their required credentials, plus a scheduled audit step that truthfully reports which workflows are runnable (credential configured or not) and records the report as a workflow-run artifact or issue comment. No fake green: missing credentials are reported as PAUSED, never success.",
+      "acceptance": [
+        "Manifest schema is validated by a pure module with stable error codes",
+        "Audit output distinguishes RUNNABLE vs PAUSED (missing credential) per workflow; never fabricates availability",
+        "Scheduled workflow runs the audit and surfaces the truthful report",
+        "Unit tests cover schema validation and report classification; docs updated"
+      ],
+      "dependsOn": []
+    },
+    {
+      "sliceId": "S-M29-01",
+      "module": 29,
+      "lane": "lane-2",
+      "ownerGated": false,
+      "title": "Offline load and rate-limit resilience suite for quota and recovery contracts",
+      "brief": "Module 29 offline portion. Add a deterministic, fully offline stress suite exercising QuotaLedger reservation/commit/release under burst-shaped call patterns, RecoveryContractManager circuit transitions under repeated failure injection, and expired-lease reclaim under concurrent claim attempts. Assert bounded memory/time behavior and no quota leakage; no network, no providers.",
+      "acceptance": [
+        "Burst reservation patterns show zero quota leakage (every reserve is committed or released exactly once)",
+        "Circuit breaker reaches OPEN and recovers per contract under injected failure sequences",
+        "Expired-lease reclaim is safe under simulated concurrent claims (no double-claim in the deterministic model)",
+        "Suite runs offline in npm test with bounded duration; docs updated"
+      ],
+      "dependsOn": []
+    },
+    {
+      "sliceId": "S-M20-LIVE",
+      "module": 20,
+      "lane": "lane-1",
+      "ownerGated": true,
+      "title": "OWNER-GATED: real free-provider credential onboarding",
+      "brief": "Module 20 live portion. Requires the owner to configure the three private provider slots per agent with secret-manager locators and quota metadata. Cannot be automated: per AGENTS.md Rules 4, 5, and 16 the owner must supply credentials through the secret manager. This slice is recorded for tracking only; the feeder must never promote it.",
+      "acceptance": [
+        "Owner supplies secret-manager locators and free-tier quota metadata through the owner-controlled secret manager",
+        "Live quota snapshots wired into dispatch admission are verified with real provider evidence before any claim of operation"
+      ],
+      "dependsOn": []
+    },
+    {
+      "sliceId": "S-M19-LIVE",
+      "module": 19,
+      "lane": "lane-1",
+      "ownerGated": true,
+      "title": "OWNER-GATED: OAuth and social-account connection",
+      "brief": "Module 19 live portion. Requires the owner to configure each agent's unconfigured email/social connection slots with real OAuth grants (YouTube, Instagram, Facebook, Snapchat). Per AGENTS.md Rule 16 live OAuth remains pending owner action. Recorded for tracking only; never auto-promoted.",
+      "acceptance": [
+        "Owner performs OAuth connection per agent slot with rotation and revocation verified through official platform flows"
+      ],
+      "dependsOn": []
+    },
+    {
+      "sliceId": "S-M24-LIVE",
+      "module": 24,
+      "lane": "lane-3",
+      "ownerGated": true,
+      "title": "OWNER-GATED: live publishing enablement",
+      "brief": "Module 24 live portion. Private-first publishing and reconciliation exist as contracts; enabling live publishing requires explicit, unexpired owner approval bound to exact artifact hash, destination, caption, affiliate links, and disclosure (AGENTS.md Rule 7). Recorded for tracking only; never auto-promoted.",
+      "acceptance": [
+        "Owner approves an exact immutable publishing snapshot through the owner dashboard; receipts come only from real platform responses"
+      ],
+      "dependsOn": []
+    },
+    {
+      "sliceId": "S-M26-LIVE",
+      "module": 26,
+      "lane": "lane-2",
+      "ownerGated": true,
+      "title": "OWNER-GATED: live analytics ingestion and optimization loop",
+      "brief": "Module 26 live portion. Analytics ingestion requires live published content and official platform analytics APIs with owner-configured credentials. No locally invented metrics are ever permitted. Recorded for tracking only; never auto-promoted.",
+      "acceptance": [
+        "Official analytics API credentials configured by the owner; ingestion verified against real platform responses"
+      ],
+      "dependsOn": []
+    }
+  ]
+}

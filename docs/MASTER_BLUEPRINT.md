@@ -40,6 +40,7 @@ evidence, and owner approval at every legally/technically sensitive boundary.
 | AI News provenance-first research briefs | **Delivered** | `src/aiNews/deterministicResearchBrief.js` (PR #106) |
 | AI News deterministic editorial plans from verified briefs | **Delivered** | `src/aiNews/deterministicEditorialPlan.js` + `docs/aiNews/EDITORIAL_PLAN_CONTRACT.md` |
 | AI News deterministic metadata & thumbnail plans | **Delivered** | `src/aiNews/deterministicMetadataPlan.js` + `docs/aiNews/METADATA_PLAN_CONTRACT.md` |
+| Autonomous backlog feeder (closed-loop roadmap → issues → lanes → merge → re-feed) | **Delivered** | `src/automation/backlogFeeder.js`, `automation/backlog/slices.json`, `.github/workflows/backlog-feeder.yml` + `docs/AUTONOMOUS_BACKLOG_FEEDER.md` |
 | Evidence ledger (append-only, hash-chained) | **Delivered** | `src/evidence/evidenceLedger.js` |
 | Promotion policy: one-Reel identity, main-video independence, affiliate rules | **Delivered** | `src/promotion/promotionPolicy.js` + tests |
 | Publishing service (receipt verification, no fake IDs) | **Delivered** | `src/publishing/publishingService.js` + tests |

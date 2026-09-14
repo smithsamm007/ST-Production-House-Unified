@@ -25,6 +25,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -36,8 +37,32 @@ jobs:
           node-version: '20'
           cache: npm
 
+      - name: Credential preflight (truthful pause, never fake progress)
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GEMINI_API_KEY:-}" ] && [ -z "${JULES_API_KEY:-}" ]; then
+            echo "::warning::Night Shift paused: no governed coding credential (GEMINI_API_KEY or JULES_API_KEY) is configured. No implementation, PR, or progress is claimed."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ensure governance labels exist
+        if: steps.preflight.outputs.skip != 'true'
+        shell: bash
+        run: |
+          gh label create in-progress --description "Implementation in progress by a governed lane" --color 1d76db >/dev/null 2>&1 || true
+          gh label create autopilot --description "Created by the governed autonomous loop" --color 0e8a16 >/dev/null 2>&1 || true
+          gh label create lane-1 --description "Lane 1: core infrastructure and credential broker" --color 5319e7 >/dev/null 2>&1 || true
+          gh label create lane-2 --description "Lane 2: provider routing, quotas and resilience" --color d93f0b >/dev/null 2>&1 || true
+          gh label create lane-3 --description "Lane 3: control plane, API, workflows and catalog" --color c2e0c6 >/dev/null 2>&1 || true
+          echo "::notice::Governance labels ensured."
+
       - name: Lane capacity gate
         id: gate
+        if: steps.preflight.outputs.skip != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -49,7 +74,7 @@ jobs:
           fi
 
       - name: Resolve next ready issue
-        if: steps.gate.outputs.skip != 'true'
+        if: steps.gate.outputs.skip != 'true' && steps.preflight.outputs.skip != 'true'
         id: task
         shell: bash
         run: |

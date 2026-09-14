@@ -1,0 +1,44 @@
+name: Autonomous Backlog Feeder
+
+# Feeds the governed three-lane loop from the machine-readable slice
+# manifest (automation/backlog/slices.json). Runs periodically and on every
+# issue close so completed slices promote their dependents and non-completed
+# closes are honestly re-fed. Owner-gated slices are never auto-promoted.
+
+on:
+  schedule:
+    - cron: '40 */3 * * *'
+  issues:
+    types: [closed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: st-backlog-feeder
+  cancel-in-progress: false
+
+jobs:
+  feed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Guard: never promote owner-gated slices, even if the manifest is
+      # mis-edited on a feature branch. The pure module enforces this too.
+      - name: Validate backlog manifest contract
+        run: node --check .github/scripts/backlog-feeder.mjs && node --check src/automation/backlogFeeder.js
+
+      - name: Feed the governed loop
+        run: node .github/scripts/backlog-feeder.mjs
