@@ -73,6 +73,32 @@ issue closes as completed. It is append-only in spirit: the runner only adds
 ids. If the file is absent, the loop starts with an empty history (no slice
 is treated as completed without the closed-issue evidence).
 
+### Durability contract (S-AUT-01)
+
+Completion credit is durable git state, not run-local state. When a close
+event records a new slice id, the runner:
+
+1. Writes `automation/backlog/lifecycle.json` in the workspace.
+2. Commits it with a `chore(automation): record slice completion in lifecycle`
+   message naming the slice ids.
+3. Pushes `HEAD:refs/heads/<default branch>` before any further GitHub state
+   changes (issue creation, digests).
+
+- Unchanged lifecycle → honest no-op (`BACKLOG_LIFECYCLE_UNCHANGED` logged,
+  zero git calls).
+- Failed commit/push → loud, non-zero exit with
+  `BACKLOG_LIFECYCLE_PUSH_FAILED`; the run is marked failed and completion
+  credit is never silently dropped or fabricated.
+- Idempotent re-recording of an already-recorded id logs
+  `BACKLOG_SLICE_ALREADY_RECORDED` and changes nothing.
+
+The runner only auto-executes when invoked directly; importing it in tests
+triggers no GitHub or git side effects, and `persistLifecycleToGit` accepts
+an injected `runGit` for deterministic unit testing.
+
+Provenance note: the seeded lifecycle contains only ids backed by a merged PR
+and an issue closed as completed (S-M21-01 → PR #116, issue #115).
+
 ## Verification
 
 - `node --test tests/backlogFeeder.test.js` — 13 unit tests

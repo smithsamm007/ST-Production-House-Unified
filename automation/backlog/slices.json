@@ -86,6 +86,21 @@
       "dependsOn": []
     },
     {
+      "sliceId": "S-AUT-01",
+      "module": 28,
+      "lane": "lane-3",
+      "ownerGated": false,
+      "title": "Backlog feeder records completion durably in git",
+      "brief": "Actions-run evidence showed the feeder wrote automation/backlog/lifecycle.json only into the ephemeral workspace: completion credit was lost between runs, so dependency-gated slices (S-M27-01) can never unlock. Make the runner commit and push lifecycle.json to the default branch when a completion is recorded (loud failure on push errors, honest no-op when unchanged), seed the file with the evidenced S-M21-01 completion, and document the durability contract.",
+      "acceptance": [
+        "Runner commits and pushes automation/backlog/lifecycle.json when a completion is recorded; no-op when the file is unchanged",
+        "Push failures exit non-zero with a stable log code; success or failure is never fabricated",
+        "Seeded lifecycle contains only slice ids backed by a merged PR and a closed-completed issue",
+        "npm test and npm run verify pass; docs updated; no new dependencies"
+      ],
+      "dependsOn": ["S-M21-01"]
+    },
+    {
       "sliceId": "S-M29-01",
       "module": 29,
       "lane": "lane-2",
