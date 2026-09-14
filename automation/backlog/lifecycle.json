@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "promotedSliceIds": [
-    "S-M21-01"
+    "S-M21-01",
+    "S-AUT-01"
   ]
 }
