@@ -2,6 +2,7 @@ import express from "express";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { AgentRegistry } from "../catalog/agents.js";
 import { initializeSeedState, retrieveActiveCharter, sanitizeSecrets } from "../catalog/creativeCharter.js";
+import { createContentRunsRouter } from "./contentRunsRouter.js";
 
 function safeCompareTokens(providedToken, expectedToken) {
   if (typeof providedToken !== "string" || typeof expectedToken !== "string") {
@@ -104,7 +105,12 @@ export function createOwnerApp(options = {}) {
     const now = Date.now();
     const expiresAt = now + defaultTtlMs;
 
+    // Server-authoritative owner identity: the bootstrap token maps to one
+    // owner; every scoped route reads the owner from the session, never from
+    // client input.
+    const ownerId = options.bootstrapOwnerId ?? "owner-01";
     const sessionData = {
+      ownerId,
       createdAt: new Date(now).toISOString(),
       expiresAt,
     };
@@ -144,6 +150,18 @@ export function createOwnerApp(options = {}) {
       return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
     }
   });
+
+  // Owner dashboard read surface (S-M18-01): content package runs + evidence
+  // timeline. Mounted behind requireAuth so every route requires a valid
+  // session; scoping uses the server-side session owner exclusively.
+  app.use(
+    "/content-runs",
+    requireAuth,
+    createContentRunsRouter({
+      packageRunStore: options.packageRunStore,
+      evidenceLedger: options.evidenceLedger
+    })
+  );
 
   // Malformed / oversized JSON bodies fail closed as a clean 4xx (never 500, never leaked internals).
   app.use((err, req, res, next) => {
