@@ -1,0 +1,48 @@
+name: Operations Health Audit
+
+on:
+  schedule:
+    # Hourly truthful self-audit (Module 28: cloud operation health).
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: operations-health-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run truthful operations health audit
+        env:
+          # Only secret NAMES are ever classified; values are never read by
+          # the audit. Missing credentials are reported as PAUSED, never ok.
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AUTODEV_TOKEN: ${{ secrets.AUTODEV_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/operations-health-audit.mjs
+
+      - name: Upload health report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: operations-health-report
+          path: automation/operations/health-report.json
+          if-no-files-found: warn
+          retention-days: 30
