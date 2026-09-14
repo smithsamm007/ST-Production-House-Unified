@@ -39,7 +39,7 @@ evidence, and owner approval at every legally/technically sensitive boundary.
 | Full deterministic content package through real workflow | **Delivered** | `src/jarvis/contentPackageOrchestrator.js` (PR #107) |
 | AI News provenance-first research briefs | **Delivered** | `src/aiNews/deterministicResearchBrief.js` (PR #106) |
 | AI News deterministic editorial plans from verified briefs | **Delivered** | `src/aiNews/deterministicEditorialPlan.js` + `docs/aiNews/EDITORIAL_PLAN_CONTRACT.md` |
-| AI News deterministic editorial plans from verified briefs | **Delivered** | `src/aiNews/deterministicEditorialPlan.js` + `docs/aiNews/EDITORIAL_PLAN_CONTRACT.md` |
+| AI News deterministic metadata & thumbnail plans | **Delivered** | `src/aiNews/deterministicMetadataPlan.js` + `docs/aiNews/METADATA_PLAN_CONTRACT.md` |
 | Evidence ledger (append-only, hash-chained) | **Delivered** | `src/evidence/evidenceLedger.js` |
 | Promotion policy: one-Reel identity, main-video independence, affiliate rules | **Delivered** | `src/promotion/promotionPolicy.js` + tests |
 | Publishing service (receipt verification, no fake IDs) | **Delivered** | `src/publishing/publishingService.js` + tests |
