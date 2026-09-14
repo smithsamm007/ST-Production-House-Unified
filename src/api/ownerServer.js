@@ -3,6 +3,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { AgentRegistry } from "../catalog/agents.js";
 import { initializeSeedState, retrieveActiveCharter, sanitizeSecrets } from "../catalog/creativeCharter.js";
 import { createContentRunsRouter } from "./contentRunsRouter.js";
+import { createOwnerControlRouter } from "./ownerControlRouter.js";
 
 function safeCompareTokens(providedToken, expectedToken) {
   if (typeof providedToken !== "string" || typeof expectedToken !== "string") {
@@ -117,9 +118,16 @@ export function createOwnerApp(options = {}) {
 
     sessions.set(tokenHash, sessionData);
 
+    // Per-session CSRF material (S-M18-02): issued at session start, stored
+    // server-side as a SHA-256 hash, required by every control mutation via
+    // the `x-csrf-token` header. Sessions without CSRF material (e.g. created
+    // before this feature) fail closed on mutations.
+    const csrfToken = control.issueCsrfToken(sessions, tokenHash);
+
     return res.status(200).json({
       status: "success",
       token: sessionToken,
+      csrfToken,
       expiresAt: new Date(expiresAt).toISOString(),
     });
   });
@@ -161,6 +169,25 @@ export function createOwnerApp(options = {}) {
       packageRunStore: options.packageRunStore,
       evidenceLedger: options.evidenceLedger
     })
+  );
+
+  // Owner control mutation surface (S-M18-02): job retry/cancel, approval
+  // queue, and emergency pause. Mounted behind requireAuth; every mutation
+  // additionally requires a per-session CSRF token (issued below at session
+  // start) and writes an audit event. Scoping uses the server-side session
+  // owner exclusively; resilience + audit dependencies degrade honestly (503)
+  // when not configured.
+  const control = createOwnerControlRouter({
+    sessions,
+    jobControlStore: options.jobControlStore ?? null,
+    evidenceLedger: options.evidenceLedger ?? null,
+    resilienceRepository: options.resilienceRepository ?? null,
+    dbAdapter: options.dbAdapter ?? null
+  });
+  app.use(
+    "/control",
+    requireAuth,
+    control
   );
 
   // Malformed / oversized JSON bodies fail closed as a clean 4xx (never 500, never leaked internals).
