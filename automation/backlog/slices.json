@@ -116,6 +116,54 @@
       "dependsOn": []
     },
     {
+      "sliceId": "S-M02-01",
+      "module": 2,
+      "lane": "lane-2",
+      "ownerGated": false,
+      "title": "Additive catalog registration for the NEWTON Director Agent (canonical 15-division alignment)",
+      "brief": "The owner's canonical specification defines 15 divisions including NEWTON (Indian current affairs, government schemes, defence, education and employment opportunities), but the seeded catalog does not include it. Register NEWTON additively wherever the catalog source of truth lives (catalog module plus a new additive seed migration), including the same per-agent connection-slot invariants every other agent has (one email slot, one unconfigured slot per supported platform), while respecting the 50-agent hard cap and all identity/isolation rules. Never edit existing migrations (R1); never alter existing agent rows.",
+      "acceptance": [
+        "New additive migration (next sql/NNN number) seeds the NEWTON agent row and its connection slots idempotently; migrations 001+ are byte-identical",
+        "Catalog module registers NEWTON with niche, universe, and charter scaffolding consistent with existing agents; 50-agent hard cap still enforced",
+        "NEWTON has exactly the same connection-slot and isolation invariants as existing agents (no cross-agent sharing)",
+        "Internal name NEWTON never reaches public-facing serialization (Rule 15); DTO allowlists unchanged",
+        "Unit tests cover registration, cap enforcement, slot invariants, and idempotent migration; PostgreSQL integration covers the new migration; docs updated"
+      ],
+      "dependsOn": []
+    },
+    {
+      "sliceId": "S-M23-01",
+      "module": 23,
+      "lane": "lane-3",
+      "ownerGated": false,
+      "title": "Deterministic per-agent package-profile manifest (canonical 1 long-form + 2 Shorts + 1 promo Reel)",
+      "brief": "The owner's canonical specification defines the standard production package as exactly 1 long-form episode (YouTube + Bilibili only), 2 independent standalone Shorts, and 1 promotional Reel (YouTube Shorts, Instagram Reels, Facebook Reels, Snapchat Spotlight). The existing JARVIS planner contract specifies 3 standalone Shorts. Add a deterministic, additive per-agent package-profile layer that expresses the canonical package as the default profile, preserves JARVIS's existing 3-Shorts contract under its own profile until the owner explicitly decides otherwise, and emits a platform-adaptation manifest (pure module) mapping each package output to allowed destinations. No silent rewrite of any existing planner contract (R5); no publishing happens in this slice.",
+      "acceptance": [
+        "Pure deterministic module produces a package-profile manifest with recomputed SHA-256 ids; tampered inputs fail closed with stable codes",
+        "Canonical default profile encodes 1 long-form + 2 Shorts + 1 promo Reel with destination allowlists (long-form: YouTube, Bilibili; short-form: YouTube Shorts, Instagram Reels, Facebook Reels, Snapchat Spotlight)",
+        "JARVIS keeps its existing 3-Shorts contract via its own profile; existing planner tests remain untouched and green",
+        "No provider calls, no media generation, publication always not_requested; Rules 15/17 enforced in every serialized field",
+        "Unit tests cover determinism, profile resolution, fail-closed rejections, and JARVIS compatibility; docs updated"
+      ],
+      "dependsOn": []
+    },
+    {
+      "sliceId": "S-M30-01",
+      "module": 30,
+      "lane": "lane-2",
+      "ownerGated": false,
+      "title": "Media artifact descriptor and verification-state contract (offline portion of the media layer)",
+      "brief": "Phase 2/3 critical path, offline portion. Add a pure media-artifact descriptor contract: immutable artifact identity anchored to the SHA-256 content hash, artifact type, MIME type, optional duration/dimensions, producer metadata (agent, run, stage, provider), and a fail-closed verification-state machine (unverified by default; verified only through a real FFprobe-style inspection result supplied by the caller; never fabricated). A worker success that lacks a passing verification result must be representable as unverified, never valid. No media generation, no provider calls, no bundled binaries in this slice.",
+      "acceptance": [
+        "Descriptor validation fails closed with stable codes on missing/invalid hash, type, MIME, or producer fields; hash is the identity anchor and tampering with any payload field is detectable",
+        "Verification-state machine: unverified -> verified only via a supplied inspection result with matching content hash; any mismatch or missing inspection keeps unverified",
+        "Serialized output uses a strict field allowlist; no secrets, locators, or internal agent names (Rules 15/17)",
+        "Deterministic: identical inputs produce byte-identical descriptors; no clocks in the identity",
+        "Unit tests cover determinism, tamper detection, verification transitions, and allowlist serialization; docs updated; no new dependencies"
+      ],
+      "dependsOn": []
+    },
+    {
       "sliceId": "S-M20-LIVE",
       "module": 20,
       "lane": "lane-1",
