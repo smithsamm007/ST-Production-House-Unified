@@ -28,7 +28,7 @@ This is a clean, ST-owned secure foundation for consolidating the strongest idea
   - Every agent possesses unconfigured account slots for emails, YouTube, Instagram, Facebook, and Snapchat.
   - **Important Notice**: Real email addresses, live OAuth connections, and active social accounts are NOT connected or configured yet in this Phase-1 foundation. Live OAuth, SMTP, and social publishing remain pending.
   - Safe dashboard serialization uses an explicit safe DTO/allowlist to ensure secret keys and locators are never serialized.
-- Owner-controlled canonical 20-agent catalog, with a hard maximum of 50.
+- Owner-controlled canonical agent catalog (20 original divisions + NEWTON = 21 registered), with a hard maximum of 50.
 - Strict per-agent provider policy: three private remote providers and one keyless local open-source emergency provider.
 - Evidence-bearing failover that rejects unverified "success".
 - Persistent PostgreSQL design for credentials, jobs, leases, provider attempts, artifacts, campaigns, approvals, affiliate links, and receipts.

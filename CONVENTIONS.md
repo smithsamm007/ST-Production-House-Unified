@@ -11,7 +11,7 @@
 8. Internal agent names (JARVIS, LAKME...) never appear in public-facing output.
 
 ## Structural rules
-9. Database migrations are numbered sequentially in sql/ (next number: 017). Never edit old migrations.
+9. Database migrations are numbered sequentially in sql/ (next number: 019). Never edit old migrations.
 10. Every PR includes tests. New module = new unit test file.
 11. Match the style of existing files in the same folder.
 12. No new npm dependencies unless the issue explicitly requires one.

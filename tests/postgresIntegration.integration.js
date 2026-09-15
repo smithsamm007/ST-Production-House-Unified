@@ -7,6 +7,14 @@ import { PostgresAdapter } from '../src/db/postgresAdapter.js';
 import { MigrationRunner, MigrationExecutionError, calculateChecksum } from '../src/db/migrationRunner.js';
 
 test('PostgreSQL Live Integration Test Suite', async (t) => {
+  // Helper: stable serialization of NEWTON's durable rows (used for idempotency proof)
+  const snapshotNewtonRows = async (adapter) => {
+    const agent = await adapter.query("SELECT id, name, namespace, enabled FROM agents WHERE id = 'agent-21'");
+    const email = await adapter.query("SELECT agent_id, connection_status, is_primary, email_address, provider, secret_locator FROM agent_email_connections WHERE agent_id = 'agent-21' ORDER BY agent_id");
+    const social = await adapter.query("SELECT agent_id, platform, connection_status, is_primary, public_account_name, external_account_id, secret_locator, public_profile_url FROM agent_social_accounts WHERE agent_id = 'agent-21' ORDER BY platform");
+    return JSON.stringify({ agent: agent.rows, email: email.rows, social: social.rows });
+  };
+
   const dbUrl = process.env.POSTGRES_TEST_URL || process.env.DATABASE_URL;
   const isCI = !!process.env.CI;
   const isIntegrationCmd = process.env.npm_lifecycle_event === 'test:integration';
@@ -57,7 +65,7 @@ test('PostgreSQL Live Integration Test Suite', async (t) => {
   }
 
   // Live PostgreSQL integration verification
-  await t.test('verifies live PostgreSQL adapter query and migrations 001-008', async () => {
+  await t.test('verifies live PostgreSQL adapter query and migrations 001-018', async () => {
     const adapter = new PostgresAdapter({}, testPool);
     const runner = new MigrationRunner(adapter);
 
@@ -68,7 +76,85 @@ test('PostgreSQL Live Integration Test Suite', async (t) => {
     // 2. Verify canonical seed agents table in real PG
     const agentRes = await adapter.query('SELECT COUNT(*) as cnt FROM agents');
     const agentCount = parseInt(agentRes.rows[0].cnt, 10);
-    assert.ok(agentCount >= 20, `Expected at least 20 canonical agents in PG database, got ${agentCount}`);
+    assert.ok(agentCount >= 21, `Expected at least 21 canonical agents in PG database, got ${agentCount}`);
+
+    // 2b. NEWTON registration (S-M02-01, migration 018): identity + slot invariants on a real PG instance
+    const newtonRes = await adapter.query(
+      "SELECT id, name, namespace, enabled FROM agents WHERE id = 'agent-21'"
+    );
+    assert.equal(newtonRes.rows.length, 1, 'exactly one NEWTON row');
+    assert.equal(newtonRes.rows[0].name, 'NEWTON');
+    assert.equal(newtonRes.rows[0].namespace, 'st.agent.newton');
+    assert.equal(newtonRes.rows[0].enabled, true);
+
+    const emailSlotRes = await adapter.query(
+      "SELECT connection_status, is_primary, email_address, provider, secret_locator FROM agent_email_connections WHERE agent_id = 'agent-21'"
+    );
+    assert.equal(emailSlotRes.rows.length, 1, 'exactly one email slot');
+    assert.equal(emailSlotRes.rows[0].connection_status, 'unconfigured');
+    assert.equal(emailSlotRes.rows[0].is_primary, true);
+    assert.equal(emailSlotRes.rows[0].email_address, null, 'unconfigured slot carries no identity (Rule 16)');
+    assert.equal(emailSlotRes.rows[0].provider, null);
+    assert.equal(emailSlotRes.rows[0].secret_locator, null, 'no secret locator may be seeded (Rule 17)');
+
+    const socialSlotRes = await adapter.query(
+      "SELECT platform, connection_status, is_primary, public_account_name, external_account_id, secret_locator, public_profile_url FROM agent_social_accounts WHERE agent_id = 'agent-21' ORDER BY platform"
+    );
+    assert.equal(socialSlotRes.rows.length, 4, 'exactly four social slots');
+    assert.deepEqual(
+      socialSlotRes.rows.map((r) => r.platform),
+      ['facebook', 'instagram', 'snapchat', 'youtube'],
+      'one slot per supported platform'
+    );
+    for (const row of socialSlotRes.rows) {
+      assert.equal(row.connection_status, 'unconfigured');
+      assert.equal(row.is_primary, true);
+      assert.equal(row.public_account_name, null, `no identity on ${row.platform} slot (Rule 16)`);
+      assert.equal(row.external_account_id, null);
+      assert.equal(row.secret_locator, null, `no secret locator on ${row.platform} slot (Rule 17)`);
+      assert.equal(row.public_profile_url, null);
+    }
+
+    // 2c. Original agents untouched: 002's last row remains exactly as seeded
+    const nishaRes = await adapter.query(
+      "SELECT id, name, namespace FROM agents WHERE id = 'agent-20'"
+    );
+    assert.equal(nishaRes.rows.length, 1);
+    assert.equal(nishaRes.rows[0].name, 'NISHA');
+    assert.equal(nishaRes.rows[0].namespace, 'st.agent.nisha');
+
+    // 2d. Migration 018 is idempotent: re-applying changes nothing
+    const beforeSnapshot = await snapshotNewtonRows(adapter);
+    await adapter.query("INSERT INTO agents (id, name, namespace) VALUES ('agent-21','NEWTON','st.agent.newton') ON CONFLICT (id) DO NOTHING");
+    const emailBefore = (await adapter.query("SELECT count(*) as c FROM agent_email_connections WHERE agent_id = 'agent-21'")).rows[0].c;
+    const socialBefore = (await adapter.query("SELECT count(*) as c FROM agent_social_accounts WHERE agent_id = 'agent-21'")).rows[0].c;
+    await adapter.query("INSERT INTO agent_email_connections (agent_id, connection_status, is_primary) SELECT 'agent-21','unconfigured',true WHERE NOT EXISTS (SELECT 1 FROM agent_email_connections WHERE agent_id = 'agent-21')");
+    await adapter.query("INSERT INTO agent_social_accounts (agent_id, platform, connection_status, is_primary) SELECT 'agent-21', p.platform, 'unconfigured', true FROM (VALUES ('youtube'),('instagram'),('facebook'),('snapchat')) AS p(platform) WHERE NOT EXISTS (SELECT 1 FROM agent_social_accounts WHERE agent_id = 'agent-21' AND platform = p.platform)");
+    const emailAfter = (await adapter.query("SELECT count(*) as c FROM agent_email_connections WHERE agent_id = 'agent-21'")).rows[0].c;
+    const socialAfter = (await adapter.query("SELECT count(*) as c FROM agent_social_accounts WHERE agent_id = 'agent-21'")).rows[0].c;
+    assert.equal(String(emailBefore), String(emailAfter), 'email slot count unchanged on re-run');
+    assert.equal(String(emailBefore), '1', 'still exactly one email slot');
+    assert.equal(String(socialBefore), String(socialAfter), 'social slot count unchanged on re-run');
+    assert.equal(String(socialBefore), '4', 'still exactly four social slots');
+    const afterSnapshot = await snapshotNewtonRows(adapter);
+    assert.deepEqual(afterSnapshot, beforeSnapshot, 'NEWTON rows identical after idempotent re-run');
+
+    // 2e. The 50-agent cap trigger still fires on real PG (additive inserts rejected)
+    await adapter.query('BEGIN');
+    try {
+      await adapter.query("INSERT INTO agents (id, name, namespace) VALUES ('agent-22','CAP_PROBE_A','st.agent.cap_probe_a')");
+      await adapter.query("INSERT INTO agents (id, name, namespace) VALUES ('agent-23','CAP_PROBE_B','st.agent.cap_probe_b')");
+      assert.fail('Expected AGENT_CAP_REACHED once 50-row cap is hit');
+    } catch (err) {
+      assert.ok(
+        /AGENT_CAP_REACHED/.test(err.message),
+        `expected AGENT_CAP_REACHED from the 50-cap trigger, got: ${err.message}`
+      );
+    } finally {
+      await adapter.query('ROLLBACK');
+    }
+    const capProbeRes = await adapter.query("SELECT count(*) as c FROM agents WHERE name LIKE 'CAP_PROBE%'");
+    assert.equal(parseInt(capProbeRes.rows[0].c, 10), 0, 'cap probe rows rolled back cleanly');
 
     // 3. Verify transaction rollback on real PG using a dedicated rollback-probe table
     await adapter.query("DROP TABLE IF EXISTS test_rollback_probe");
