@@ -108,7 +108,9 @@ test("live PostgreSQL authentication, CSRF, MFA and owner isolation", async (t) 
     assert.equal((await validateAndRetrieveSession(elevated.token)).ownerId, owner.id);
 
     const agents = new AgentRepository();
-    for (let index = 21; index <= 50; index += 1) {
+    // Pad to exactly 50: 21 preloaded agents (20 original + NEWTON, S-M02-01)
+    // + 29 synthetic rows = 50, so the next insert must hit AGENT_CAP_REACHED.
+    for (let index = 22; index <= 50; index += 1) {
       await agents.add({
         id: `task2-cap-${index}`,
         name: `TASK2_CAP_${index}`,
