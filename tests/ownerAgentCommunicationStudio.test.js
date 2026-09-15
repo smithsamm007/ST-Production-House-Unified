@@ -300,9 +300,10 @@ test("14. Worker context contains only allowlisted fields and excludes internal 
 test("15. All registered internal agent names are blocked publicly (Correction 10)", () => {
   const registry = new AgentRegistry();
 
-  // Add custom agent
+  // Add custom agent (agent-21 is now NEWTON's canonical id, so a distinct
+  // test id is required to avoid colliding with the real catalog)
   const custom = registry.add({
-    id: "agent-21",
+    id: "test-agent-custom-01",
     name: "SHERLOCK_MUTANT",
     namespace: "st.agent.sherlock_mutant"
   });

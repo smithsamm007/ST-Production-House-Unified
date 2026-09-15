@@ -4,7 +4,7 @@ export const PRELOADED_AGENTS = Object.freeze([
   "JARVIS", "SHERLOCK", "LAKME", "PANCHI", "VEDA",
   "BYTE", "CHANAKYA", "KABIR", "SHAKTI", "ROHAN",
   "MAYA", "AAROHI", "VIKRAM", "TARA", "ANANYA",
-  "KARAN", "DEV", "AANYA", "ARJUN", "NISHA"
+  "KARAN", "DEV", "AANYA", "ARJUN", "NISHA", "NEWTON"
 ].map((name, index) => Object.freeze({
   id: `agent-${String(index + 1).padStart(2, "0")}`,
   name,

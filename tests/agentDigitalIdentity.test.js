@@ -18,16 +18,17 @@ import { PublishingService, verifyAttributionSnapshot } from "../src/publishing/
 
 const dummyHash = "c".repeat(64);
 
-test("1. All 20 agents remain preloaded", () => {
+test("1. All 21 agents remain preloaded (20 original + NEWTON)", () => {
   const registry = new AgentRegistry();
-  assert.equal(PRELOADED_AGENTS.length, 20);
-  assert.equal(registry.list().length, 20);
+  assert.equal(PRELOADED_AGENTS.length, 21);
+  assert.equal(registry.list().length, 21);
 });
 
 test("2. Maximum 50 agents remains enforced", () => {
   const registry = new AgentRegistry();
   assert.throws(() => {
-    for (let i = 21; i <= 51; i++) {
+    // Start at 22: agent-21 is now NEWTON's canonical id (S-M02-01).
+    for (let i = 22; i <= 51; i++) {
       registry.add({
         id: `agent-${i}`,
         name: `AGENT_NAME_${i}`,

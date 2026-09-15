@@ -19,16 +19,17 @@ import {
   initializeSeedState
 } from "../src/catalog/creativeCharter.js";
 
-test("1. Exactly 20 canonical agents remain preloaded", () => {
+test("1. Exactly 21 canonical agents remain preloaded (20 original + NEWTON)", () => {
   const registry = new AgentRegistry();
-  assert.equal(PRELOADED_AGENTS.length, 20);
-  assert.equal(registry.list().length, 20);
+  assert.equal(PRELOADED_AGENTS.length, 21);
+  assert.equal(registry.list().length, 21);
 });
 
 test("2. The maximum remains 50 agents", () => {
   const registry = new AgentRegistry();
   assert.throws(() => {
-    for (let i = 21; i <= 51; i++) {
+    // Start at 22: agent-21 is now NEWTON's canonical id (S-M02-01).
+    for (let i = 22; i <= 51; i++) {
       registry.add({
         id: `agent-${i}`,
         name: `AGENT_NAME_${i}`,
