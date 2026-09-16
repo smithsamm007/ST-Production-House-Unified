@@ -7,3 +7,4 @@ artifacts/
 *.sqlite
 *.db
 .DS_Store
+.aider*
