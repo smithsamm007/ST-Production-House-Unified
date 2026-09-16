@@ -172,4 +172,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh issue edit "${{ steps.task.outputs.number }}" --remove-label in-progress --add-label ready || true
+          if ! gh issue edit "${{ steps.task.outputs.number }}" --remove-label in-progress --add-label ready; then
+            echo "::warning::Failed to return issue ${{ steps.task.outputs.number }} to the ready queue. The backlog feeder's relabel path (issue #137) will re-apply 'ready' on its next run."
+          fi

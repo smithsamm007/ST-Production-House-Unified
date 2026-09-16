@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildIssuePayload,
+  classifyExistingIssueForRelabel,
   planPromotions,
   validateManifest
 } from "../src/automation/backlogFeeder.js";
@@ -190,4 +191,126 @@ test("payload: internal agent names in promotable text are rejected (Rule 15)", 
   const leaky = manifest();
   leaky.slices[0].title = "Wire the jarvis dispatcher";
   assert.throws(() => buildIssuePayload(leaky, "S-TEST-01", ["jarvis"]), /BACKLOG_SLICE_INTERNAL_NAME_REJECTED/);
+});
+
+// ------------------------------------------------------------
+// Existing-issue relabel classification (issue #137)
+// ------------------------------------------------------------
+test("relabel: stale unready issue is returned to the ready queue with missing labels", () => {
+  const slice = manifest().slices[0];
+  const decision = classifyExistingIssueForRelabel(slice, {
+    number: 132,
+    state: "open",
+    labels: ["lane-1"],
+    referencedByOpenPr: false
+  });
+  assert.equal(decision.action, "RELABEL_READY");
+  assert.equal(decision.reason, "STALE_READY_STATE");
+  assert.deepEqual(decision.addLabels, ["ready"]);
+});
+
+test("relabel: issue missing both ready and its lane gets both applied", () => {
+  const slice = manifest().slices[0];
+  const decision = classifyExistingIssueForRelabel(slice, {
+    number: 132,
+    state: "open",
+    labels: [],
+    referencedByOpenPr: false
+  });
+  assert.equal(decision.action, "RELABEL_READY");
+  assert.deepEqual(decision.addLabels, ["ready", "lane-1"]);
+});
+
+test("relabel: already-ready issue is left alone", () => {
+  const slice = manifest().slices[0];
+  const decision = classifyExistingIssueForRelabel(slice, {
+    number: 132,
+    state: "open",
+    labels: ["ready", "lane-1"],
+    referencedByOpenPr: false
+  });
+  assert.equal(decision.action, "NONE");
+  assert.equal(decision.reason, "ALREADY_READY");
+});
+
+test("relabel: in-progress and blocked issues are never touched", () => {
+  const slice = manifest().slices[0];
+  const inProgress = classifyExistingIssueForRelabel(slice, {
+    number: 132,
+    state: "open",
+    labels: ["in-progress"],
+    referencedByOpenPr: false
+  });
+  assert.equal(inProgress.action, "NONE");
+  assert.equal(inProgress.reason, "IN_PROGRESS");
+
+  const blocked = classifyExistingIssueForRelabel(slice, {
+    number: 132,
+    state: "open",
+    labels: ["blocked"],
+    referencedByOpenPr: false
+  });
+  assert.equal(blocked.action, "NONE");
+  assert.equal(blocked.reason, "BLOCKED");
+});
+
+test("relabel: open PR referencing the slice blocks relabel (one canonical PR per slice)", () => {
+  const slice = manifest().slices[0];
+  const decision = classifyExistingIssueForRelabel(slice, {
+    number: 132,
+    state: "open",
+    labels: ["lane-1"],
+    referencedByOpenPr: true
+  });
+  assert.equal(decision.action, "NONE");
+  assert.equal(decision.reason, "OPEN_PR_REFERENCES_SLICE");
+});
+
+test("relabel: closed issues and owner-gated slices are never relabeled", () => {
+  const slice = manifest().slices[0];
+  const closed = classifyExistingIssueForRelabel(slice, {
+    number: 132,
+    state: "closed",
+    labels: [],
+    referencedByOpenPr: false
+  });
+  assert.equal(closed.action, "NONE");
+  assert.equal(closed.reason, "ISSUE_CLOSED");
+
+  const gated = manifest().slices[3]; // S-TEST-04, ownerGated
+  const decision = classifyExistingIssueForRelabel(gated, {
+    number: 132,
+    state: "open",
+    labels: [],
+    referencedByOpenPr: false
+  });
+  assert.equal(decision.action, "NONE");
+  assert.equal(decision.reason, "OWNER_GATED");
+});
+
+test("relabel: absent PR observation is fail-open to stale-state relabel, malformed input fails closed", () => {
+  const slice = manifest().slices[0];
+  const withoutObservation = classifyExistingIssueForRelabel(slice, {
+    number: 132,
+    state: "open",
+    labels: ["lane-1"]
+  });
+  assert.equal(withoutObservation.action, "RELABEL_READY");
+
+  assert.throws(
+    () => classifyExistingIssueForRelabel(slice, { number: 0, state: "open", labels: [] }),
+    /BACKLOG_ISSUE_NUMBER_INVALID/
+  );
+  assert.throws(
+    () => classifyExistingIssueForRelabel(slice, { number: 132, state: "reopened", labels: [] }),
+    /BACKLOG_ISSUE_STATE_INVALID/
+  );
+  assert.throws(
+    () => classifyExistingIssueForRelabel(slice, { number: 132, state: "open", labels: [42] }),
+    /BACKLOG_ISSUE_LABELS_INVALID/
+  );
+  assert.throws(
+    () => classifyExistingIssueForRelabel(slice, { number: 132, state: "open", labels: [], referencedByOpenPr: "no" }),
+    /BACKLOG_ISSUE_OBSERVATION_INVALID/
+  );
 });
