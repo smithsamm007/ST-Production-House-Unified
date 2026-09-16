@@ -39,9 +39,18 @@ issues. Two latent first-dispatch failures were also found (missing
    slice is recorded as completed in `lifecycle.json`. Forward references are
    structurally impossible (dependencies must be declared earlier in the
    manifest), so cycles cannot be expressed.
-5. **Idempotency.** Issues carry a `[S-XX-NN]` title tag; the runner detects
-   existing tagged issues before creating duplicates, including a re-check
-   immediately before creation to survive schedule/event races.
+5. **Idempotency without stale-state freezing.** Issues carry a `[S-XX-NN]`
+   title tag; the runner detects existing tagged issues before creating
+   duplicates, including a re-check immediately before creation to survive
+   schedule/event races. Detection means "never duplicate the issue", never
+   "freeze stale state": when the planner declares a slice promotable but
+   its existing issue has lost `ready` (e.g. a night-shift claim whose PR
+   was closed without merge), the runner re-applies `ready` and the lane
+   label and logs `BACKLOG_SLICE_RELABELED_READY`. The decision is made by
+   the pure `classifyExistingIssueForRelabel` contract (issue #137), which
+   never relabels closed issues, `in-progress`/`blocked` claims, or issues
+   referenced by an OPEN pull request (one canonical PR per slice), and
+   never relabels owner-gated slices.
 6. **Honest close handling.** On issue close:
    - `completed` → the slice id is appended to `lifecycle.json` (dependents
      become eligible) and the change is committed by the workflow.

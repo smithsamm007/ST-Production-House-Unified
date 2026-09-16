@@ -233,6 +233,99 @@ export function planPromotions(manifest, state) {
 }
 
 /**
+ * Classifies an already-existing slice issue against the relabel decision
+ * for a promotable slice.
+ *
+ * Idempotency means "never duplicate the issue", never "freeze stale
+ * state": when the planner has declared a slice promotable (its lane is
+ * free and dependencies are satisfied) but the existing issue has lost its
+ * `ready` label — e.g. a night-shift claim whose PR was closed without
+ * merge — the issue must be returned to the ready queue instead of being
+ * skipped silently and stalling the governed loop (issue #137).
+ *
+ * Fail-closed rules:
+ * - Owner-gated slices are never relabeled (they are never promotable).
+ * - Closed issues are never relabeled here; the close-event re-feed path
+ *   owns that transition.
+ * - Issues still carrying `in-progress` or `blocked` are left untouched:
+ *   relabeling an in-flight claim could enable a double claim, and a
+ *   blocked issue must not re-enter the ready queue by side effect.
+ * - Issues referenced by an OPEN pull request are left untouched so the
+ *   one-canonical-PR-per-slice rule holds: relabeling would let a lane
+ *   claim the slice again and open a duplicate PR. The merge (issue close)
+ *   or PR close event resolves the state; only orphaned issues — whose PR
+ *   is closed without merge — are returned to the ready queue.
+ * - Malformed observations throw stable error codes.
+ *
+ * Pure: no clocks, no randomness, no GitHub access. Returns a frozen
+ * decision: { action, reason, addLabels? }.
+ */
+export function classifyExistingIssueForRelabel(slice, issue) {
+  requirePlainObject(slice, "BACKLOG_SLICE_INVALID");
+  requirePlainObject(issue, "BACKLOG_ISSUE_OBSERVATION_INVALID");
+
+  if (typeof slice.sliceId !== "string" || !SLICE_ID_PATTERN.test(slice.sliceId)) {
+    throw feederError("BACKLOG_SLICE_ID_INVALID");
+  }
+  if (
+    typeof issue.number !== "number" ||
+    !Number.isInteger(issue.number) ||
+    issue.number < 1
+  ) {
+    throw feederError("BACKLOG_ISSUE_NUMBER_INVALID");
+  }
+  if (
+    !Array.isArray(issue.labels) ||
+    issue.labels.some((label) => typeof label !== "string")
+  ) {
+    throw feederError("BACKLOG_ISSUE_LABELS_INVALID");
+  }
+  if (
+    issue.referencedByOpenPr !== undefined &&
+    typeof issue.referencedByOpenPr !== "boolean"
+  ) {
+    throw feederError("BACKLOG_ISSUE_OBSERVATION_INVALID");
+  }
+  if (issue.state !== "open" && issue.state !== "closed") {
+    throw feederError("BACKLOG_ISSUE_STATE_INVALID");
+  }
+
+  if (slice.ownerGated) {
+    return Object.freeze({ action: "NONE", reason: "OWNER_GATED" });
+  }
+  if (issue.state === "closed") {
+    return Object.freeze({ action: "NONE", reason: "ISSUE_CLOSED" });
+  }
+
+  const labels = new Set(issue.labels);
+  if (labels.has("in-progress")) {
+    return Object.freeze({ action: "NONE", reason: "IN_PROGRESS" });
+  }
+  if (labels.has("blocked")) {
+    return Object.freeze({ action: "NONE", reason: "BLOCKED" });
+  }
+  if (issue.referencedByOpenPr === true) {
+    return Object.freeze({ action: "NONE", reason: "OPEN_PR_REFERENCES_SLICE" });
+  }
+
+  const hasReady = labels.has("ready");
+  const hasLane = labels.has(slice.lane);
+  if (hasReady && hasLane) {
+    return Object.freeze({ action: "NONE", reason: "ALREADY_READY" });
+  }
+
+  const addLabels = Object.freeze([
+    ...(!hasReady ? ["ready"] : []),
+    ...(!hasLane ? [slice.lane] : [])
+  ]);
+  return Object.freeze({
+    action: "RELABEL_READY",
+    reason: "STALE_READY_STATE",
+    addLabels
+  });
+}
+
+/**
  * Builds the exact issue payload for a promotable slice. Deterministic:
  * the same slice always yields the same title and body. The slice tag in
  * the title allows the runner to detect duplicates idempotently.

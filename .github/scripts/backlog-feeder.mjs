@@ -27,7 +27,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
-import { buildIssuePayload, planPromotions, validateManifest } from "../../src/automation/backlogFeeder.js";
+import { buildIssuePayload, classifyExistingIssueForRelabel, planPromotions, validateManifest } from "../../src/automation/backlogFeeder.js";
 
 const REPO = process.env.GITHUB_REPOSITORY;
 const MANIFEST_PATH = path.resolve(process.cwd(), "automation/backlog/slices.json");
@@ -212,6 +212,33 @@ function relabelReady(number, lane) {
   }
 }
 
+/**
+ * Observes an existing slice issue for the relabel decision (issue #137).
+ * Labels are returned as plain name strings. `referencedByOpenPr` guards the
+ * one-canonical-PR-per-slice rule: PR bodies must carry `Closes #<issue>`
+ * (AGENTS.md R6), so an open PR referencing the issue is detected by body
+ * search. If GitHub cannot be consulted, gh() throws and the run fails
+ * loudly — an unobservable issue is never relabeled.
+ */
+function observeIssueForRelabel(number) {
+  const issue = JSON.parse(
+    gh(["issue", "view", String(number), "--json", "number,state,labels"])
+  );
+  const openPrs = JSON.parse(
+    gh([
+      "pr", "list", "--state", "open", "--limit", "200",
+      "--search", `#${number} in:body`,
+      "--json", "number"
+    ])
+  );
+  return {
+    number: issue.number,
+    state: issue.state,
+    labels: (issue.labels ?? []).map((label) => label.name),
+    referencedByOpenPr: Array.isArray(openPrs) && openPrs.length > 0
+  };
+}
+
 // --- closed-loop handling --------------------------------------------------
 
 function handleCloseEvents(lifecycle, manifest) {
@@ -302,14 +329,46 @@ function main() {
   const plan = planPromotions(manifest, state);
 
   let created = 0;
+  let relabeled = 0;
   for (const sliceId of plan.promotable) {
     // Double-check idempotency right before creating: another run (schedule
     // + issue-closed racing) may have created the issue already.
     const existing = sliceIssueNumber(state, sliceId);
-    if (existing) continue;
-    const number = createSliceIssue(manifest, sliceId);
-    created += 1;
-    console.log(JSON.stringify({ code: "BACKLOG_SLICE_ISSUE_CREATED", sliceId, issue: number }));
+    const slice = manifest.slices.find((candidate) => candidate.sliceId === sliceId);
+    if (!existing) {
+      const number = createSliceIssue(manifest, sliceId);
+      created += 1;
+      console.log(JSON.stringify({ code: "BACKLOG_SLICE_ISSUE_CREATED", sliceId, issue: number }));
+      continue;
+    }
+    // Idempotency means "never duplicate the issue", never "freeze stale
+    // state" (issue #137): when the planner declares a slice promotable but
+    // its existing issue lost `ready` — e.g. a night-shift claim whose PR
+    // was closed without merge — return it to the ready queue with a logged,
+    // auditable record instead of skipping silently and stalling the loop.
+    const observation = observeIssueForRelabel(existing);
+    const decision = classifyExistingIssueForRelabel(slice, observation);
+    if (decision.action === "RELABEL_READY") {
+      relabelReady(existing, slice.lane);
+      relabeled += 1;
+      console.log(
+        JSON.stringify({
+          code: "BACKLOG_SLICE_RELABELED_READY",
+          sliceId,
+          issue: existing,
+          reason: decision.reason
+        })
+      );
+    } else {
+      console.log(
+        JSON.stringify({
+          code: "BACKLOG_SLICE_EXISTING_UNCHANGED",
+          sliceId,
+          issue: existing,
+          reason: decision.reason
+        })
+      );
+    }
   }
 
   digestOwnerGated(manifest);
@@ -320,7 +379,8 @@ function main() {
       promotable: plan.promotable,
       ownerGated: plan.ownerGated,
       skipped: plan.skipped,
-      created
+      created,
+      relabeled
     })
   );
 }
