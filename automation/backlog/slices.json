@@ -158,11 +158,66 @@
         "Descriptor validation fails closed with stable codes on missing/invalid hash, type, MIME, or producer fields; hash is the identity anchor and tampering with any payload field is detectable",
         "Verification-state machine: unverified -> verified only via a supplied inspection result with matching content hash; any mismatch or missing inspection keeps unverified",
         "Serialized output uses a strict field allowlist; no secrets, locators, or internal agent names (Rules 15/17)",
-        "Deterministic: identical inputs produce byte-identical descriptors; no clocks in the identity",
-        "Unit tests cover determinism, tamper detection, verification transitions, and allowlist serialization; docs updated; no new dependencies"
-      ],
-      "dependsOn": []
-    },
+        "Deterministic: identical inputs produce byte-identical descriptors; no clocks in the identity",    "Unit tests cover determinism, tamper detection, verification transitions, and allowlist serialization; docs updated; no new dependencies"
+  ],
+  "dependsOn": []
+},
+{
+  "sliceId": "S-M31-01",
+  "module": 31,
+  "lane": "lane-3",
+  "ownerGated": false,
+  "title": "Director-scoped character continuity contract (pure, fail-closed)",
+  "brief": "Director core generalization, offline portion. Add a pure character-continuity contract that lets one Director maintain durable, Director-scoped character state: identity, appearance descriptors, voice-profile reference (locator-free), personality traits, relationships, wardrobe, environment, timeline position, scene continuity, and canonical prior events. All state is scoped to one registered agent id and one production run; any attempt to read or write another Director's characters fails closed. Deterministic ids, tamper detection, strict allowlist serialization, no secrets or internal agent names in free text (Rules 15/17), no cross-universe contamination.",
+  "acceptance": [
+    "Character records validate agent scope, bounded fields, and stable error codes; identical inputs produce byte-identical records with recomputed SHA-256 ids and detectable tampering",
+    "Cross-Director access fails closed with a stable isolation code; serialization is a strict allowlist with no secrets, locators, or internal agent names (Rules 15/17)",
+    "Unit tests cover scoping, determinism, tamper detection, isolation rejections, and serialization; docs updated; no new dependencies"
+  ],
+  "dependsOn": []
+},
+{
+  "sliceId": "S-M32-01",
+  "lane": "lane-2",
+  "ownerGated": false,
+  "module": 32,
+  "title": "TTS adapter contract and persistent voice-continuity profile (contracts only)",
+  "brief": "Media pipeline, offline portion. Add the text-to-speech adapter contract layer: a capability-declaring provider-adapter interface (adapter id, languages, voices, emotion support, rate/pitch bounds), a persistent per-Director/per-character voice-continuity profile (provider, model identifier, language, pronunciation profile, rate/pitch configuration - no secrets, locators only by opaque reference), and a generated-audio outcome type that is truthful by construction: an adapter result carries artifact-descriptor input and remains UNVERIFIED unless a real inspection result with matching content hash is supplied (integrating src/media/artifactDescriptor). Honest quota states (WAITING_FOR_QUOTA) and provider evidence fields are part of the contract. No real generation, no provider calls, no bundled audio in this slice.",
+  "acceptance": [
+    "Voice profiles validate provider/model/language/configuration fields with stable codes, never carry secret material, and are byte-identical for identical inputs",
+    "Adapter-result contract fails closed: without a real matching inspection result the outcome stays UNVERIFIED with a stable reason code and is never representable as generated-and-verified",
+    "Unit tests cover profile validation, determinism, secret rejection, unverified-by-default outcomes, and quota-state honesty; docs updated; no new dependencies"
+  ],
+  "dependsOn": ["S-M30-01"]
+},
+{
+  "sliceId": "S-M33-01",
+  "lane": "lane-2",
+  "ownerGated": false,
+  "module": 33,
+  "title": "FFmpeg assembly-plan contract with sandboxed argument validation and FFprobe verification binding",
+  "brief": "Media pipeline, offline portion. Add the deterministic assembly-plan contract: inputs are artifact references (descriptor ids, never raw paths), plus ordered segments, transitions, audio-mix plan, subtitle track, aspect-ratio variant selection, and output target. Argument generation is sandbox-safe by construction: only allowlisted artifact references and numeric/enum parameters are accepted; path traversal, shell metacharacters, absolute or user-supplied paths, and unknown fields fail closed with stable codes. The plan binds its output to the artifact-descriptor verification contract, including the main-video runtime QC gate (1800-3000 seconds) that fails closed on unverifiable or out-of-range duration. No FFmpeg execution, no binaries, no media generation in this slice.",
+  "acceptance": [
+    "Assembly plans accept only allowlisted artifact references and bounded enum/numeric parameters; traversal, injection, and unsafe-argument attempts fail closed with stable codes",
+    "Runtime QC gate: a main-video outcome outside 1800-3000 seconds, or lacking a real matching inspection result, cannot be represented as complete (fail-closed, integrates artifactDescriptor)",
+    "Deterministic byte-identical plans with recomputed ids and tamper detection; unit tests cover argument safety, determinism, QC gate, and serialization; docs updated; no new dependencies"
+  ],
+  "dependsOn": ["S-M30-01"]
+},
+{
+  "sliceId": "S-M34-01",
+  "lane": "lane-3",
+  "ownerGated": false,
+  "module": 34,
+  "title": "Independent content-Reel planning and brand-integration mode contract",
+  "brief": "Package layer, offline portion. Add the deterministic Reel-planning contract for the canonical package: two genuinely independent content Reels plus one standalone brand-promotion Reel per production run. Each Reel carries its own hook, objective, segment plan, visual/audio plan reference, duration bounds, aspect ratio, caption concept, metadata, and artifact reference; Reel identity is derived from content so duplicate exports cannot share identity, and the plan fails closed on identical Reel inputs. brandIntegrationMode is an explicit enum (STANDALONE_ONLY, INTEGRATED, OWNER_DECISION_REQUIRED): INTEGRATED requires an explicit owner authorization reference bound to the exact run, paid/sponsored/affiliate campaigns require owner authorization, and no integration or promotion identity is ever invented. Uses package-profile destinations from S-M23-01.",
+  "acceptance": [
+    "Two content Reels require distinct hooks, objectives, and segment plans; identical or trivially-identical Reel inputs fail closed with stable codes and each Reel has independent recomputed identity",
+    "brandIntegrationMode: INTEGRATED without an owner authorization reference fails closed; STANDALONE_ONLY never emits a main-video integration; OWNER_DECISION_REQUIRED records the pending owner decision without inventing one",
+    "Unit tests cover independence enforcement, brand-mode gating, determinism, tamper detection, and allowlist serialization; docs updated; no new dependencies"
+  ],
+  "dependsOn": ["S-M23-01"]
+  },
     {
       "sliceId": "S-M20-LIVE",
       "module": 20,
