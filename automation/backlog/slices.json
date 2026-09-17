@@ -219,6 +219,48 @@
   "dependsOn": ["S-M23-01"]
   },
     {
+      "sliceId": "S-M35-01",
+      "module": 35,
+      "lane": "lane-2",
+      "ownerGated": false,
+      "title": "Visual-generation adapter contract with descriptor-integrated provenance",
+      "brief": "Media pipeline, offline portion. Add the deterministic visual-generation adapter contract: per-Director capability declarations (image/video/animation/still acquisition), free-first tier routing identical to the TTS contract, Director-scoped generation requests bound to a visual scene plan reference, and generation outcomes whose media state derives ONLY from the S-M30-01 artifact descriptor verification state machine. Style/continuity hints are Director-scoped and locator-free. Outcomes are UNVERIFIED by default; quota exhaustion records WAITING_FOR_QUOTA truthfully; no provider calls, no fabricated receipts, no fabricated generation ids. Rules 15/17 enforced everywhere.",
+      "acceptance": [
+        "Capability declarations, generation requests, and outcomes validate bounded fields with stable error codes; identical inputs produce byte-identical records with recomputed SHA-256 ids",
+        "A generation outcome's media state derives only from the artifact descriptor verification state; a succeeded provider call with an UNVERIFIED descriptor is never represented as media-ready, and WAITING_FOR_QUOTA is recorded truthfully",
+        "Unit tests cover capability/routing/outcome contracts, descriptor integration, determinism, tamper detection, and strict allowlist serialization; docs updated; no new dependencies"
+      ],
+      "dependsOn": ["S-M30-01"]
+    },
+    {
+      "sliceId": "S-M36-01",
+      "module": 36,
+      "lane": "lane-2",
+      "ownerGated": false,
+      "title": "Rights-aware BGM/SFX audio-asset registry contract",
+      "brief": "Media pipeline, offline portion. Add the deterministic audio-asset registry contract for BGM/SFX/ambient assets: every asset declares provider/source provenance and an explicit license state from a bounded enum (documented rights are the only production-safe states), usage bounds, and Director scope. Assets with undocumented or prohibited license states can never be selected into assembly audio mixes (fail-closed selection contract), and bundled third-party media is structurally prohibited (registry accepts provenance declarations, never file payloads). Rules 15/17 enforced; no bundled media, no fake licenses.",
+      "acceptance": [
+        "Registry validates asset declarations with stable codes; license states outside the documented set fail closed; only documented-rights states are selectable",
+        "Selection into an assembly audio-mix role fails closed for prohibited/undocumented license states and for cross-Director assets; selections are deterministic with recomputed ids and tamper detection",
+        "Unit tests cover declaration validation, license-state gating, Director scoping, selection determinism, and serialization; docs updated; no new dependencies"
+      ],
+      "dependsOn": ["S-M33-01"]
+    },
+    {
+      "sliceId": "S-M37-01",
+      "module": 37,
+      "lane": "lane-3",
+      "ownerGated": false,
+      "title": "Complete media-package manifest with fail-closed tamper detection",
+      "brief": "Package layer, offline portion. Add the deterministic media-package manifest binding one production run's complete output set: main video, the two independent content Reels, the standalone brand Reel, optional run-authorized main-video integration, subtitles, thumbnail plans, and metadata — each bound to its verified artifact descriptor identity and its real inspection outcome. Manifest identity is a recomputed SHA-256 over the allowlisted content; any addition, removal, or substitution of bound artifacts is detectable tampering. The manifest truthfully reports mediaStatus and never claims generation or publication. Depends on the reel package (S-M34-01) and the assembly contract (S-M33-01).",
+      "acceptance": [
+        "Manifest validates the canonical 1 main + 2 Reels + 1 brand package bound to real descriptor identities; missing/unverified/foreign-run bindings fail closed with stable codes",
+        "Manifest id is recomputed; any bound-artifact substitution or field mutation is detected as tampering; serialization is a strict allowlist and never exposes authorization material",
+        "Unit tests cover package validation, descriptor binding, tamper matrix, determinism, and serialization; docs updated; no new dependencies"
+      ],
+      "dependsOn": ["S-M34-01", "S-M33-01", "S-M30-01"]
+    },
+    {
       "sliceId": "S-M20-LIVE",
       "module": 20,
       "lane": "lane-1",
