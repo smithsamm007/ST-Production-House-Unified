@@ -149,6 +149,10 @@ export class DemoStorageAdapter {
     this.maxTables = options.maxTables ?? MAX_TABLES;
     this._closed = false;
     this._txDepth = 0;
+    // Tables whose migration declared a BEFORE UPDATE OR DELETE trigger:
+    // append-only audit tables. UPDATE/DELETE are rejected exactly like the
+    // real trigger would (demo emulation, not a new SQL feature).
+    this.appendOnlyTables = new Map();
   }
 
   // ------------------------------------------------------------------
@@ -210,6 +214,7 @@ export class DemoStorageAdapter {
       return { rows: [], rowCount: 0 };
     }
     if (/^CREATE\s+(?:OR\s+REPLACE\s+)?(?:UNIQUE\s+)?(?:FUNCTION|PROCEDURE|TYPE|TRIGGER|INDEX|EXTENSION|VIEW)\b/is.test(execSql)) {
+      this.#registerDemoTriggerEmulation(execSql);
       return { rows: [], rowCount: 0 };
     }
     if (/^DO\s+\$/i.test(execSql) || /^\s*END\s+IF\b/i.test(execSql)) return { rows: [], rowCount: 0 };
@@ -235,7 +240,7 @@ export class DemoStorageAdapter {
     const updateMatch = execSql.match(/^UPDATE\s+["`]?(\w+)["`]?\s+SET\s+([\s\S]+?)(?:\s+WHERE\s+([\s\S]+))?$/i);
     if (updateMatch) return this.#update(updateMatch, params);
 
-    const deleteMatch = execSql.match(/^DELETE\s+FROM\s+["`]?(\w+)["`]?(?:\s+WHERE\s+([\s\S]+))?$/i);
+    const deleteMatch = execSql.match(/^DELETE\s+FROM\s+["`]?(\w+)["`]?(?:\s+WHERE\s+([\s\S]+?))?(?:\s+RETURNING\s+([\s\S]+))?$/i);
     if (deleteMatch) return this.#delete(deleteMatch, params);
 
     const selectMatch = execSql.match(/^SELECT\s+([\s\S]+?)\s+FROM\s+["`]?(\w+)["`]?(?:\s+(?:AS\s+\w+)?(?:\s+JOIN\s+["`]?(\w+)["`]?\s+ON\s+([\s\S]+?))?)?(?:\s+WHERE\s+([\s\S]+?))?(?:\s+GROUP\s+BY\s+([\s\S]+?))?(?:\s+ORDER\s+BY\s+([\s\S]+?))?(?:\s+LIMIT\s+(\d+))?$/i);
@@ -320,7 +325,15 @@ export class DemoStorageAdapter {
   #insert(match, params) {
     const [, table, columnList, rawValuesClause] = match;
     // Strip a trailing RETURNING ... clause; columns/rows are projected after insert.
-    const valuesClause = rawValuesClause.replace(/\s+RETURNING\s+[\s\S]*$/i, "");
+    let valuesClause = rawValuesClause.replace(/\s+RETURNING\s+[\s\S]*$/i, "");
+    // INSERT ... ON CONFLICT (...) DO NOTHING | DO UPDATE SET ... — a shared
+    // shape of the repositories. The previous behavior SPLIT the clause as
+    // VALUES data and silently corrupted rows; it is now interpreted or the
+    // verb fails closed (never silently wrong).
+    const conflictMatch = valuesClause.match(/\s+ON\s+CONFLICT\s*\(([^)]*)\)\s+DO\s+(NOTHING|UPDATE\s+SET\s+[\s\S]*)$/i);
+    if (conflictMatch) {
+      return this.#insertWithConflict(table, columnList, valuesClause.slice(0, conflictMatch.index).trim(), conflictMatch, params);
+    }
     const columns = (columnList ?? "").split(",").map((c) => c.trim().replace(/["`]/g, ""));
     const rows = this.#table(table);
     const valueRows = splitTopLevel(valuesClause);
@@ -343,8 +356,68 @@ export class DemoStorageAdapter {
     return { rows: inserted, rowCount: inserted.length };
   }
 
+  #insertWithConflict(table, columnList, valuesPart, conflictMatch, params) {
+    const action = conflictMatch[2].toUpperCase();
+    const conflictColumns = conflictMatch[1].split(",").map((c) => c.trim().replace(/["`]/g, ""));
+    const assignmentsRaw = action.startsWith("UPDATE") ? conflictMatch[2].replace(/^UPDATE\s+SET\s+/i, "") : null;
+    const columns = (columnList ?? "").split(",").map((c) => c.trim().replace(/["`]/g, ""));
+    const rows = this.#table(table);
+    const schema = this.schemas.get(table);
+    const inserted = [];
+    for (const valueRow of splitTopLevel(valuesPart)) {
+      const values = splitTopLevel(valueRow.replace(/^\(/, "").replace(/\)$/, "")).map((v) => normalizeValue(v, params));
+      const proposed = {};
+      columns.forEach((column, index) => { proposed[column] = values[index] ?? null; });
+      if (schema) {
+        for (const [column, value] of schema) {
+          if (proposed[column] === undefined) proposed[column] = value();
+        }
+      }
+      const existing = rows.find((row) =>
+        conflictColumns.every((column) => String(row[column]) === String(proposed[column]))
+      );
+      if (!existing) {
+        rows.push(proposed);
+        inserted.push(stableClone(proposed));
+        continue;
+      }
+      if (action === "NOTHING") continue;
+      for (const assignment of splitTopLevel(assignmentsRaw)) {
+        const eq = assignment.indexOf("=");
+        if (eq === -1) throw new Error("DEMO_SQL_UNSUPPORTED: ON CONFLICT DO UPDATE assignment");
+        const target = assignment.slice(0, eq).trim().replace(/["`]/g, "");
+        const rhs = assignment.slice(eq + 1).trim();
+        const excludedRef = rhs.match(/^EXCLUDED\s*\.\s*(\w+)$/i);
+        existing[target] = excludedRef ? proposed[excludedRef[1]] : evalAssignmentRhs(rhs, params, existing);
+      }
+      inserted.push(stableClone(existing));
+    }
+    return { rows: inserted, rowCount: inserted.length };
+  }
+
+  /**
+   * Demo emulation of append-only triggers: a migration that declares a
+   * BEFORE UPDATE OR DELETE trigger marks the table immutable in-memory.
+   */
+  #registerDemoTriggerEmulation(execSql) {
+    const triggerMatch = execSql.match(
+      /^CREATE\s+TRIGGER\s+["`]?\w+["`]?\s+(BEFORE|AFTER)\s+([A-Za-z\s]+?)\s+ON\s+["`]?(\w+)["`]?/i
+    );
+    if (
+      triggerMatch &&
+      triggerMatch[1].toUpperCase() === "BEFORE" &&
+      /\bUPDATE\b/i.test(triggerMatch[2]) &&
+      /\bDELETE\b/i.test(triggerMatch[2])
+    ) {
+      this.appendOnlyTables.set(triggerMatch[3].toLowerCase(), true);
+    }
+  }
+
   #update(match, params) {
     const [, table, setClause, whereClause] = match;
+    if (this.appendOnlyTables.get(table.toLowerCase())) {
+      throw new Error(`APPEND_ONLY_VIOLATION: ${table} rows are immutable (demo emulated trigger)`);
+    }
     const rows = this.#table(table);
     const assignments = splitTopLevel(setClause).map((assignment) => assignment.split("="));
     let mutated = 0;
@@ -359,12 +432,17 @@ export class DemoStorageAdapter {
   }
 
   #delete(match, params) {
-    const [, table, whereClause] = match;
+    const [, table, whereClause, returningClause] = match;
+    if (this.appendOnlyTables.get(table.toLowerCase())) {
+      throw new Error(`APPEND_ONLY_VIOLATION: ${table} rows are immutable (demo emulated trigger)`);
+    }
     const rows = this.#table(table);
-    const kept = rows.filter((row) => (whereClause ? !evalWhere(whereClause, params, row) : false));
-    const removed = rows.length - kept.length;
-    this.tables.set(table, kept);
-    return { rows: [], rowCount: removed };
+    const removed = whereClause ? rows.filter((row) => evalWhere(whereClause, params, row)) : [...rows];
+    this.tables.set(table, rows.filter((row) => !removed.includes(row)));
+    const outRows = returningClause && removed.length > 0
+      ? removed.map((row) => ({ id: row.id }))
+      : [];
+    return { rows: outRows, rowCount: removed.length };
   }
 
   #select(match, params) {

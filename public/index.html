@@ -93,6 +93,12 @@
       <ul class="metrics" id="metrics-list"></ul>
     </section>
 
+    <section class="panel" id="connections-panel" hidden>
+      <h2>Secrets &amp; Connections — provider catalog</h2>
+      <p class="muted">Secret fields are stored ONLY as opaque secret-manager locators (vault:// / opaque://); plaintext secrets are structurally impossible to persist. Configuration fields are non-secret.</p>
+      <ul class="metrics" id="providers-list"></ul>
+    </section>
+
     <section class="panel">
       <h2>API surface</h2>
       <div class="muted">
@@ -100,6 +106,8 @@
         <code>/api/auth/*</code> · <code>/api/agents</code> ·
         <code>/api/channels</code> · <code>/api/productions</code> ·
         <code>/api/directors/:agentId/conversation|roadmap|memory</code> ·
+        <code>/api/providers/catalog</code> ·
+        <code>/api/connections/directors/:agentId/…</code> ·
         <code>/api/evidence</code> · <code>/api/metrics</code> ·
         <code>/api/control/*</code> — all owner routes require an authenticated session.
       </div>
@@ -107,5 +115,6 @@
   </main>
   <footer>ST Production House Unified · evidence-first control plane · publishing remains owner-gated</footer>
   <script src="/dashboard.js"></script>
+  <script src="/connections.js"></script>
 </body>
 </html>
