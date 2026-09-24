@@ -91,6 +91,36 @@ Affiliate links are campaign/platform placements, not new videos. Every link req
 
 The PostgreSQL integration layer implemented in `src/db/postgresAdapter.js` and `src/db/migrationRunner.js` represents the canonical PostgreSQL foundation for the entire ST Production House platform. Any concurrent or future branches (such as PR #5) must be rebased and adapted to this canonical foundation, and must utilize the existing adapter and migration runner rather than introducing competing or redundant database access layers.
 
+## Multi-Channel Production House (channels, releases, pipeline)
+
+The production layer turns the catalog into an operating multi-channel studio
+(migrations `sql/019` + `sql/020`):
+
+- **Channels** — one public brand row per production channel, owner-scoped and
+  linked to an internal agent by id only. Public DTOs never carry the internal
+  agent name (Rule 15); the dashboard routes on `agentId`.
+- **Production releases** — one planned episode per `(channel, season,
+  episode)` slot, enforced by a unique index. A failed attempt creates a new
+  job, never a second logical release (Rule 8). Release statuses are exactly
+  `planned → in_production → rendering → review → published` plus `cancelled`
+  (Rule 5).
+- **Deterministic pipeline** — `src/pipeline/episodePipeline.js` runs four
+  verifiable stages (story → visual → audio → assembly). Each stage records a
+  real SHA-256 of its JSON content into the canonical `artifacts` table
+  (`generationMode:"deterministic_local"`, `ffprobe_verified:false`), plus a
+  durable `pipeline_events` row and an evidence-ledger event. Stage content is
+  a pure function of the release identity, so retries are idempotent by hash:
+  identical output is stored once, different output becomes a new version.
+- **Workers** — `src/pipeline/workerLoop.js` claims `episode_production` jobs
+  through the durable lease mechanism (time-bounded, reclaimable), bounded by
+  `STPH_WORKER_CONCURRENCY`, and marks failed jobs honestly for owner retry.
+  The API route `POST /api/productions/:id/run` uses the same legal job
+  transitions, so concurrent runs fail closed instead of double-running.
+- **Publish gate (Rule 7)** — `evaluatePublishGate` blocks publishing unless
+  the release is in `review`, the destination exists, and the destination has
+  non-empty public attribution. Publishing records intent and evidence only;
+  live platform calls remain pending (Rules 11/16).
+
 ## Continuous Development Pipeline & Autonomous Orchestration
 
 The autonomous pipeline architecture (documented in `docs/CONTINUOUS_DEVELOPMENT_PIPELINE.md` and `ROADMAP.md`) coordinates:
