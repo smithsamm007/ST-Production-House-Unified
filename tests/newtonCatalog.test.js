@@ -310,5 +310,8 @@ test("migration 018 uses the next sequential number and no 018 file conflicts", 
   const numbers = files.map((f) => parseInt(f.slice(0, 3), 10));
   const duplicates = numbers.filter((n, i) => numbers.indexOf(n) !== i);
   assert.equal(duplicates.length, 0, "no duplicate migration numbers");
-  assert.equal(Math.max(...numbers), 21, "021 is the highest migration");
+  // Sequence stays contiguous 001..N with no gaps (stronger than pinning the
+  // newest number, which would need touching on every new migration).
+  assert.deepEqual(numbers, Array.from({ length: files.length }, (_, i) => i + 1), "migrations are 001..N contiguous");
+  assert.ok(Math.max(...numbers) >= 22, "022 (secrets & connections) is applied");
 });

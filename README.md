@@ -46,6 +46,12 @@ This is a clean, ST-owned secure foundation for consolidating the strongest idea
   - Opt-in durable worker (`STPH_ENABLE_WORKERS=1`) with bounded concurrency and lease-based claiming; owner-triggered runs use the same legal job transitions and fail closed against double-runs.
   - Publish gate enforces Rule 7: release must be in `review`, destination configured, non-empty public attribution. Publishing records intent + evidence only; live platform calls remain pending.
 
+- **Secrets & Connections (per-Director provider bindings, owner dashboard)**:
+  - Provider catalog (Gemini, Claude, OpenAI, ElevenLabs, Piper, Edge-TTS, YouTube, Instagram, Facebook, Snapchat, Bilibili, SMTP, custom) with official HTTPS-only credential URLs and per-field schemas; owners extend it via validated custom-provider registration without mutating the governed catalog.
+  - One connection per (owner, director, provider, kind); secret fields are stored ONLY as opaque `vault://`/`opaque://` locators — plaintext secrets are structurally impossible to persist (DB trigger + repository re-validation).
+  - Locators never serialize: API/DTO expose field KEYS only. Configuration fields are non-secret, bounded, and cannot smuggle locator-shaped values.
+  - Connection tests are honest by construction: no live transport → `unverified`, never `success`; append-only test history (mutation-blocking trigger) with sanitized failure details.
+
 - **Director Workspace (persistent communication window, roadmap, isolated memory)**:
   - One persistent owner↔director conversation per director — lazily created, so Director #50 gets the same window as Director #01 (Blueprint §7–§9).
   - Messages carry explicit execution semantics (`conversation | proposal | instruction | decision`); recording never triggers production or publishing — conversation is not execution (§10).

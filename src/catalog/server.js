@@ -26,6 +26,7 @@ import { OwnerRepository, SessionRepository, AgentRepository, JobRepository, Pub
 import { createPostgresAdapter, sanitizeError } from "../db/index.js";
 import { createDemoStorageAdapter } from "../db/demoStorageAdapter.js";
 import { createContentRunsRouter } from "../api/contentRunsRouter.js";
+import { createProviderCatalogRouter, createDirectorConnectionsRouter } from "../api/directorConnectionsRouter.js";
 import { createOwnerControlRouter } from "../api/ownerControlRouter.js";
 import { PostgresOwnerControlStore } from "../api/ownerControlStore.js";
 import { ProductionRepository, isKnownPlatform, isValidChannelSlug } from "../catalog/productionRepository.js";
@@ -1183,6 +1184,17 @@ const control = createOwnerControlRouter({
   dbAdapter: postgres,
 });
 app.use("/api/control", authenticateOwner, control);
+
+// ---------------------------------------------------------------------------
+// Secrets & Connections (Issue #164): provider catalog + per-director
+// connections. Owner routes: authenticated session, CSRF on mutations,
+// server-authoritative scoping, audit events, safe DTOs (Rules 5/6/15/17).
+// ---------------------------------------------------------------------------
+app.use("/api/providers", authenticateOwner, createProviderCatalogRouter());
+app.use("/api/connections", authenticateOwner, createDirectorConnectionsRouter({
+  db: () => postgres,
+  recordAuditEvent,
+}));
 
 // ---------------------------------------------------------------------------
 // Static dashboard + SPA fallback

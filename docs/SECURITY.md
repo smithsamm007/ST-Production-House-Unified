@@ -52,6 +52,16 @@ No agent may access another agent's locator. The local emergency provider has no
 
 Default mode is draft/private. Approval binds owner, artifact hash, caption, affiliate disclosures, destination, schedule, and expiry. Any mutation after approval invalidates it. Only a platform response can create a publish receipt.
 
+## Secrets & Connections (per Director)
+
+The owner dashboard's Secrets & Connections surface (sql/022, `/api/providers/*`, `/api/connections/*`) stores per-director provider bindings under three data classes:
+
+- **Secrets** are OPAQUE LOCATORS only. The database trigger rejects any `secret_fields` value that is not `vault://…` or `opaque://…`, so plaintext API keys are structurally impossible to persist; the repository re-validates before every write (defense in depth). Locator values never serialize — DTOs expose field KEYS only.
+- **Configuration** fields are non-secret, bounded strings, and are prohibited from smuggling locator-shaped values.
+- **Provider connection metadata** is a frozen catalog with official HTTPS-only credential URLs (validated against localhost/private-IP/embedded-credential/port rules); owners may register custom providers through the same safety bar without mutating the governed catalog.
+
+Connection tests are honest by construction: without an owner-configured live transport they record `unverified` — never `success` (Rules 1–3). Test history is append-only (mutation-blocking trigger) and failure details are sanitized so locators and secret-shaped strings never reach the audit trail. Every read and write is scoped by owner AND director; cross-tenant access is a generic 404.
+
 If public publishing is attempted but no active primary brand or primary social channel attribution is configured, publishing is blocked with a `PUBLIC_PUBLISHING_IDENTITY_REQUIRED` error.
 
 ## Adversarial Hardening (TASK-2.8)
