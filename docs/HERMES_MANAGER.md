@@ -91,14 +91,53 @@ per-session CSRF token; every state change writes an audit event.
 
 The dashboard renders the Command Center panel from these endpoints only.
 
+## Execution: decisions → the durable job pipeline (Issue #168)
+
+`src/manager/hermesJobBridge.js` executes decisions against the REAL
+pipeline. A `production.start` decision in state `EXECUTING` queues an
+episode through the SAME transactional path as the owner API
+(`createReleaseWithJob`): one `production_releases` row + one queued
+`episode_production` job in the durable `jobs` table, database-unique per
+(channel, season, episode) — a failed attempt never creates a second
+logical release (Rule 8).
+
+Guards, in order (every refusal is recorded as a FAILED decision or, for
+terminal decisions, refused without rewriting history):
+
+1. Decision exists (else `DECISION_NOT_FOUND` — generic, no leak).
+2. Outcome is `EXECUTING` (`BLOCKED`/`FAILED`/`EXECUTED` are terminal — a
+   BLOCKED refusal is never rewritten as a FAILED execution).
+3. Action is `production.start` (the bridge grows one action at a time
+   through governed slices; `EXECUTION_ACTION_NOT_EXECUTABLE` otherwise).
+4. Payload matches the owner-API bounds (`channelId, title 1..200, season
+   1..100, episode 1..2000`).
+5. Channel resolves for the SESSION owner (`CHANNEL_NOT_FOUND` otherwise),
+   agent enabled (`AGENT_DISABLED`).
+6. **Tenant isolation (Rule 5)**: the decision's `directorId` must equal
+   the channel's `agentId` — Hermes cannot queue work for one director
+   under another director's channel identity (`DIRECTOR_CHANNEL_MISMATCH`).
+
+On success the bridge appends an evidence event (`production_queued`,
+subjectId = releaseId) and the decision completes `EXECUTED` only after
+the ledger verifies that receipt (Rule 1). The durable worker (or the
+owner's `/run` route) then drives the release through the deterministic
+pipeline exactly as before — Hermes changes WHO decides, not HOW work
+runs.
+
+API: `POST /api/hermes/decisions/:decisionNumber/execute` (authenticated,
+CSRF, audit event). `201` when work was queued, `409` when refused, `200`
+with the FAILED decision record when the attempt failed honestly.
+
 ## What is deliberately NOT done
 
-- No autonomous execution loop is started by this slice: Hermes records
-  decisions; wiring them to the existing job pipeline is the next governed
-  slice.
+- No autonomous scheduler/loop is started by this slice: execution is
+  explicit (an owner-authenticated `execute` call). A bounded autonomous
+  loop is a future governed slice with its own concurrency/duration limits.
 - The process-lifetime decision store is the labeled demo transport; a
   PostgreSQL-backed store implementing the same `append/list` contract is a
   follow-up migration (R1).
+- Only `production.start` executes. Retry/DLQ/provider-rotation execution
+  land as separate governed slices, each reusing this bridge's guards.
 - No secret values, no network calls, no publishing, no provider contact.
   Live publishing remains owner-gated (Rules 7/16).
 - No public output is produced anywhere in this layer (Rule 15).

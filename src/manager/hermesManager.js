@@ -265,6 +265,21 @@ export class HermesManager {
     return records.map(hermesDecisionDto);
   }
 
+  /**
+   * The CURRENT state of one decision: the newest record carrying its
+   * decisionNumber (append-only store — later records supersede earlier
+   * ones). Returns null when the decision does not exist (generic not-found,
+   * no existence leak).
+   */
+  async getDecision(decisionNumber) {
+    if (!Number.isSafeInteger(decisionNumber) || decisionNumber <= 0) {
+      throw fail("DECISION_NUMBER_INVALID");
+    }
+    const records = await this.store.list({ limit: 1, filter: { decisionNumber } });
+    const record = records[0];
+    return record ? hermesDecisionDto(record) : null;
+  }
+
   /** Read-model summary for the dashboard: counts by outcome/category. */
   async overview() {
     const records = await this.store.list({ limit: 200 });
