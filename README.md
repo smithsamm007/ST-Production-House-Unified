@@ -57,6 +57,7 @@ This is a clean, ST-owned secure foundation for consolidating the strongest idea
   - Secret-free by construction: payloads are server-side gated against secret-shaped fields/values; credentials are addressed by REFERENCE (`agent-01 / gemini / production`) and delivered by the broker straight to the adapter — Hermes never sees key material.
   - Command-center API (`/api/hermes/*`) + dashboard panel rendering only real decision data.
   - **Execution bridge**: `production.start` decisions queue REAL episodes through the same transactional release+job path as the owner API (durable `episode_production` job, one release per channel/season/episode slot), with director↔channel tenant isolation, honest evidence receipts, and ledger-verified `EXECUTED` completion.
+  - **Durable decision store (sql/023)**: append-only `hermes_decisions` table (mutation-blocking trigger) with advisory-locked monotonic numbering — decision history and numbering survive restarts; the manager routes through `PostgresHermesDecisionStore` by default and degrades with honest 503s when storage is unconfigured.
 
 - **Secrets & Connections (per-Director provider bindings, owner dashboard)**:
   - Provider catalog (Gemini, Claude, OpenAI, ElevenLabs, Piper, Edge-TTS, YouTube, Instagram, Facebook, Snapchat, Bilibili, SMTP, custom) with official HTTPS-only credential URLs and per-field schemas; owners extend it via validated custom-provider registration without mutating the governed catalog.
