@@ -1202,6 +1202,9 @@ app.use("/api/connections", authenticateOwner, createDirectorConnectionsRouter({
 // the only bridge to the ledger, returning a found/verified boolean only.
 app.use("/api/hermes", authenticateOwner, createHermesRouter({
   recordAuditEvent,
+  // Durable decision store (Issue #172): PostgresHermesDecisionStore over
+  // sql/023 — lazy adapter resolution; honest 503 before configureRuntime.
+  db: () => postgres,
   fetchEvidence: async (receiptId) => {
     try {
       const events = await evidenceRepo.list();

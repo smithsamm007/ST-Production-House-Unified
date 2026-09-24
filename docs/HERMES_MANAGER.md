@@ -128,14 +128,37 @@ API: `POST /api/hermes/decisions/:decisionNumber/execute` (authenticated,
 CSRF, audit event). `201` when work was queued, `409` when refused, `200`
 with the FAILED decision record when the attempt failed honestly.
 
+## Durable decision store (Issue #172)
+
+Decision history and monotonic decision numbering survive restarts.
+`PostgresHermesDecisionStore` (src/manager/postgresHermesDecisionStore.js)
+implements the manager's store contract over sql/023 `hermes_decisions`:
+
+- `append(record)` — one immutable row per decision state; the table's
+  BEFORE UPDATE/DELETE trigger enforces append-only (`APPEND_ONLY_VIOLATION`).
+  A completion is a NEW record with the same `decision_number`
+  (`supersedes_decision_number`) — history is never rewritten.
+- `list({ limit, filter })` — newest-first, filtered by decision number
+  and/or category, bounded limits, parameterized SQL only.
+- `nextDecisionNumber()` — advisory-locked max+1 inside a transaction, so
+  concurrent managers never allocate the same number on PostgreSQL.
+
+The router constructs the durable store from the injected adapter (lazy
+resolution); without configured storage every Hermes route degrades honestly
+with 503 — no fake persistence, no fabricated history (Rules 1–3). The
+in-memory store remains exported ONLY as the labeled demo/test transport.
+DB enums mirror the manager's existing closed enums exactly (R5: no new
+states anywhere).
+
 ## What is deliberately NOT done
 
 - No autonomous scheduler/loop is started by this slice: execution is
   explicit (an owner-authenticated `execute` call). A bounded autonomous
   loop is a future governed slice with its own concurrency/duration limits.
-- The process-lifetime decision store is the labeled demo transport; a
-  PostgreSQL-backed store implementing the same `append/list` contract is a
-  follow-up migration (R1).
+- The in-memory decision store remains only as the labeled demo/test
+  transport; the durable PostgreSQL store (sql/023) is wired by default.
+- Retention/archival of decision history (e.g. partitioning) is a future
+  operational slice; the append-only table is the current contract.
 - Only `production.start` executes. Retry/DLQ/provider-rotation execution
   land as separate governed slices, each reusing this bridge's guards.
 - No secret values, no network calls, no publishing, no provider contact.

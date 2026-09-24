@@ -28,9 +28,9 @@ import { Router } from "express";
 import { verifyCsrfToken } from "../catalog/ownerAuthentication.js";
 import {
   HermesManager,
-  InMemoryHermesDecisionStore,
   HERMES_DECISION_CATEGORIES,
 } from "../manager/hermesManager.js";
+import { PostgresHermesDecisionStore } from "../manager/postgresHermesDecisionStore.js";
 import { createHermesJobBridge } from "../manager/hermesJobBridge.js";
 import {
   HERMES_AUTHORITY_MATRIX,
@@ -41,14 +41,6 @@ import {
 
 const DECISION_NUMBER_PATTERN = /^\d+$/;
 const MAX_LIST_LIMIT = 200;
-
-/**
- * Process-lifetime decision store + monotonic numbering. Production
- * deployments replace this with a PostgreSQL-backed store implementing the
- * same contract (append/list) — the manager module is transport-agnostic.
- */
-const DECISION_STORE = new InMemoryHermesDecisionStore();
-let decisionCounter = 0;
 
 function hasOnlyFields(value, allowed) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value) &&
@@ -75,13 +67,27 @@ function sendStorageError(res, err) {
   return null;
 }
 
-export function createHermesRouter({ recordAuditEvent, fetchEvidence, productionRepository, evidenceLedger } = {}) {
-  const manager = new HermesManager(DECISION_STORE, {
-    nextDecisionNumber: async () => {
-      decisionCounter += 1;
-      return decisionCounter;
-    },
-  });
+export function createHermesRouter({ recordAuditEvent, fetchEvidence, productionRepository, evidenceLedger, db } = {}) {
+  // Durable store (Issue #172): PostgresHermesDecisionStore over sql/023 when
+  // a db adapter is injected. WITHOUT a db the router degrades HONESTLY — it
+  // constructs no fake persistence and refuses decision writes with 503
+  // (Rules 1–3). The in-memory store remains only for explicitly-labeled
+  // demo/test transports.
+  let manager = null;
+  if (db !== undefined) {
+    const store = new PostgresHermesDecisionStore({ db });
+    manager = new HermesManager(store, {
+      nextDecisionNumber: () => store.nextDecisionNumber(),
+    });
+  }
+  const requireManager = () => {
+    if (!manager) {
+      const error = new Error("STORAGE_NOT_CONFIGURED");
+      error.code = "STORAGE_NOT_CONFIGURED";
+      throw error;
+    }
+    return manager;
+  };
   const router = Router();
 
   router.get("/authority", (req, res) => {
@@ -102,8 +108,9 @@ export function createHermesRouter({ recordAuditEvent, fetchEvidence, production
 
   router.get("/overview", async (req, res) => {
     try {
-      return res.status(200).json(await manager.overview());
+      return res.status(200).json(await requireManager().overview());
     } catch (err) {
+      if (sendStorageError(res, err)) return;
       logRouterError("HERMES_OVERVIEW_FAILED", err);
       return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
     }
@@ -116,12 +123,13 @@ export function createHermesRouter({ recordAuditEvent, fetchEvidence, production
       if (category !== undefined && !HERMES_DECISION_CATEGORIES.includes(category)) {
         return res.status(400).json({ error: "DECISION_CATEGORY_INVALID" });
       }
-      const decisions = await manager.listDecisions({
+      const decisions = await requireManager().listDecisions({
         limit: Number.isSafeInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, MAX_LIST_LIMIT) : 50,
         category,
       });
       return res.status(200).json({ count: decisions.length, decisions });
     } catch (err) {
+      if (sendStorageError(res, err)) return;
       logRouterError("HERMES_DECISIONS_LIST_FAILED", err);
       return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
     }
@@ -132,7 +140,7 @@ export function createHermesRouter({ recordAuditEvent, fetchEvidence, production
       if (!hasOnlyFields(req.body, ["action", "directorId", "category", "reason", "payload", "credentialRequest", "ownerApproval"])) {
         return res.status(400).json({ error: "REQUEST_VALIDATION_FAILED" });
       }
-      const decision = await manager.decide(req.body);
+      const decision = await requireManager().decide(req.body);
       if (typeof recordAuditEvent === "function") {
         await recordAuditEvent(req.ownerId, "hermes_decision_recorded", {
           decisionNumber: decision.decisionNumber,
@@ -161,6 +169,7 @@ export function createHermesRouter({ recordAuditEvent, fetchEvidence, production
       ].includes(code)) {
         return res.status(400).json({ error: code });
       }
+      if (sendStorageError(res, err)) return;
       logRouterError("HERMES_DECISION_CREATE_FAILED", err);
       return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
     }
@@ -175,7 +184,7 @@ export function createHermesRouter({ recordAuditEvent, fetchEvidence, production
         return res.status(400).json({ error: "REQUEST_VALIDATION_FAILED" });
       }
       const decisionNumber = Number.parseInt(req.params.decisionNumber, 10);
-      const decision = await manager.completeDecision(decisionNumber, {
+      const decision = await requireManager().completeDecision(decisionNumber, {
         succeeded: req.body.succeeded,
         evidenceReceiptId: req.body.evidenceReceiptId,
         errorCode: req.body.errorCode,
