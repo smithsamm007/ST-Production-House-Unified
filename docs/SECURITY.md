@@ -52,6 +52,14 @@ No agent may access another agent's locator. The local emergency provider has no
 
 Default mode is draft/private. Approval binds owner, artifact hash, caption, affiliate disclosures, destination, schedule, and expiry. Any mutation after approval invalidates it. Only a platform response can create a publish receipt.
 
+## Hermes Manager Layer (decision authority without secret access)
+
+The Hermes manager layer (`/api/hermes/*`, `src/manager/*`) holds decision authority, never unrestricted access:
+
+- **Frozen authority matrix** — autonomous production/scheduling/provider decisions; owner-policy-controlled publishing, deletion, and spending; structurally prohibited secret access, security-control changes, and audit-ledger modification. Unknown actions fail closed; prohibited actions cannot be executed even with an approval. Refusals (`BLOCKED`) are recorded as audit evidence.
+- **Secret-free by construction** — decision payloads are validated recursively server-side: secret-named fields and secret-shaped values are rejected before a record exists. Hermes addresses credentials by REFERENCE only (`agent-01 / gemini / production`); the credential broker delivers material directly to the authorized adapter. Records serialize through an explicit DTO allowlist.
+- **Append-only, honestly completed decisions** — records are immutable; completions supersede rather than mutate. `EXECUTED` requires a ledger-verified evidence receipt; unverified success is recorded as `FAILED`/`EVIDENCE_UNVERIFIED` (Rule 1). Every mutation requires CSRF and writes an audit event.
+
 ## Secrets & Connections (per Director)
 
 The owner dashboard's Secrets & Connections surface (sql/022, `/api/providers/*`, `/api/connections/*`) stores per-director provider bindings under three data classes:
