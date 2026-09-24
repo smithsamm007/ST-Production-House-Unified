@@ -32,6 +32,8 @@ import { ProductionRepository, isKnownPlatform, isValidChannelSlug } from "../ca
 import { DirectorWorkspaceRepository } from "../catalog/directorWorkspaceRepository.js";
 import { evaluatePublishGate, runEpisodePipeline } from "../pipeline/episodePipeline.js";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const app = express();
 app.disable("x-powered-by");
@@ -362,6 +364,7 @@ app.get("/", (req, res) => {
     status: storageMode === "unconfigured" ? "degraded" : "healthy",
     storage: storageMode,
     timestamp: new Date().toISOString(),
+    dashboard: "/index.html",
     endpoints: {
       health: "/api/health",
       ready: "/api/ready",
@@ -1185,9 +1188,10 @@ app.use("/api/control", authenticateOwner, control);
 // Static dashboard + SPA fallback
 // ---------------------------------------------------------------------------
 const dashboardRouter = express.Router();
-dashboardRouter.use(express.static(new URL("../public", import.meta.url).pathname, { index: "index.html", maxAge: "1h", setHeaders: (res, path) => { if (path.endsWith(".html")) res.setHeader("Cache-Control", "no-cache"); } }));
+const publicDir = fileURLToPath(new URL("../../public", import.meta.url));
+dashboardRouter.use(express.static(publicDir, { index: "index.html", maxAge: "1h", setHeaders: (res, path) => { if (path.endsWith(".html")) res.setHeader("Cache-Control", "no-cache"); } }));
 dashboardRouter.get(/^\/(?!api\/).*/, (req, res) => {
-  res.sendFile(new URL("../public/index.html", import.meta.url).pathname);
+  res.sendFile(path.join(publicDir, "index.html"));
 });
 app.use(dashboardRouter);
 
