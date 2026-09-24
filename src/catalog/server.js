@@ -27,6 +27,7 @@ import { createPostgresAdapter, sanitizeError } from "../db/index.js";
 import { createDemoStorageAdapter } from "../db/demoStorageAdapter.js";
 import { createContentRunsRouter } from "../api/contentRunsRouter.js";
 import { createProviderCatalogRouter, createDirectorConnectionsRouter } from "../api/directorConnectionsRouter.js";
+import { createHermesRouter } from "../api/hermesRouter.js";
 import { createOwnerControlRouter } from "../api/ownerControlRouter.js";
 import { PostgresOwnerControlStore } from "../api/ownerControlStore.js";
 import { ProductionRepository, isKnownPlatform, isValidChannelSlug } from "../catalog/productionRepository.js";
@@ -1194,6 +1195,23 @@ app.use("/api/providers", authenticateOwner, createProviderCatalogRouter());
 app.use("/api/connections", authenticateOwner, createDirectorConnectionsRouter({
   db: () => postgres,
   recordAuditEvent,
+}));
+
+// Hermes manager command center (Issue #166): auditable decision layer.
+// Decision authority without secret access — the evidence lookup below is
+// the only bridge to the ledger, returning a found/verified boolean only.
+app.use("/api/hermes", authenticateOwner, createHermesRouter({
+  recordAuditEvent,
+  fetchEvidence: async (receiptId) => {
+    try {
+      const events = await evidenceRepo.list();
+      return events.some((event) => event?.receiptId === receiptId || event?.id === receiptId)
+        ? { found: true }
+        : { found: false };
+    } catch {
+      return { found: false };
+    }
+  },
 }));
 
 // ---------------------------------------------------------------------------

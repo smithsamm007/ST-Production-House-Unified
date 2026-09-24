@@ -46,6 +46,12 @@ This is a clean, ST-owned secure foundation for consolidating the strongest idea
   - Opt-in durable worker (`STPH_ENABLE_WORKERS=1`) with bounded concurrency and lease-based claiming; owner-triggered runs use the same legal job transitions and fail closed against double-runs.
   - Publish gate enforces Rule 7: release must be in `review`, destination configured, non-empty public attribution. Publishing records intent + evidence only; live platform calls remain pending.
 
+- **Hermes Manager Layer (decision authority without secret access)**:
+  - Frozen authority matrix: autonomous production/scheduling/provider decisions; owner-policy-controlled publishing/deletion/spending; structurally prohibited secret access, control disabling, and ledger modification. Unknown actions fail closed; refusals are recorded as audit evidence.
+  - Append-only, auditable decision history with honest outcomes — `EXECUTED` only with a ledger-verified evidence receipt; completions supersede, never mutate.
+  - Secret-free by construction: payloads are server-side gated against secret-shaped fields/values; credentials are addressed by REFERENCE (`agent-01 / gemini / production`) and delivered by the broker straight to the adapter — Hermes never sees key material.
+  - Command-center API (`/api/hermes/*`) + dashboard panel rendering only real decision data.
+
 - **Secrets & Connections (per-Director provider bindings, owner dashboard)**:
   - Provider catalog (Gemini, Claude, OpenAI, ElevenLabs, Piper, Edge-TTS, YouTube, Instagram, Facebook, Snapchat, Bilibili, SMTP, custom) with official HTTPS-only credential URLs and per-field schemas; owners extend it via validated custom-provider registration without mutating the governed catalog.
   - One connection per (owner, director, provider, kind); secret fields are stored ONLY as opaque `vault://`/`opaque://` locators — plaintext secrets are structurally impossible to persist (DB trigger + repository re-validation).
