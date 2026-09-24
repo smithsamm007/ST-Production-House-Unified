@@ -121,6 +121,38 @@ The production layer turns the catalog into an operating multi-channel studio
   non-empty public attribution. Publishing records intent and evidence only;
   live platform calls remain pending (Rules 11/16).
 
+## Director Workspace (communication window, roadmap, memory)
+
+Master Blueprint sections 7–12 are implemented on `sql/021` +
+`src/catalog/directorWorkspaceRepository.js`:
+
+- **Persistent communication window** — exactly ONE owner↔director
+  conversation per `(owner, agent)`, lazily created on first access, so
+  Director #50 receives the same window as Director #01. History is durable
+  and ordered; the owner returns after a day or a year to the same thread.
+- **Conversation ≠ execution (§10)** — every message carries an explicit
+  execution-semantics kind: `conversation`, `proposal`, `instruction`,
+  `decision`. Recording a message NEVER triggers production, publishing, or
+  any other side effect; a decision is recorded as evidence only. Unknown
+  kinds fail closed.
+- **Roadmap (§11)** — four buckets `now | next | future | ideas` with a
+  lifecycle `open → accepted → done | dismissed`, owner-scoped per director.
+- **Isolated memory (§12)** — one JSON entry per category (universe bible,
+  characters, locations, story rules, visual/voice/music identity, audience
+  insights, owner decisions, production history) with a singleton-per-category
+  unique index. Every table and every read is scoped by BOTH `owner_id` and
+  `agent_id`: no director automatically receives another director's memory,
+  and no other owner can read it (generic 404 otherwise).
+- **Internal names stay internal (Rule 15)** — routes address directors by
+  `agentId`; DTOs never serialize namespaces or internal-only fields.
+
+Routes (all owner-authenticated; mutations CSRF-protected and audited):
+`GET/POST /api/directors/:agentId/conversation`,
+`GET/POST /api/directors/:agentId/roadmap`,
+`PATCH /api/directors/roadmap/:itemId`,
+`GET /api/directors/:agentId/memory`,
+`PUT /api/directors/:agentId/memory/:category`.
+
 ## Continuous Development Pipeline & Autonomous Orchestration
 
 The autonomous pipeline architecture (documented in `docs/CONTINUOUS_DEVELOPMENT_PIPELINE.md` and `ROADMAP.md`) coordinates:

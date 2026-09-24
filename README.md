@@ -46,6 +46,12 @@ This is a clean, ST-owned secure foundation for consolidating the strongest idea
   - Opt-in durable worker (`STPH_ENABLE_WORKERS=1`) with bounded concurrency and lease-based claiming; owner-triggered runs use the same legal job transitions and fail closed against double-runs.
   - Publish gate enforces Rule 7: release must be in `review`, destination configured, non-empty public attribution. Publishing records intent + evidence only; live platform calls remain pending.
 
+- **Director Workspace (persistent communication window, roadmap, isolated memory)**:
+  - One persistent owner↔director conversation per director — lazily created, so Director #50 gets the same window as Director #01 (Blueprint §7–§9).
+  - Messages carry explicit execution semantics (`conversation | proposal | instruction | decision`); recording never triggers production or publishing — conversation is not execution (§10).
+  - Per-director roadmap in four buckets (`now | next | future | ideas`) with an owner-driven lifecycle (§11).
+  - Isolated memory: one JSON entry per category (universe bible, characters, locations, story rules, visual/voice/music identity, audience insights, owner decisions, production history); every read is scoped by owner AND director — no cross-director or cross-owner leakage (§12).
+
 ## What is deliberately not claimed
 
 Live Gemini, Claude, Sarvam, Veo, social-network, Snapchat, or Postiz calls are not enabled in this foundation. Those require the owner's accounts, secret-manager references, provider sandbox verification, and platform approval. No uploads or provider calls were made while building this repository.

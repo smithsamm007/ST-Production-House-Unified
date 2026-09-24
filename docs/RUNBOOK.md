@@ -25,6 +25,7 @@ aspirational.
 | TASK-2.7 | Continuous development pipeline | `src/orchestration/` | Plan parsing, task envelopes, test-fix loop, merge gates |
 | TASK-2.8 | Adversarial hardening | `tests/adversarial/` | Fuzzing + SQL-injection matrix; run via `npm test` |
 | Multi-channel production | Channels, releases, deterministic pipeline | `sql/019`, `sql/020`, `src/catalog/productionRepository.js`, `src/pipeline/` | `POST /api/channels`, `POST /api/productions`, `POST /api/productions/:id/run`, `POST /api/productions/:id/publish`; worker via `STPH_ENABLE_WORKERS=1` |
+| Director workspace | Communication window, roadmap, memory | `sql/021`, `src/catalog/directorWorkspaceRepository.js` | `/api/directors/:agentId/conversation`, `/api/directors/:agentId/roadmap`, `/api/directors/:agentId/memory` |
 
 Supporting infrastructure shared by all tasks:
 
