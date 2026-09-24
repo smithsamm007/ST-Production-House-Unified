@@ -31,6 +31,7 @@ import {
   InMemoryHermesDecisionStore,
   HERMES_DECISION_CATEGORIES,
 } from "../manager/hermesManager.js";
+import { createHermesJobBridge } from "../manager/hermesJobBridge.js";
 import {
   HERMES_AUTHORITY_MATRIX,
   AUTHORITY_AUTONOMOUS,
@@ -74,7 +75,7 @@ function sendStorageError(res, err) {
   return null;
 }
 
-export function createHermesRouter({ recordAuditEvent, fetchEvidence } = {}) {
+export function createHermesRouter({ recordAuditEvent, fetchEvidence, productionRepository, evidenceLedger } = {}) {
   const manager = new HermesManager(DECISION_STORE, {
     nextDecisionNumber: async () => {
       decisionCounter += 1;
@@ -208,6 +209,48 @@ export function createHermesRouter({ recordAuditEvent, fetchEvidence } = {}) {
       }
       if (sendStorageError(res, err)) return;
       logRouterError("HERMES_DECISION_COMPLETE_FAILED", err);
+      return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
+    }
+  });
+
+  router.post("/decisions/:decisionNumber/execute", requireCsrf, async (req, res) => {
+    try {
+      if (!DECISION_NUMBER_PATTERN.test(req.params.decisionNumber)) {
+        return res.status(400).json({ error: "DECISION_NUMBER_INVALID" });
+      }
+      const bridge = createHermesJobBridge({
+        production: typeof productionRepository === "function" ? productionRepository() : productionRepository,
+        evidence: evidenceLedger,
+      });
+      const result = await bridge(manager, req.ownerId, Number.parseInt(req.params.decisionNumber, 10));
+      if (typeof recordAuditEvent === "function" && result.status === "QUEUED") {
+        await recordAuditEvent(req.ownerId, "hermes_decision_executed", {
+          decisionNumber: result.decision.decisionNumber,
+          releaseId: result.release.id,
+          jobId: result.jobId,
+        }).catch(() => {});
+      }
+      // HTTP mapping mirrors the honest outcome model: QUEUED → 201 (work
+      // exists), REFUSED → 409 (terminal decision, nothing executed),
+      // FAILED → 200 (the execution was recorded honestly; the response
+      // body carries the FAILED decision record — not an HTTP-level error).
+      if (result.status === "REFUSED") {
+        return res.status(409).json({ error: result.errorCode, decision: result.decision });
+      }
+      return res.status(result.status === "QUEUED" ? 201 : 200).json(result);
+    } catch (err) {
+      const code = err?.code ?? err?.message;
+      if (code === "DECISION_NOT_FOUND") {
+        return res.status(404).json({ error: "NOT_FOUND" });
+      }
+      if (code === "DECISION_NUMBER_INVALID") {
+        return res.status(400).json({ error: code });
+      }
+      if (sendStorageError(res, err)) return;
+      if (code === "HERMES_BRIDGE_PRODUCTION_REPO_REQUIRED" || code === "HERMES_BRIDGE_EVIDENCE_REQUIRED") {
+        return res.status(503).json({ error: "STORAGE_NOT_CONFIGURED" });
+      }
+      logRouterError("HERMES_DECISION_EXECUTE_FAILED", err);
       return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
     }
   });

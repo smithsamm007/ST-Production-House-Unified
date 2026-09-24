@@ -1212,6 +1212,11 @@ app.use("/api/hermes", authenticateOwner, createHermesRouter({
       return { found: false };
     }
   },
+  // Issue #168: execution bridge dependencies — lazy so module load order
+  // (configureRuntime) cannot break mounting; the real evidence ledger is
+  // the same append-only chain every worker writes to.
+  productionRepository: () => getProductionRepository(),
+  evidenceLedger: evidenceRepo,
 }));
 
 // ---------------------------------------------------------------------------
