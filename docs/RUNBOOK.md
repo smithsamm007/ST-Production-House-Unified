@@ -24,6 +24,7 @@ aspirational.
 | TASK-2.6 | Circuit breaker, quarantine, pause | `src/resilience/`, `sql/014` | `resilience_circuits`, `quarantine_records`, `owner_alerts`, `emergency_pauses` |
 | TASK-2.7 | Continuous development pipeline | `src/orchestration/` | Plan parsing, task envelopes, test-fix loop, merge gates |
 | TASK-2.8 | Adversarial hardening | `tests/adversarial/` | Fuzzing + SQL-injection matrix; run via `npm test` |
+| Multi-channel production | Channels, releases, deterministic pipeline | `sql/019`, `sql/020`, `src/catalog/productionRepository.js`, `src/pipeline/` | `POST /api/channels`, `POST /api/productions`, `POST /api/productions/:id/run`, `POST /api/productions/:id/publish`; worker via `STPH_ENABLE_WORKERS=1` |
 
 Supporting infrastructure shared by all tasks:
 
@@ -283,6 +284,12 @@ Operator rules of thumb:
   provider status and quota windows (§5) rather than re-running the job.
 - **`QUARANTINED`** — always owner-action: review the quarantine record and
   either authorize release or discard. Never bulk-release.
+- **Episode production** — a queued `episode_production` job runs the
+  deterministic pipeline (story → visual → audio → assembly). A failed stage
+  leaves the job `failed` (retryable via `/api/control/jobs/:id/retry`) and
+  the release back at `planned`; a completed run leaves the release in
+  `review` awaiting the owner publish gate. Deterministic stage content makes
+  retries idempotent by artifact hash — re-runs never duplicate artifacts.
 - **`RETRY_SCHEDULED`** — bounded retries per policy; escalate to a pause only
   if retries are burning against a paused scope (which `assertWorkAllowed`
   prevents).

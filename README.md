@@ -39,6 +39,13 @@ This is a clean, ST-owned secure foundation for consolidating the strongest idea
 - Isolated worker contracts for story, motion, assembly, and Postiz publishing.
 - Automated policy tests requiring no package installation.
 
+- **Multi-Channel Anime Production House (channels → episodes → pipeline → publish gate)**:
+  - Owner-scoped channels carry public branding only; internal agent names never serialize to the dashboard (Rule 15).
+  - One planned release per (channel, season, episode) slot — database-enforced; a failed attempt creates a new job, never a second logical Reel/release (Rule 8).
+  - Deterministic four-stage pipeline (story → visual → audio → assembly) with real SHA-256 artifact hashes in the canonical `artifacts` table, durable `pipeline_events`, and evidence-ledger rows. Artifacts are labeled `deterministic_local` with `ffprobe_verified:false` — no fabricated media or receipts.
+  - Opt-in durable worker (`STPH_ENABLE_WORKERS=1`) with bounded concurrency and lease-based claiming; owner-triggered runs use the same legal job transitions and fail closed against double-runs.
+  - Publish gate enforces Rule 7: release must be in `review`, destination configured, non-empty public attribution. Publishing records intent + evidence only; live platform calls remain pending.
+
 ## What is deliberately not claimed
 
 Live Gemini, Claude, Sarvam, Veo, social-network, Snapchat, or Postiz calls are not enabled in this foundation. Those require the owner's accounts, secret-manager references, provider sandbox verification, and platform approval. No uploads or provider calls were made while building this repository.
