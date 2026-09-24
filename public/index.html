@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ST Production House — Owner Console</title>
+  <style>
+    :root {
+      --bg: #0b0f17; --panel: #121826; --panel-2: #0f1522; --line: #232c40;
+      --text: #e7ecf5; --muted: #8b96ab; --ok: #34d399; --warn: #fbbf24;
+      --bad: #f87171; --accent: #7aa2ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 15px/1.55 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+    }
+    header {
+      padding: 28px 24px 20px; border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #0e1420, var(--bg));
+    }
+    header h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: 0.3px; }
+    header p { margin: 0; color: var(--muted); font-size: 13.5px; }
+    main { max-width: 1080px; margin: 0 auto; padding: 24px; display: grid; gap: 18px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+    .panel {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+      padding: 16px 18px;
+    }
+    .panel h2 {
+      margin: 0 0 10px; font-size: 12px; letter-spacing: 1.4px;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .kv { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 14px; }
+    .kv span:first-child { color: var(--muted); }
+    .pill { padding: 2px 10px; border-radius: 999px; font-size: 12.5px; border: 1px solid var(--line); }
+    .pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+    .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+    .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
+    form { display: flex; flex-direction: column; gap: 10px; }
+    input {
+      background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+      border-radius: 8px; padding: 9px 12px; font-size: 14px; outline: none;
+    }
+    input:focus { border-color: var(--accent); }
+    button {
+      background: var(--accent); color: #0b1020; font-weight: 600; border: 0;
+      border-radius: 8px; padding: 10px 14px; cursor: pointer; font-size: 14px;
+    }
+    button:disabled { opacity: 0.55; cursor: default; }
+    .error { color: var(--bad); font-size: 13px; min-height: 18px; }
+    .muted { color: var(--muted); font-size: 13px; }
+    ul.metrics { list-style: none; margin: 0; padding: 0; }
+    ul.metrics li { padding: 3px 0; display: flex; justify-content: space-between; }
+    footer { text-align: center; color: var(--muted); font-size: 12.5px; padding: 18px 0 28px; }
+    code { color: var(--accent); font-size: 12.5px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ST Production House</h1>
+    <p>Owner console — live system status from the unified control plane. All data on this page comes from real API responses; nothing is simulated.</p>
+  </header>
+  <main>
+    <section class="grid">
+      <div class="panel">
+        <h2>Liveness</h2>
+        <div class="kv"><span>Service</span><span id="health-status" class="pill">…</span></div>
+        <div class="kv"><span>Storage mode</span><span id="health-storage">…</span></div>
+        <div class="kv"><span>Served at</span><span id="health-time">…</span></div>
+      </div>
+      <div class="panel">
+        <h2>Readiness (deploy gate)</h2>
+        <div class="kv"><span>Database</span><span id="ready-db">…</span></div>
+        <div class="kv"><span>Overall</span><span id="ready-status" class="pill">…</span></div>
+      </div>
+      <div class="panel">
+        <h2>Session</h2>
+        <div id="auth-area">
+          <form id="login-form">
+            <input id="email" type="email" placeholder="owner email" autocomplete="username" required />
+            <input id="password" type="password" placeholder="password" autocomplete="current-password" required />
+            <button type="submit" id="login-btn">Sign in</button>
+            <div class="error" id="login-error"></div>
+            <div class="muted">Sessions are HttpOnly cookies; registration is closed after the first owner bootstraps.</div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="metrics-panel" hidden>
+      <h2>Operational metrics (authenticated)</h2>
+      <ul class="metrics" id="metrics-list"></ul>
+    </section>
+
+    <section class="panel">
+      <h2>API surface</h2>
+      <div class="muted">
+        <code>GET /api/health</code> · <code>GET /api/ready</code> ·
+        <code>/api/auth/*</code> · <code>/api/agents</code> ·
+        <code>/api/channels</code> · <code>/api/productions</code> ·
+        <code>/api/directors/:agentId/conversation|roadmap|memory</code> ·
+        <code>/api/evidence</code> · <code>/api/metrics</code> ·
+        <code>/api/control/*</code> — all owner routes require an authenticated session.
+      </div>
+    </section>
+  </main>
+  <footer>ST Production House Unified · evidence-first control plane · publishing remains owner-gated</footer>
+  <script src="/dashboard.js"></script>
+</body>
+</html>
