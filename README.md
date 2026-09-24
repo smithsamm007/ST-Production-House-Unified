@@ -46,6 +46,11 @@ This is a clean, ST-owned secure foundation for consolidating the strongest idea
   - Opt-in durable worker (`STPH_ENABLE_WORKERS=1`) with bounded concurrency and lease-based claiming; owner-triggered runs use the same legal job transitions and fail closed against double-runs.
   - Publish gate enforces Rule 7: release must be in `review`, destination configured, non-empty public attribution. Publishing records intent + evidence only; live platform calls remain pending.
 
+- **Media Inspection Runner (real FFprobe verification boundary)**:
+  - Callable executor a real assembly worker invokes: SHA-256 over the ACTUAL file bytes + ffprobe via validated array arguments (never shell strings, no path traversal/option injection), feeding the existing artifact-descriptor promotion.
+  - Real tamper detection: a substituted on-disk file fails the descriptor hash check (`INSPECTION_HASH_MISMATCH`) even when ffprobe succeeds on it.
+  - Honest failure matrix — absent binary, timeout, non-zero exit, unparseable/empty output all yield truthful failure codes; the descriptor stays `UNVERIFIED` (`ffprobe_verified:false`). Nothing is fabricated.
+
 - **Hermes Manager Layer (decision authority without secret access)**:
   - Frozen authority matrix: autonomous production/scheduling/provider decisions; owner-policy-controlled publishing/deletion/spending; structurally prohibited secret access, control disabling, and ledger modification. Unknown actions fail closed; refusals are recorded as audit evidence.
   - Append-only, auditable decision history with honest outcomes — `EXECUTED` only with a ledger-verified evidence receipt; completions supersede, never mutate.

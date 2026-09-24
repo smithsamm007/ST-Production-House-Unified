@@ -46,6 +46,7 @@ No agent may access another agent's locator. The local emergency provider has no
 - MIME sniff uploads, enforce byte/duration/resolution limits, virus scan, and store outside the web root with random object names.
 - Invoke FFmpeg through argument arrays, resource limits, and sandboxed workers.
 - Verify actual output using FFprobe and SHA-256; never fabricate metadata.
+- The media inspection runner (`src/media/mediaInspectionRunner.js`) is the real-execution boundary for that rule: hashes are computed from the actual on-disk content (a substituted file fails verification via `INSPECTION_HASH_MISMATCH` even when ffprobe succeeds on it), ffprobe is spawned with validated array arguments only (no shell, no traversal, no option injection), and every failure mode (absent binary, timeout, non-zero exit, unparseable/empty output) is recorded truthfully — a descriptor stays UNVERIFIED unless a real matching inspection promotes it.
 - Affiliate/import URLs must use HTTPS, pass a domain allowlist, resolve outside private/link-local/loopback ranges, cap redirects, and pass phishing/malware screening.
 
 ## Publishing
