@@ -29,6 +29,7 @@ import { createContentRunsRouter } from "../api/contentRunsRouter.js";
 import { createOwnerControlRouter } from "../api/ownerControlRouter.js";
 import { PostgresOwnerControlStore } from "../api/ownerControlStore.js";
 import { ProductionRepository, isKnownPlatform, isValidChannelSlug } from "../catalog/productionRepository.js";
+import { DirectorWorkspaceRepository } from "../catalog/directorWorkspaceRepository.js";
 import { evaluatePublishGate, runEpisodePipeline } from "../pipeline/episodePipeline.js";
 import { randomUUID } from "node:crypto";
 
@@ -421,6 +422,7 @@ const PUBLIC_ERROR_CODES = new Set([
   "CHANNEL_SLUG_EXISTS", "AGENT_DISABLED", "RELEASE_NOT_READY_FOR_PUBLISH", "PUBLISH_DESTINATION_REQUIRED",
   "PUBLIC_PUBLISHING_IDENTITY_REQUIRED", "RELEASE_NOT_FOUND", "RELEASE_ALREADY_PUBLISHED",
   "PRODUCTION_JOB_NOT_CLAIMABLE", "PRODUCTION_RUN_FAILED",
+  "MESSAGE_VALIDATION_FAILED", "ROADMAP_VALIDATION_FAILED", "ROADMAP_ITEM_NOT_FOUND", "MEMORY_VALIDATION_FAILED",
 ]);
 
 function safePayloadParse(value) {
@@ -904,6 +906,170 @@ app.post("/api/channels/:id/destinations", authenticateOwner, requireCsrf, async
     return res.status(201).json(destination);
   } catch (err) {
     logInternalError("DESTINATION_CREATE_FAILED", err);
+    return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Director workspace (persistent communication window, roadmap, memory)
+// ---------------------------------------------------------------------------
+
+function getDirectorWorkspaceRepository() {
+  if (!postgres) throw new Error("STORAGE_NOT_CONFIGURED");
+  return new DirectorWorkspaceRepository(postgres);
+}
+
+/** Resolves :agentId to an existing agent; returns the agent or sends 404. */
+async function resolveAgentOr404(req, res, agentId) {
+  const agent = await agentsRepo.get(agentId);
+  if (!agent) {
+    res.status(404).json({ error: "AGENT_NOT_FOUND" });
+    return null;
+  }
+  return agent;
+}
+
+/**
+ * GET /api/directors/:agentId/conversation — the persistent communication
+ * window (lazily created; Director #50 gets the same window as #01).
+ */
+app.get("/api/directors/:agentId/conversation", authenticateOwner, async (req, res) => {
+  try {
+    if (!(await resolveAgentOr404(req, res, req.params.agentId))) return;
+    const repo = getDirectorWorkspaceRepository();
+    const conversation = await repo.getOrCreateConversation(req.ownerId, req.params.agentId);
+    const messages = await repo.listMessages(req.ownerId, req.params.agentId);
+    return res.json({ conversation, messages });
+  } catch (err) {
+    logInternalError("DIRECTOR_CONVERSATION_FAILED", err);
+    return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
+  }
+});
+
+/**
+ * POST /api/directors/:agentId/conversation — append a message with explicit
+ * execution semantics (conversation | proposal | instruction | decision).
+ * Recording NEVER triggers production or publishing: conversation is not
+ * execution (Blueprint §10). Decisions are evidence, not side effects.
+ */
+app.post("/api/directors/:agentId/conversation", authenticateOwner, requireCsrf, async (req, res) => {
+  try {
+    if (!hasOnlyFields(req.body, ["sender", "kind", "body"])) {
+      return res.status(400).json({ error: "REQUEST_VALIDATION_FAILED" });
+    }
+    if (!(await resolveAgentOr404(req, res, req.params.agentId))) return;
+    const repo = getDirectorWorkspaceRepository();
+    const message = await repo.appendMessage(req.ownerId, req.params.agentId, req.body);
+    await recordAuditEvent(req.ownerId, "director_message_recorded", {
+      agentId: req.params.agentId,
+      messageId: message.id,
+      kind: message.kind,
+      sender: message.sender,
+    });
+    return res.status(201).json(message);
+  } catch (err) {
+    if (err.message === "MESSAGE_VALIDATION_FAILED") {
+      return res.status(400).json({ error: "MESSAGE_VALIDATION_FAILED" });
+    }
+    logInternalError("DIRECTOR_MESSAGE_FAILED", err);
+    return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
+  }
+});
+
+/** GET /api/directors/:agentId/roadmap — long-term roadmap, optional ?bucket=. */
+app.get("/api/directors/:agentId/roadmap", authenticateOwner, async (req, res) => {
+  try {
+    if (!(await resolveAgentOr404(req, res, req.params.agentId))) return;
+    const bucket = req.query.bucket === undefined ? null : String(req.query.bucket);
+    const items = await getDirectorWorkspaceRepository().listRoadmap(req.ownerId, req.params.agentId, { bucket });
+    return res.json({ count: items.length, items });
+  } catch (err) {
+    if (err.message === "ROADMAP_VALIDATION_FAILED") {
+      return res.status(400).json({ error: "ROADMAP_VALIDATION_FAILED" });
+    }
+    logInternalError("DIRECTOR_ROADMAP_LIST_FAILED", err);
+    return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
+  }
+});
+
+/** POST /api/directors/:agentId/roadmap — add a roadmap item to a bucket. */
+app.post("/api/directors/:agentId/roadmap", authenticateOwner, requireCsrf, async (req, res) => {
+  try {
+    if (!hasOnlyFields(req.body, ["bucket", "title", "detail"])) {
+      return res.status(400).json({ error: "REQUEST_VALIDATION_FAILED" });
+    }
+    if (!(await resolveAgentOr404(req, res, req.params.agentId))) return;
+    const item = await getDirectorWorkspaceRepository().addRoadmapItem(req.ownerId, req.params.agentId, req.body);
+    await recordAuditEvent(req.ownerId, "director_roadmap_item_added", {
+      agentId: req.params.agentId,
+      itemId: item.id,
+      bucket: item.bucket,
+    });
+    return res.status(201).json(item);
+  } catch (err) {
+    if (err.message === "ROADMAP_VALIDATION_FAILED") {
+      return res.status(400).json({ error: "ROADMAP_VALIDATION_FAILED" });
+    }
+    logInternalError("DIRECTOR_ROADMAP_ADD_FAILED", err);
+    return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
+  }
+});
+
+/** PATCH /api/directors/roadmap/:itemId — move an item through its lifecycle. */
+app.patch("/api/directors/roadmap/:itemId", authenticateOwner, requireCsrf, async (req, res) => {
+  try {
+    if (!hasOnlyFields(req.body, ["status"])) {
+      return res.status(400).json({ error: "REQUEST_VALIDATION_FAILED" });
+    }
+    const updated = await getDirectorWorkspaceRepository().updateRoadmapItemStatus(req.ownerId, req.params.itemId, req.body.status);
+    if (!updated) return res.status(404).json({ error: "ROADMAP_ITEM_NOT_FOUND" });
+    await recordAuditEvent(req.ownerId, "director_roadmap_item_updated", {
+      itemId: req.params.itemId,
+      status: updated.status,
+    });
+    return res.json(updated);
+  } catch (err) {
+    if (err.message === "ROADMAP_VALIDATION_FAILED") {
+      return res.status(400).json({ error: "ROADMAP_VALIDATION_FAILED" });
+    }
+    logInternalError("DIRECTOR_ROADMAP_UPDATE_FAILED", err);
+    return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
+  }
+});
+
+/** GET /api/directors/:agentId/memory — isolated memory for one director. */
+app.get("/api/directors/:agentId/memory", authenticateOwner, async (req, res) => {
+  try {
+    if (!(await resolveAgentOr404(req, res, req.params.agentId))) return;
+    const entries = await getDirectorWorkspaceRepository().listMemory(req.ownerId, req.params.agentId);
+    return res.json({ count: entries.length, entries });
+  } catch (err) {
+    logInternalError("DIRECTOR_MEMORY_LIST_FAILED", err);
+    return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
+  }
+});
+
+/** PUT /api/directors/:agentId/memory/:category — upsert one memory category. */
+app.put("/api/directors/:agentId/memory/:category", authenticateOwner, requireCsrf, async (req, res) => {
+  try {
+    if (!hasOnlyFields(req.body, ["content"])) {
+      return res.status(400).json({ error: "REQUEST_VALIDATION_FAILED" });
+    }
+    if (!(await resolveAgentOr404(req, res, req.params.agentId))) return;
+    const entry = await getDirectorWorkspaceRepository().saveMemory(req.ownerId, req.params.agentId, {
+      category: req.params.category,
+      content: req.body.content,
+    });
+    await recordAuditEvent(req.ownerId, "director_memory_saved", {
+      agentId: req.params.agentId,
+      category: entry.category,
+    });
+    return res.json(entry);
+  } catch (err) {
+    if (err.message === "MEMORY_VALIDATION_FAILED") {
+      return res.status(400).json({ error: "MEMORY_VALIDATION_FAILED" });
+    }
+    logInternalError("DIRECTOR_MEMORY_SAVE_FAILED", err);
     return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
   }
 });

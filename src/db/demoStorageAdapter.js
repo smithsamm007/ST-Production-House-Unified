@@ -723,6 +723,17 @@ function parseColumnDefaults(body) {
     const nameMatch = text.match(/^(\w+)\s+([\s\S]+)$/);
     if (!nameMatch) continue;
     const [, column, rest] = nameMatch;
+    // serial / bigserial: PostgreSQL assigns monotonically increasing
+    // integers. Mirror that with a per-table counter closure (the schema map
+    // lives per table, so the counter is table-scoped, like a sequence).
+    if (/^\s*(big)?serial\b/i.test(rest)) {
+      let sequence = 0;
+      defaults.set(column, () => {
+        sequence += 1;
+        return sequence;
+      });
+      continue;
+    }
     const defaultIndex = findTopLevelKeyword(rest, "DEFAULT");
     if (defaultIndex === -1) continue;
     const expr = stripTrailingColumnConstraints(rest.slice(defaultIndex + "DEFAULT".length));

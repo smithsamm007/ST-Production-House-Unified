@@ -310,5 +310,5 @@ test("migration 018 uses the next sequential number and no 018 file conflicts", 
   const numbers = files.map((f) => parseInt(f.slice(0, 3), 10));
   const duplicates = numbers.filter((n, i) => numbers.indexOf(n) !== i);
   assert.equal(duplicates.length, 0, "no duplicate migration numbers");
-  assert.equal(Math.max(...numbers), 20, "020 is the highest migration");
+  assert.equal(Math.max(...numbers), 21, "021 is the highest migration");
 });
