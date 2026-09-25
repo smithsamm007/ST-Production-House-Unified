@@ -167,11 +167,25 @@ jobs:
           gh workflow run autonomous-merge.yml --ref "$branch" -f pr_number="$pr_number" -f expected_head="$expected_head"
           echo "::notice::Opened ready PR $pr_url and explicitly dispatched its exact-head gates."
 
-      - name: Return failed issue to a recoverable queue
+      - name: Return failed issue to a recoverable queue (only when no PR exists)
         if: failure() && steps.task.outputs.number != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if ! gh issue edit "${{ steps.task.outputs.number }}" --remove-label in-progress --add-label ready; then
-            echo "::warning::Failed to return issue ${{ steps.task.outputs.number }} to the ready queue. The backlog feeder's relabel path (issue #137) will re-apply 'ready' on its next run."
+          set -euo pipefail
+          number="${{ steps.task.outputs.number }}"
+
+          # Truthful recovery (issue #90): an issue whose implementation
+          # already produced an autonomous PR is NOT re-queued. Re-queueing
+          # would let a later run create a duplicate branch/PR against the
+          # lane's one-canonical-PR rule. The backlog feeder (issue #137)
+          # owns re-feeding after a PR closes without merge.
+          open_pr="$(gh pr list --state open --search "Closes #$number" --limit 1 --json number --jq 'length')"
+          if [ "$open_pr" != "0" ]; then
+            echo "::notice::Issue #$number already has an open autonomous PR; it stays in-progress. The backlog feeder will re-feed it only after that PR closes without merging."
+            exit 0
+          fi
+
+          if ! gh issue edit "$number" --remove-label in-progress --add-label ready; then
+            echo "::warning::Failed to return issue $number to the ready queue. The backlog feeder's relabel path (issue #137) will re-apply 'ready' on its next run."
           fi

@@ -44,3 +44,34 @@ The Continuous Development Pipeline provides governed, autonomous execution acro
 - **Status Reporting (`.github/scripts/ci-reporter.mjs`)**:
   - Automatically posts structured step summaries to `$GITHUB_STEP_SUMMARY`.
   - Emits automated failure comments on PRs to prevent stalled development.
+
+## 5. Reconciliation Ordering & Truthful Publishing (issues #92, #90)
+
+### 5.1 Awake Resume Controller (`awake-resume.yml`) — observe before reconcile
+For every open autonomous `task/*` PR the controller follows a strict ordering
+contract that makes head movement impossible while verification is in flight:
+
+1. **Observe** the PR's current head and count active exact-head gate runs
+   (ST Production House CI, PR Gate, Autonomous Merge Referee) at that head.
+2. **Never reconcile an active PR**: if any gate run is not yet completed, the
+   controller does nothing for that PR. Merge-refreshing from main here would
+   move the head and silently invalidate the exact-head guarantees the
+   referee depends on.
+3. **Refresh + re-dispatch only idle, not-yet-verified PRs**: only when no
+   gate run is active and not all three gates have passed at the current head
+   does the controller refresh the branch from verified main and re-dispatch
+   all three gates at the (possibly new) exact head.
+
+### 5.2 Night Shift recovery — no duplicate re-queue (`night-shift.yml`)
+When a Night Shift run fails, the failed issue is returned to the ready queue
+**only when no open autonomous PR references it** (`Closes #<issue>` search).
+An issue that already produced a PR stays `in-progress`; the backlog feeder
+(issue #137) owns re-feeding after that PR closes without merging. This
+preserves the one-canonical-PR-per-lane rule against duplicate branches.
+
+### 5.3 AutoDev — verify before publishing (`autodev.yml`)
+No implementation is committed, pushed, or opened as a PR until `npm test`
+and `npm run verify` pass on the proposed tree. The PR body embeds the real
+pasted output of both commands (Rule 1: honest evidence; Rule R6: real test
+evidence in the PR body). A failing tree fails the workflow loudly and
+nothing is published.

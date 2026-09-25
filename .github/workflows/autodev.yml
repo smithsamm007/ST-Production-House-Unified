@@ -28,7 +28,7 @@ jobs:
         with: { python-version: '3.11' }
       - run: pipx install aider-chat
 
-      - name: Implement issue
+      - name: Implement issue (working tree only, nothing published yet)
         run: |
           BRANCH="auto/issue-${{ github.event.issue.number }}"
           git checkout -b "$BRANCH"
@@ -39,12 +39,37 @@ jobs:
                 --yes-always --no-auto-commits \
                 --message-file /tmp/task.md \
                 CONVENTIONS.md
-          git add -A && git commit -m "feat: resolve #${{ github.event.issue.number }} [autodev]"
-          git push origin "$BRANCH"
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "::error::Coding agent produced no repository change; nothing to publish."
+            exit 1
+          fi
 
-      - name: Open draft PR
+      # Truthful publishing gate (issue #90): the implementation is verified
+      # BEFORE any commit, push, or PR. A failing tree is never published and
+      # no success is claimed; the workflow fails here, loudly.
+      - name: Verify before publishing
         run: |
+          npm test 2>&1 | tee /tmp/npm-test.log
+          npm run verify 2>&1 | tee /tmp/npm-verify.log
+
+      - name: Commit and push verified implementation
+        run: |
+          branch="$(git rev-parse --abbrev-ref HEAD)"
+          git add -A
+          git commit -m "feat: resolve #${{ github.event.issue.number }} [autodev]"
+          git push origin "$branch"
+
+      - name: Open draft PR with real evidence
+        run: |
+          branch="$(git rev-parse --abbrev-ref HEAD)"
+          {
+            printf 'Closes #%s\n\n⚠️ Automated implementation — owner review required.\n\n## Verification\n\n### npm test\n\n```text\n' "${{ github.event.issue.number }}"
+            tail -n 40 /tmp/npm-test.log
+            printf '\n```\n\n### npm run verify\n\n```text\n'
+            tail -n 40 /tmp/npm-verify.log
+            printf '\n```\n'
+          } > /tmp/pr-body.md
           gh pr create --draft --base main \
-            --head "auto/issue-${{ github.event.issue.number }}" \
+            --head "$branch" \
             --title "AutoDev: issue #${{ github.event.issue.number }}" \
-            --body "Closes #${{ github.event.issue.number }}. ⚠️ Automated implementation — owner review required."
+            --body-file /tmp/pr-body.md
