@@ -215,7 +215,30 @@ export class ProductionRepository {
          FROM production_releases WHERE id = $1 AND owner_id = $2;`,
       [releaseId, ownerId]
     );
-    return result.rows[0] ? releaseDto(result.rows[0]) : null;
+    if (!result.rows[0]) return null;
+    const dto = releaseDto(result.rows[0]);
+    // Director binding (release → channel → agent) resolved in a second
+    // honest read (portability subset). Release-time assertions and the
+    // executor pipeline (#183) use this binding; the channel itself (public
+    // branding) is NOT serialized onto the release DTO.
+    const channelResult = await this.db.query(
+      "SELECT agent_id, owner_id FROM channels WHERE id = $1;",
+      [dto.channelId]
+    );
+    const channelRow = channelResult.rows[0];
+    if (channelRow && channelRow.owner_id === ownerId) {
+      dto.agentId = channelRow.agent_id;
+    }
+    // Durable job link via the release's idempotency key (Rule 13), so the
+    // worker/retry paths can carry the job identity without a join.
+    const jobResult = await this.db.query(
+      "SELECT id FROM jobs WHERE idempotency_key = $1 LIMIT 1;",
+      [`production-${releaseId}`]
+    );
+    if (jobResult.rows[0]) {
+      dto.jobId = jobResult.rows[0].id;
+    }
+    return dto;
   }
 
   /**

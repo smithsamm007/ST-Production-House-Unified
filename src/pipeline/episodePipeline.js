@@ -114,7 +114,7 @@ export function renderStageContent(stage, { channelId, title, season, episode })
  * Runs the full pipeline for one release using the injected repositories.
  * `production` is a ProductionRepository; `jobs` is the JobRepository.
  */
-export async function runEpisodePipeline({ ownerId, releaseId, production, jobs, evidenceLedger, log = () => {} }) {
+export async function runEpisodePipeline({ ownerId, releaseId, production, jobs, evidenceLedger, executorRunner = null, log = () => {} }) {
   const release = await production.getRelease(ownerId, releaseId);
   if (!release) throw new Error("RELEASE_NOT_FOUND");
   if (release.status === "published") throw new Error("RELEASE_ALREADY_PUBLISHED");
@@ -129,6 +129,27 @@ export async function runEpisodePipeline({ ownerId, releaseId, production, jobs,
   };
 
   const artifacts = [];
+
+  // Issue #183: when a real-executor runner is injected, stages with real
+  // executors (audio/visual/assembly) execute through it and record through
+  // the #182 bridge. Without a runner, the historical deterministic path
+  // runs unchanged. Executor waits (quota/credential absence) are durable:
+  // the release returns to `planned`, earlier stage artifacts stay recorded,
+  // and the job carries the stable wait code for scheduler resume — never a
+  // fabricated success, never a stage failure that discards progress.
+  if (executorRunner !== null) {
+    return runEpisodePipelineWithExecutors({
+      ownerId,
+      releaseId,
+      release,
+      production,
+      jobs,
+      evidenceLedger,
+      executorRunner,
+      stageInputs,
+      log,
+    });
+  }
 
   for (const stage of PIPELINE_STAGES) {
     await production.recordPipelineEvent({ releaseId, ownerId, stage, status: "started" });
@@ -184,8 +205,10 @@ export async function runEpisodePipeline({ ownerId, releaseId, production, jobs,
           payload: { stage, errorCode: String(error?.message ?? "STAGE_FAILED").slice(0, 120) },
         });
       }
-      // Release returns to `planned` (sql/019 enum has no `failed` state);
-      // the job carries the real failure for the owner to retry.
+  // The assembly stage's artifact is the canonical assembled media for this
+  // release; the executor path records its descriptor through the bridge.
+  // Release returns to `planned` (sql/019 enum has no `failed` state);
+  // the job carries the real failure for the owner to retry.
       await production.updateReleaseStatus(ownerId, releaseId, "planned");
       throw error;
     }
@@ -232,6 +255,17 @@ export const EXECUTOR_ARTIFACT_ERROR_CODES = Object.freeze([
   "EXECUTOR_STAGE_MISMATCH",
   "EXECUTOR_AGENT_SCOPE_MISMATCH",
   "EXECUTOR_INSPECTION_UNAVAILABLE",
+]);
+
+/**
+ * Executor failure codes that mean DURABLE WAIT (scheduler can resume when
+ * capacity returns), never stage failure. Defined here so the bridge owns
+ * wait classification; the integration module re-exports it.
+ */
+export const EXECUTOR_WAIT_CODES = Object.freeze([
+  "QUOTA_EXHAUSTED",
+  "CREDENTIAL_MISSING",
+  "PROVIDER_UNAVAILABLE",
 ]);
 
 function executorArtifactError(code) {
@@ -289,11 +323,16 @@ export function evaluateExecutorArtifact({ stage, release, executorResult }) {
 
   const { descriptor, outcome, inspection, success } = projected;
 
-  // A result without any descriptor is only ever shaped by an executor that
-  // could not attempt media (waiting/credential/quota). That is a truthful
-  // waiting record, not a media artifact.
+  // A result without any descriptor is shaped only by an executor that could
+  // not attempt or verify media. Three honest shapes, fail-closed:
+  //   1. durable wait (quota/credential) — waiting verdict, resumable;
+  //   2. truthful failure (any other stable code, e.g. INSPECTION_FAILED,
+  //      PROVIDER_CALL_FAILED, VISUAL_TIMEOUT) — failure verdict, no media;
+  //   3. "success" with no media and no failure code — incoherent, rejected.
   if (!descriptor || typeof descriptor !== "object" || descriptor.descriptorType !== "st_media_artifact_descriptor") {
-    if (projected.quotaState === "WAITING_FOR_QUOTA" || success === false) {
+    const code = typeof projected.failureCode === "string" ? projected.failureCode : null;
+    const isWait = projected.quotaState === "WAITING_FOR_QUOTA" || (code !== null && EXECUTOR_WAIT_CODES.includes(code));
+    if (isWait) {
       return Object.freeze({
         ok: true,
         waiting: true,
@@ -302,8 +341,23 @@ export function evaluateExecutorArtifact({ stage, release, executorResult }) {
         sha256: null,
         verified: false,
         generationMode: "not_evidenced",
-        quotaState: projected.quotaState ?? "WAITING_FOR_QUOTA",
-        failureCode: projected.failureCode ?? "EXECUTOR_RESULT_MALFORMED",
+        quotaState: "WAITING_FOR_QUOTA",
+        failureCode: code ?? "QUOTA_EXHAUSTED",
+        outcome: null,
+        descriptor: null,
+      });
+    }
+    if (code !== null) {
+      return Object.freeze({
+        ok: true,
+        waiting: false,
+        stage,
+        kind: STAGE_KINDS[stage].kind,
+        sha256: null,
+        verified: false,
+        generationMode: "not_evidenced",
+        quotaState: projected.quotaState ?? "OK",
+        failureCode: code,
         outcome: null,
         descriptor: null,
       });
@@ -411,4 +465,233 @@ export function evaluatePublishGate({ release, destination }) {
     return { ok: false, code: "PUBLIC_PUBLISHING_IDENTITY_REQUIRED" };
   }
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Real-executor pipeline (Issue #183)
+// ---------------------------------------------------------------------------
+
+/**
+ * Executor-driven pipeline run. For each stage with a real executor
+ * (audio → TTS, visual → visual generation, assembly → FFmpeg), invoke the
+ * injected Director-scoped runner, classify the result, evaluate it through
+ * the #182 bridge, and record verified media into the artifacts table.
+ *
+ * Story stays deterministic (it is a plan document, not media). Failure at
+ * stage N preserves recorded stages 1..N-1 (release → `planned`, job carries
+ * the stable failure code — same contract as the deterministic path).
+ *
+ * WAITING semantics (Rules 2–3): executor waits (QUOTA_EXHAUSTED /
+ * CREDENTIAL_MISSING / PROVIDER_UNAVAILABLE) are DURABLE WAITS. The release
+ * returns to `planned` for scheduler resume, evidence records the wait, and
+ * the job (when supported) carries `WAITING_FOR_QUOTA` + the stable code.
+ * Completed stages are NEVER discarded and nothing is marked successful.
+ *
+ * Returns { releaseId, status, artifacts, waited? } where status is
+ * "review" (all stages recorded) or "planned" (stage failure or durable wait).
+ */
+export async function runEpisodePipelineWithExecutors({
+  ownerId,
+  releaseId,
+  release,
+  production,
+  jobs,
+  evidenceLedger,
+  executorRunner,
+  stageInputs,
+  log = () => {},
+}) {
+  const { runStageWithExecutor, recordExecutorArtifact } = await import("./executorIntegration.js");
+
+  await production.updateReleaseStatus(ownerId, releaseId, "in_production");
+  const artifacts = [];
+
+  // Executor stages in dependency order. `assembly` consumes the release's
+  // OWN verified artifacts via sha256 descriptor bindings — the runner
+  // resolves those bindings from `recorded` (Director-scoped by release).
+  const executorStages = ["audio", "visual", "assembly"];
+  const recordedByStage = new Map();
+
+  /** Descriptor bindings for the assembly stage: sha256:… → {descriptor, path}. */
+  const artifactBindings = () => {
+    const bindings = {};
+    for (const artifact of recordedByStage.values()) {
+      if (artifact && artifact.sha256 && typeof artifact.storagePath === "string") {
+        bindings[`sha256:${artifact.sha256}`] = {
+          descriptor: artifact.descriptor ?? null,
+          path: artifact.storagePath,
+        };
+      }
+    }
+    return bindings;
+  };
+
+  for (const stage of executorStages) {
+    await production.recordPipelineEvent({ releaseId, ownerId, stage, status: "started" });
+
+    let outcome;
+    try {
+      outcome = await runStageWithExecutor({
+        release,
+        stage,
+        stageInputs,
+        runner: (runnerArgs) => executorRunner({
+          ...runnerArgs,
+          recordedArtifacts: Object.freeze([...recordedByStage.values()]),
+          artifactBindings: Object.freeze(artifactBindings()),
+        }),
+      });
+    } catch (error) {
+      // Bridge gate violations are contract failures, not executor results.
+      await recordStageFailure(production, evidenceLedger, { ownerId, releaseId, stage, errorCode: String(error?.code ?? error?.message ?? "EXECUTOR_STAGE_FAILED").slice(0, 120) });
+      await production.updateReleaseStatus(ownerId, releaseId, "planned");
+      throw error;
+    }
+
+    if (outcome.status === "waiting") {
+      const code = outcome.failureCode ?? "QUOTA_EXHAUSTED";
+      await production.recordPipelineEvent({
+        releaseId, ownerId, stage, status: "failed",
+        detail: { waiting: true, quotaState: "WAITING_FOR_QUOTA", errorCode: code },
+      });
+      if (evidenceLedger) {
+        await evidenceLedger.append({
+          subjectId: releaseId,
+          kind: "pipeline_stage_waiting",
+          classification: "executor_waiting_for_quota",
+          payload: { stage, errorCode: code },
+        });
+      }
+      await production.updateReleaseStatus(ownerId, releaseId, "planned");
+      // Durable wait: earlier stages stay recorded; the job carries the wait.
+      await markJobWaiting(jobs, release.jobId, code);
+      log(`stage ${stage} waiting: ${code}`);
+      return { releaseId, status: "planned", waited: true, waitingStage: stage, waitingCode: code, artifacts };
+    }
+
+    if (outcome.status === "failed") {
+      await recordStageFailure(production, evidenceLedger, {
+        ownerId, releaseId, stage,
+        errorCode: String(outcome.failureCode ?? "EXECUTOR_STAGE_FAILED").slice(0, 120),
+      });
+      await production.updateReleaseStatus(ownerId, releaseId, "planned");
+      await markJobFailed(jobs, release.jobId, outcome.failureCode ?? "EXECUTOR_STAGE_FAILED");
+      log(`stage ${stage} failed: ${outcome.failureCode}`);
+      return { releaseId, status: "planned", failedStage: stage, failureCode: outcome.failureCode, artifacts };
+    }
+
+    // Recorded: persist the real media artifact through the #182 bridge.
+    let stored;
+    try {
+      stored = await recordExecutorArtifact({
+        releaseId,
+        ownerId,
+        production,
+        stage,
+        verdict: outcome.verdict,
+      });
+    } catch (error) {
+      await recordStageFailure(production, evidenceLedger, {
+        ownerId, releaseId, stage,
+        errorCode: String(error?.code ?? error?.message ?? "EXECUTOR_ARTIFACT_REJECTED").slice(0, 120),
+      });
+      await production.updateReleaseStatus(ownerId, releaseId, "planned");
+      throw error;
+    }
+    if (stored !== null) artifacts.push(stored);
+    recordedByStage.set(stage, {
+      sha256: outcome.verdict.sha256,
+      storagePath: typeof outcome.executorResult?.outputPath === "string" ? outcome.executorResult.outputPath : null,
+      descriptor: outcome.verdict.descriptor ?? null,
+    });
+
+    await production.recordPipelineEvent({
+      releaseId, ownerId, stage, status: "succeeded",
+      detail: {
+        sha256: outcome.verdict.sha256,
+        generationMode: outcome.verdict.generationMode,
+        executorVerified: outcome.verdict.verified === true,
+      },
+    });
+    if (evidenceLedger) {
+      await evidenceLedger.append({
+        subjectId: releaseId,
+        kind: "pipeline_stage_succeeded",
+        classification: "real_executor_generation",
+        payload: {
+          stage,
+          sha256: outcome.verdict.sha256,
+          generationMode: outcome.verdict.generationMode,
+        },
+      });
+    }
+  }
+
+  // Story remains a deterministic plan document (not media).
+  await production.recordPipelineEvent({ releaseId, ownerId, stage: "story", status: "started" });
+  const storyContent = renderStageContent("story", stageInputs);
+  const storySha = createHash("sha256").update(storyContent).digest("hex");
+  const storyStored = await production.recordArtifact({
+    releaseId, ownerId, kind: "metadata", stage: "story", sha256: storySha,
+    sizeBytes: Buffer.byteLength(storyContent, "utf8"), mimeType: "application/json",
+  });
+  await production.recordPipelineEvent({
+    releaseId, ownerId, stage: "story", status: "succeeded",
+    detail: { sha256: storySha, generationMode: "deterministic_local" },
+  });
+  if (storyStored !== null) artifacts.push(storyStored);
+
+  await production.updateReleaseStatus(ownerId, releaseId, "review");
+  if (evidenceLedger) {
+    await evidenceLedger.append({
+      subjectId: releaseId,
+      kind: "pipeline_completed",
+      classification: "real_executor_generation",
+      payload: { stages: [...executorStages, "story"], artifactCount: artifacts.length },
+    });
+  }
+  return { releaseId, status: "review", artifacts };
+}
+
+/** Truthful pipeline-events + evidence record for a failed stage. */
+async function recordStageFailure(production, evidenceLedger, { ownerId, releaseId, stage, errorCode }) {
+  await production.recordPipelineEvent({
+    releaseId, ownerId, stage, status: "failed",
+    detail: { errorCode },
+  });
+  if (evidenceLedger) {
+    await evidenceLedger.append({
+      subjectId: releaseId,
+      kind: "pipeline_stage_failed",
+      classification: "pipeline_failure_recorded",
+      payload: { stage, errorCode },
+    });
+  }
+}
+
+/**
+ * Best-effort job waiting marker. The durable job-status enum (sql/010) has
+ * no waiting state (R5: no new states without a governed issue), so when the
+ * repository supports metadata the wait code is attached to the job WITHOUT
+ * changing its status; otherwise this is a no-op — the authoritative wait
+ * record lives on the release + pipeline events + evidence ledger.
+ */
+async function markJobWaiting(jobs, jobId, code) {
+  if (!jobs || typeof jobs.updateStatus !== "function" || !jobId) return;
+  try {
+    await jobs.updateStatus(jobId, null, { failureCode: code, waitingForQuota: true });
+  } catch {
+    // Repository without metadata support: the wait stays recorded on the
+    // release + evidence; never fabricate a different job state.
+  }
+}
+
+/** Best-effort job failure marker. */
+async function markJobFailed(jobs, jobId, code) {
+  if (!jobs || typeof jobs.updateStatus !== "function" || !jobId) return;
+  try {
+    await jobs.updateStatus(jobId, "failed", { failureCode: code });
+  } catch {
+    // Job state is best-effort; release/evidence carry the truthful record.
+  }
 }
