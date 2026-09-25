@@ -109,11 +109,20 @@ export async function finalizeRuntimeStartup() {
       const { ProductionWorkerLoop } = await import("../pipeline/workerLoop.js");
       const { AgentRepository } = await import("./repositories.js");
       const agentsRepo = new AgentRepository();
+      // Real media (Issue #187): opt-in production runner binding. Default
+      // OFF — without STPH_ENABLE_REAL_MEDIA=1 the worker runs the
+      // deterministic pipeline exactly as before.
+      let executorRunnerFactory = null;
+      if (process.env.STPH_ENABLE_REAL_MEDIA === "1") {
+        const { bindProductionRunner } = await import("../pipeline/productionExecutorRunner.js");
+        executorRunnerFactory = ({ agentId }) => bindProductionRunner({ agentId });
+      }
       productionWorker = new ProductionWorkerLoop({
         jobsRepository: new JobRepository(),
         productionRepository: new ProductionRepository(postgres),
         evidenceLedger: new EvidenceLedgerRepository(),
         enabledAgentsProvider: async () => (await agentsRepo.list()).filter((a) => a.enabled !== false),
+        executorRunnerFactory,
       });
       productionWorker.start();
     } catch (error) {

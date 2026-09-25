@@ -8,6 +8,11 @@
  * Contract (AGENTS.md Rules 5, 13; CONVENTIONS 5–6):
  * - A crashed stage leaves the job failed or the lease expired (reclaimable).
  * - The loop never fabricates success; failures are logged with codes only.
+ * - Real media (Issue #187): when an `executorRunnerFactory` is supplied
+ *   (STPH_ENABLE_REAL_MEDIA=1 in production), each claimed job runs through
+ *   the REAL executors via a per-Director runner binding; otherwise the
+ *   historical deterministic pipeline runs unchanged. Wait outcomes re-queue
+ *   the job (durable WAITING_FOR_QUOTA semantics, attempts enforced).
  */
 
 import { runEpisodePipeline } from "./episodePipeline.js";
@@ -22,6 +27,7 @@ export class ProductionWorkerLoop {
     productionRepository,
     evidenceLedger = null,
     enabledAgentsProvider = null,
+    executorRunnerFactory = null,
     log = () => {},
     pollMs = DEFAULT_POLL_MS,
     leaseSeconds = DEFAULT_LEASE_SECONDS,
@@ -34,6 +40,10 @@ export class ProductionWorkerLoop {
     this.production = productionRepository;
     this.evidenceLedger = evidenceLedger;
     this.enabledAgentsProvider = enabledAgentsProvider;
+    if (executorRunnerFactory !== null && typeof executorRunnerFactory !== "function") {
+      throw new Error("WORKER_EXECUTOR_RUNNER_FACTORY_INVALID");
+    }
+    this.executorRunnerFactory = executorRunnerFactory;
     this.log = log;
     this.pollMs = Math.max(500, pollMs);
     this.leaseSeconds = Math.min(900, Math.max(15, leaseSeconds));
@@ -105,14 +115,42 @@ export class ProductionWorkerLoop {
         this.log(JSON.stringify({ code: "WORKER_JOB_UNROUTABLE", jobId: job.id }));
         return;
       }
-      await runEpisodePipeline({
+      // Real media (Issue #187): bind the per-Director production runner
+      // when a factory is configured; without one the deterministic
+      // pipeline runs (pre-existing behavior, unchanged).
+      const executorRunner = typeof this.executorRunnerFactory === "function"
+        ? this.executorRunnerFactory({ job, agentId: job.agent_id ?? job.agentId ?? null })
+        : null;
+      const result = await runEpisodePipeline({
         ownerId,
         releaseId,
         production: this.production,
         jobs: this.jobs,
         evidenceLedger: this.evidenceLedger,
+        executorRunner,
         log: this.log,
       });
+      if (result?.waited === true) {
+        // Durable wait (WAITING_FOR_QUOTA): re-queue for scheduler resume
+        // when capacity returns — bounded by the job's retry budget so a
+        // persistently unavailable provider cannot loop forever.
+        const attempts = Number(job.attempts ?? 0);
+        const maxAttempts = Number(job.max_attempts ?? job.maxAttempts ?? 3);
+        try {
+          if (attempts < maxAttempts) {
+            await this.jobs.updateStatus(job.id, "queued");
+          } else {
+            await this.jobs.updateStatus(job.id, "failed");
+            this.log(JSON.stringify({ code: "WORKER_JOB_WAIT_BUDGET_EXHAUSTED", jobId: job.id, releaseId, waitingCode: result.waitingCode ?? null }));
+            return;
+          }
+        } catch {
+          // Status already governs itself; the release stays `planned` and
+          // evidence carries the wait — never a fabricated success.
+        }
+        this.log(JSON.stringify({ code: "WORKER_JOB_WAITING", jobId: job.id, releaseId, waitingCode: result.waitingCode ?? null }));
+        return;
+      }
       this.log(JSON.stringify({ code: "WORKER_JOB_SUCCEEDED", jobId: job.id, releaseId }));
     } catch (error) {
       try {
