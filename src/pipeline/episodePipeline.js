@@ -28,6 +28,13 @@ const STAGE_KINDS = Object.freeze({
   visual: { kind: "image", label: "visual_storyboard" },
   audio: { kind: "audio", label: "narration_track" },
   assembly: { kind: "video", label: "assembled_episode" },
+  // Packaging-stage artifact kinds (Issue #185/#186): the thumbnail is real
+  // media (image, bridge-verified); subtitle/metadata/manifest documents are
+  // deterministic records. `stage` labels stay distinct so identical-content
+  // artifacts never collide under the (release_id, sha256) uniqueness rule.
+  thumbnail: { kind: "image", label: "episode_thumbnail" },
+  packaging: { kind: "metadata", label: "episode_manifest" },
+  qc: { kind: "metadata", label: "qc_verdict" },
 });
 
 /**
@@ -689,12 +696,14 @@ export async function runEpisodePipelineWithExecutors({
     return { releaseId, status: "planned", failedStage: "packaging", failureCode: packaging.failureCode, artifacts };
   }
 
-  // Record the verified thumbnail media through the #182 bridge (image kind).
+  // Record the verified thumbnail media through the #182 bridge under its
+  // own distinct stage/kind (never colliding with scene visuals on equal
+  // content hashes).
   const thumbnailStored = await recordExecutorArtifact({
     releaseId,
     ownerId,
     production,
-    stage: "visual",
+    stage: "thumbnail",
     verdict: packaging.thumbnailVerdict,
   });
   if (thumbnailStored !== null) artifacts.push(thumbnailStored);
@@ -716,7 +725,7 @@ export async function runEpisodePipelineWithExecutors({
     const storedDoc = await production.recordArtifact({
       releaseId,
       ownerId,
-      kind: docKind,
+      kind: STAGE_KINDS.packaging.kind,
       stage: docKind === "manifest" ? "packaging" : docKind,
       sha256: record.sha256,
       sizeBytes: Buffer.byteLength(record.content, "utf8"),
