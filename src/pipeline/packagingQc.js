@@ -46,6 +46,10 @@ import {
   descriptorFingerprint,
 } from "../media/artifactDescriptor.js";
 import { validateArtifactPath } from "../media/mediaInspectionRunner.js";
+import {
+  createMediaPackageManifest,
+  isMediaPackageProductionReady,
+} from "../production/mediaPackageManifest.js";
 
 export const PACKAGING_VERSION = "episode_packaging_v1";
 export const QC_GATE_VERSION = "episode_qc_gate_v1";
@@ -57,6 +61,9 @@ export const PACKAGING_QC_ERROR_CODES = Object.freeze([
   "PACKAGING_AGENT_SCOPE_MISMATCH",
   "PACKAGING_MEDIA_REJECTED",
   "PACKAGING_INCOMPLETE",
+  "PACKAGING_DESCRIPTOR_INVALID",
+  "PACKAGING_INSPECTION_UNAVAILABLE",
+  "PACKAGING_REEL_DESCRIPTORS_MISSING",
   "QC_MANIFEST_INVALID",
   "QC_AGENT_SCOPE_MISMATCH",
   "QC_ARTIFACT_MISSING",
@@ -88,6 +95,10 @@ function requirePlainObject(value, code) {
     throw packagingError(code);
   }
   return value;
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function deepFreeze(value) {
@@ -267,6 +278,7 @@ export async function runPackagingStage({
   stageInputs,
   recordedArtifacts,
   runner,
+  reelPackage = null,
 }) {
   requirePlainObject(release, "PACKAGING_INPUT_INVALID");
   if (typeof runner !== "function") throw packagingError("PACKAGING_RUNNER_REQUIRED");
@@ -346,6 +358,27 @@ export async function runPackagingStage({
 
   const manifestRecord = buildDocumentRecord({ kind: "manifest", doc: manifest });
 
+  // Canonical S-M37 media-package manifest (Issue #189): when the release
+  // recorded its canonical reel package (2 content + 1 brand Reel), bind
+  // the verified media — main video, both independent content Reels, the
+  // brand Reel, thumbnail — into the CONTRACT manifest with recomputed
+  // identity. Subtitle/metadata documents live in the episode manifest
+  // (content-addressed records, not descriptors); the S-M37 optional
+  // bindings are descriptor-typed and stay unset here.
+  let canonicalManifest = null;
+  const reelArtifacts = recordedArtifacts.filter((a) => typeof a.stage === "string" && a.stage.startsWith("reel:"));
+  if (reelPackage && reelArtifacts.length === 3) {
+    canonicalManifest = buildCanonicalMediaPackageManifest({
+      release,
+      productionRunId: assemblyArtifact.descriptor.producer?.runId,
+      reelPackage,
+      assemblyArtifact,
+      reelArtifacts,
+      thumbnail: { sha256: thumbnailVerdict.sha256, descriptor: thumbnailVerdict.descriptor },
+      thumbnailInspection: executorResult.inspection ?? null,
+    });
+  }
+
   return deepFreeze({
     status: "complete",
     thumbnail: { sha256: thumbnailVerdict.sha256, descriptor: thumbnailVerdict.descriptor },
@@ -353,10 +386,85 @@ export async function runPackagingStage({
       subtitle: subtitleRecord,
       metadata: metadataRecord,
       manifest: manifestRecord,
+      ...(canonicalManifest
+        ? { canonicalManifest: buildDocumentRecord({ kind: "manifest", doc: canonicalManifest }) }
+        : {}),
     },
     manifest,
+    ...(canonicalManifest ? { canonicalManifest } : {}),
     thumbnailVerdict,
     executorResult,
+  });
+}
+
+/**
+ * Build the canonical S-M37 media-package manifest binding the release's
+ * OWN recorded artifacts: reelPackage (S-M34-01), main video, exactly 2
+ * independent content Reels + 1 brand Reel (video descriptors), thumbnail,
+ * and subtitle/metadata entries. The contract recomputes identity and
+ * enforces run/Director scope — a foreign descriptor fails closed here.
+ */
+export function buildCanonicalMediaPackageManifest({
+  release,
+  productionRunId,
+  reelPackage,
+  assemblyArtifact,
+  reelArtifacts,
+  thumbnail,
+  thumbnailInspection,
+}) {
+  if (!isPlainObject(release) || typeof release.agentId !== "string") throw packagingError("PACKAGING_INPUT_INVALID");
+  if (typeof productionRunId !== "string" || productionRunId.length === 0) {
+    throw packagingError("PACKAGING_INPUT_INVALID");
+  }
+  if (!isPlainObject(reelPackage) || reelPackage.planType !== "reel_package_plan_v1") {
+    throw packagingError("PACKAGING_INPUT_INVALID");
+  }
+  const reelByKey = new Map(reelArtifacts.map((a) => [a.reelKey, a]));
+  const content1 = reelByKey.get("content_reel_1");
+  const content2 = reelByKey.get("content_reel_2");
+  const brand = reelByKey.get("brand_reel");
+  if (!content1?.descriptor || !content2?.descriptor || !brand?.descriptor) {
+    throw packagingError("PACKAGING_REEL_DESCRIPTORS_MISSING");
+  }
+
+  // The S-M37 contract binds thumbnails as `thumbnail`-typed descriptors;
+  // the visual executor produces `image`. Derive the typed descriptor from
+  // the REAL verified content: same identity anchor (hash) and producer
+  // scope, re-promoted through the SAME real inspection (S-M30-01 path —
+  // never hand-stamped VERIFIED).
+  const imageDescriptor = thumbnail.descriptor;
+  if (!isPlainObject(imageDescriptor) || typeof imageDescriptor.contentSha256 !== "string" || imageDescriptor.contentSha256.length !== 64) {
+    throw packagingError("PACKAGING_DESCRIPTOR_INVALID");
+  }
+  if (!isPlainObject(thumbnailInspection) || thumbnailInspection.success !== true) {
+    throw packagingError("PACKAGING_INSPECTION_UNAVAILABLE");
+  }
+  const thumbnailDescriptor = verifyArtifactDescriptor(
+    createArtifactDescriptor({
+      artifactType: "thumbnail",
+      mimeType: imageDescriptor.mimeType,
+      contentSha256: imageDescriptor.contentSha256,
+      producer: { ...imageDescriptor.producer },
+    }),
+    thumbnailInspection,
+  );
+  if (thumbnailDescriptor.verification.state !== "VERIFIED") {
+    throw packagingError("PACKAGING_INSPECTION_UNAVAILABLE");
+  }
+
+  const descriptorBinding = (descriptor, entryNote) => ({ descriptor, entryNote: entryNote ?? null });
+  return createMediaPackageManifest({
+    agentId: release.agentId,
+    productionRunId,
+    reelPackage,
+    mainVideo: descriptorBinding(assemblyArtifact.descriptor, "main long-form episode"),
+    contentReelArtifacts: [
+      descriptorBinding(content1.descriptor, "independent content reel 1"),
+      descriptorBinding(content2.descriptor, "independent content reel 2"),
+    ],
+    brandReelArtifact: descriptorBinding(brand.descriptor, "standalone brand reel"),
+    thumbnailPlans: [descriptorBinding(thumbnailDescriptor, "episode thumbnail")],
   });
 }
 
@@ -486,6 +594,7 @@ export function evaluateEpisodeQcGate({
   manifestRecord,
   recordedArtifacts,
   storedDocuments = {},
+  canonicalManifest = null,
   runnerChecks = [],
   now = () => new Date(),
 }) {
@@ -570,7 +679,19 @@ export function evaluateEpisodeQcGate({
   }
   checks.push(Object.freeze({ check: "AGENT_SCOPE", passed: true, reasonCode: null }));
 
-  // 5. Runner checks (automated policy; requiresHuman → needs_human).
+  // 5. Canonical package production-readiness (Issue #189): when the S-M37
+  // manifest exists, run the CONTRACT's own gate — every binding VERIFIED,
+  // brand mode valid, publication not_requested.
+  if (canonicalManifest !== undefined && canonicalManifest !== null) {
+    const readiness = isMediaPackageProductionReady(canonicalManifest);
+    if (readiness.ready !== true) {
+      checks.push(Object.freeze({ check: "CANONICAL_PACKAGE_READY", passed: false, reasonCode: readiness.reason ?? "MEDIA_STATUS_NOT_VERIFIED" }));
+      return finalize("rejected", readiness.reason ?? "MEDIA_STATUS_NOT_VERIFIED", "automated");
+    }
+    checks.push(Object.freeze({ check: "CANONICAL_PACKAGE_READY", passed: true, reasonCode: null }));
+  }
+
+  // 6. Runner checks (automated policy; requiresHuman → needs_human).
   for (const check of runnerChecks) {
     requirePlainObject(check, "QC_RUNNER_CHECK_FAILED");
     if (typeof check.name !== "string" || check.name.length === 0) {

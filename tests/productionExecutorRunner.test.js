@@ -23,6 +23,13 @@ const NARRATION_BYTES = Buffer.from("prod-runner-mp3-bytes");
 const FRAME_BYTES = Buffer.from("prod-runner-png-bytes");
 const THUMB_BYTES = Buffer.from("prod-runner-thumb-png-bytes");
 const EPISODE_BYTES = Buffer.from("prod-runner-mp4-bytes");
+// The three canonical reels are genuinely distinct renders (Issue #189):
+// the (release_id, sha256) uniqueness rule must never collide them.
+const REEL_BYTES = Object.freeze({
+  content_reel_1: Buffer.from("reel-one-bytes"),
+  content_reel_2: Buffer.from("reel-two-bytes"),
+  brand_reel: Buffer.from("brand-reel-bytes"),
+});
 
 function sha256(buf) {
   return createHash("sha256").update(buf).digest("hex");
@@ -39,9 +46,15 @@ function makeSpawn() {
       const target = args[args.length - 1];
       const payload = target.endsWith(".mp3")
         ? { format: { filename: "n", format_name: "mp3", size: String(NARRATION_BYTES.length) }, streams: [{ codec_type: "audio", codec_name: "mp3" }] }
-        : target.endsWith(".mp4")
-          ? { format: { filename: "e", format_name: "mp4", size: String(EPISODE_BYTES.length), duration: "1890" }, streams: [{ codec_type: "video", codec_name: "h264" }] }
-          : { format: { filename: "f", format_name: "png", size: String(THUMB_BYTES.length) }, streams: [{ codec_type: "video", codec_name: "png", width: 1920, height: 1080 }] };
+        : target.endsWith(".mp4") && /content_reel_[12]|brand_reel/.test(target)
+          // Reel renders are short-form: the fake ffprobe must report the
+          // measured duration INSIDE the [3, 90] s short-form QC window —
+          // reporting the 1890 s episode duration here would (correctly)
+          // fail the real gate.
+          ? { format: { filename: "r", format_name: "mp4", size: "6000", duration: "30" }, streams: [{ codec_type: "video", codec_name: "h264" }] }
+          : target.endsWith(".mp4")
+            ? { format: { filename: "e", format_name: "mp4", size: String(EPISODE_BYTES.length), duration: "1890" }, streams: [{ codec_type: "video", codec_name: "h264" }] }
+            : { format: { filename: "f", format_name: "png", size: String(THUMB_BYTES.length) }, streams: [{ codec_type: "video", codec_name: "png", width: 1920, height: 1080 }] };
       return { exitCode: 0, stdout: JSON.stringify(payload), stderr: "", timedOut: false };
     }
     return { exitCode: 0, stdout: "", stderr: "written", timedOut: false };
@@ -55,7 +68,11 @@ function makeFiles() {
   // sha256) uniqueness rule never collides them.
   return async (path) => {
     if (typeof path === "string" && path.endsWith(".mp3")) return NARRATION_BYTES;
-    if (typeof path === "string" && path.endsWith(".mp4")) return EPISODE_BYTES;
+    if (typeof path === "string" && path.endsWith(".mp4")) {
+      const reel = path.match(/(content_reel_1|content_reel_2|brand_reel)/);
+      if (reel) return REEL_BYTES[reel[1]];
+      return EPISODE_BYTES;
+    }
     if (typeof path === "string" && path.endsWith(".png")) {
       return path.includes("thumb") ? THUMB_BYTES : FRAME_BYTES;
     }
@@ -217,7 +234,7 @@ async function buildHarness({ withRunner } = {}) {
   return { db, production, ownerId, release, jobId, jobs, worker, job, evidence };
 }
 
-test("worker loop with runner factory: claimed job produces REAL verified media + QC", async () => {
+test("worker loop with runner factory: claimed job produces the CANONICAL package (main + 2 content reels + brand reel + packaging + QC)", async () => {
   const h = await buildHarness({ withRunner: true });
   await h.worker.process(h.job);
 
@@ -226,7 +243,16 @@ test("worker loop with runner factory: claimed job produces REAL verified media 
   assert.equal(byStage.get("audio")?.generationMode, "provider_generated");
   assert.equal(byStage.get("audio")?.ffprobeVerified, true);
   assert.equal(byStage.get("assembly")?.generationMode, "provider_generated");
+  // Canonical short-form package (Issue #189): three bridge-recorded reels.
+  const reelArtifacts = artifacts.filter((a) => a.stage === "reels");
+  assert.equal(reelArtifacts.length, 3, "2 content reels + 1 brand reel recorded");
+  assert.ok(reelArtifacts.every((a) => a.generationMode === "provider_generated" && a.ffprobeVerified === true));
+  assert.ok(
+    new Set(reelArtifacts.map((a) => a.sha256)).size === 3,
+    "the three reels are genuinely distinct media (independent content, distinct brand reel)",
+  );
   assert.ok(byStage.get("thumbnail"), "thumbnail recorded via packaging");
+  assert.ok(byStage.get("packaging"), "episode + canonical manifests recorded");
   assert.ok(byStage.get("qc"), "QC verdict recorded");
   const release = await h.production.getRelease(h.ownerId, h.release.id);
   assert.equal(release.status, "review", "QC-approved release reaches the owner gate");
