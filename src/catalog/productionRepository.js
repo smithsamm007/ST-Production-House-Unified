@@ -286,22 +286,39 @@ export class ProductionRepository {
     if (duplicate.rows.length > 0) return null;
 
     const id = artifact.id || randomUUID();
-    // storage_uri is an honest local descriptor, never a fabricated platform URL.
-    const storageUri = `local://deterministic/${artifact.releaseId}/${artifact.stage}`;
+    // Honest generation-mode provenance: deterministic stage content records
+    // its own mode; real executor results (Issue #182) carry theirs through
+    // the allowlisted payload. storage_uri is an honest local descriptor
+    // named after the ACTUAL mode — never a fabricated platform URL.
+    const payload = artifact.payload ?? null;
+    const generationMode =
+      payload && typeof payload === "object" && typeof payload.generationMode === "string"
+        ? payload.generationMode
+        : "deterministic_local";
+    const ffprobeVerified = artifact.ffprobeVerified === true;
+    const storageUri = `local://${generationMode}/${artifact.releaseId}/${artifact.stage}`;
     await this.db.query(
       `INSERT INTO artifacts (id, job_id, kind, storage_uri, sha256, ffprobe_verified, metadata, release_id)
-       VALUES ($1, $2, $3, $4, $5, false, $6, $7);`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8);`,
       [
         id,
         artifact.jobId ?? null,
         artifact.kind,
         storageUri,
         artifact.sha256,
+        ffprobeVerified,
         JSON.stringify({
           stage: artifact.stage,
-          generationMode: "deterministic_local",
+          generationMode,
           sizeBytes: artifact.sizeBytes ?? null,
           mimeType: artifact.mimeType ?? null,
+          ...(payload && typeof payload === "object"
+            ? {
+                executorVerified: payload.executorVerified === true,
+                quotaState: typeof payload.quotaState === "string" ? payload.quotaState : null,
+                failureCode: typeof payload.failureCode === "string" ? payload.failureCode : null,
+              }
+            : {}),
         }),
         artifact.releaseId,
       ]
