@@ -56,6 +56,11 @@ This is a clean, ST-owned secure foundation for consolidating the strongest idea
   - QC duration policy enforced on the REAL post-render inspection: `main_longform` inside [1800, 3000] s via the S-M33-01 gate; short-form reels inside [3, 90] s via the new short-form gate — claimed-vs-measured conflicts and missing durations fail closed.
   - Honest outcomes only: absent ffmpeg, timeout, non-zero exit, unreadable render, or out-of-window duration each produce a stable failure code; success requires real execution + a matching-hash inspection of the rendered file + a passing QC gate. Approximations (e.g. `wipe` rendered as fade) are labeled degradations, never silent.
 
+- **Real TTS Execution Worker (voice: profile → provider → verified audio)**:
+  - Callable boundary from the S-M32-01 voice-continuity profile + script to real audio: profile integrity gate → free-first provider selection over DECLARED capabilities (Edge-TTS free primary, Piper local emergency — ElevenLabs never in the automatic chain, Rule 35) → array-args spawn (Piper text via stdin, no shell) → real SHA-256 + FFprobe of the written audio → S-M30-01 descriptor promotion → S-M32-01 truthful outcome.
+  - Quota- and credential-honest: quota-exhausted slots are skipped, missing owner credentials surface `CREDENTIAL_MISSING`, and when no provider remains the durable `WAITING_FOR_QUOTA` state is returned — never a disguised failure.
+  - A provider exit 0 is NOT success: `mediaStatus: "verified"` requires a real matching-hash inspection of the actual audio bytes; every failure (binary absent, timeout, call failure, unreadable output) is truthful and stable-coded.
+
 - **Hermes Manager Layer (decision authority without secret access)**:
   - Frozen authority matrix: autonomous production/scheduling/provider decisions; owner-policy-controlled publishing/deletion/spending; structurally prohibited secret access, control disabling, and ledger modification. Unknown actions fail closed; refusals are recorded as audit evidence.
   - Append-only, auditable decision history with honest outcomes — `EXECUTED` only with a ledger-verified evidence receipt; completions supersede, never mutate.
