@@ -13,9 +13,16 @@ import {
   runPackagingStage,
   evaluateEpisodeQcGate,
   recordHumanQcDecision,
+  buildCanonicalMediaPackageManifest,
   QC_CHECKS,
   QC_VERDICTS,
 } from "../src/pipeline/packagingQc.js";
+import {
+  buildCanonicalReelPackagePlan,
+  buildReelAssemblyPlans,
+  CANONICAL_REELS,
+  REELS_STAGE_ERROR_CODES,
+} from "../src/pipeline/reelsStage.js";
 import { createArtifactDescriptor } from "../src/media/artifactDescriptor.js";
 
 const NOW = () => new Date("2026-09-25T10:00:00.000Z");
@@ -395,9 +402,12 @@ test("recordHumanQcDecision records explicit human decisions; never derives them
 test("error codes are exported and closed", () => {
   assert.deepEqual([...PACKAGING_QC_ERROR_CODES].sort(), [
     "PACKAGING_AGENT_SCOPE_MISMATCH",
+    "PACKAGING_DESCRIPTOR_INVALID",
     "PACKAGING_INCOMPLETE",
     "PACKAGING_INPUT_INVALID",
+    "PACKAGING_INSPECTION_UNAVAILABLE",
     "PACKAGING_MEDIA_REJECTED",
+    "PACKAGING_REEL_DESCRIPTORS_MISSING",
     "PACKAGING_RUNNER_REQUIRED",
     "QC_AGENT_SCOPE_MISMATCH",
     "QC_ARTIFACT_MISSING",
@@ -408,4 +418,223 @@ test("error codes are exported and closed", () => {
     "QC_RUNNER_CHECK_FAILED",
     "QC_VERDICT_MALFORMED",
   ]);
+  assert.deepEqual([...REELS_STAGE_ERROR_CODES].sort(), [
+    "REELS_AGENT_SCOPE_MISMATCH",
+    "REELS_INPUT_INVALID",
+    "REELS_MEDIA_REJECTED",
+    "REELS_NOT_INDEPENDENT",
+    "REELS_PLAN_UNBUILDABLE",
+    "REELS_RUNNER_REQUIRED",
+  ]);
+});
+
+// ---------------------------------------------------------------------------
+// Canonical package production (Issue #189)
+// ---------------------------------------------------------------------------
+
+const RUN_ID = "episode-c189001";
+
+function makeVerifiedDescriptor({ artifactType, sha, runId = RUN_ID, mimeType }) {
+  const descriptor = createArtifactDescriptor({
+    artifactType,
+    mimeType: mimeType ?? (artifactType === "video" ? "video/mp4" : artifactType === "thumbnail" ? "image/png" : "audio/mpeg"),
+    contentSha256: sha,
+    producer: { agentId: "agent-01", runId, stageId: "test", providerId: "test-provider" },
+    createdAt: NOW().toISOString(),
+  });
+  return {
+    ...descriptor,
+    verification: { state: "VERIFIED", inspectedBy: "ffprobe", inspectedAt: NOW().toISOString(), reasonCode: null },
+  };
+}
+
+function makeCanonicalFixtures() {
+  const narration = { stage: "audio", agentId: "agent-01", sha256: "a".repeat(64), descriptor: makeVerifiedDescriptor({ artifactType: "audio", sha: "a".repeat(64) }) };
+  const visual = { stage: "visual", agentId: "agent-01", sha256: "c".repeat(64), descriptor: makeVerifiedDescriptor({ artifactType: "image", sha: "c".repeat(64) }) };
+  const reelPackage = buildCanonicalReelPackagePlan({
+    agentId: "agent-01",
+    productionRunId: RUN_ID,
+    narrationArtifact: narration,
+    visualArtifact: visual,
+    brandIdentityKey: "channel-agent-01",
+  });
+  const reelArtifacts = [
+    { stage: "reel:content_reel_1", agentId: "agent-01", reelKey: "content_reel_1", sha256: "1".repeat(64), descriptor: makeVerifiedDescriptor({ artifactType: "video", sha: "1".repeat(64) }) },
+    { stage: "reel:content_reel_2", agentId: "agent-01", reelKey: "content_reel_2", sha256: "2".repeat(64), descriptor: makeVerifiedDescriptor({ artifactType: "video", sha: "2".repeat(64) }) },
+    { stage: "reel:brand_reel", agentId: "agent-01", reelKey: "brand_reel", sha256: "3".repeat(64), descriptor: makeVerifiedDescriptor({ artifactType: "video", sha: "3".repeat(64) }) },
+  ];
+  const assemblyArtifact = { stage: "assembly", agentId: "agent-01", sha256: "d".repeat(64), descriptor: makeVerifiedDescriptor({ artifactType: "video", sha: "d".repeat(64) }) };
+  const thumbnail = { sha256: "b".repeat(64), descriptor: makeVerifiedDescriptor({ artifactType: "image", sha: "b".repeat(64) }) };
+  const thumbnailInspection = { tool: "ffprobe", success: true, contentSha256: "b".repeat(64), format: { filename: "thumb.png", format_name: "png", size: "24" }, streams: [{ codec_type: "video", codec_name: "png" }] };
+  const canonicalManifest = buildCanonicalMediaPackageManifest({
+    release: RELEASE,
+    productionRunId: RUN_ID,
+    reelPackage,
+    assemblyArtifact,
+    reelArtifacts,
+    thumbnail,
+    thumbnailInspection,
+  });
+  return { narration, visual, reelPackage, reelArtifacts, assemblyArtifact, thumbnail, thumbnailInspection, canonicalManifest };
+}
+
+test("canonical reels: 2 independent content reels + 1 brand reel, STANDALONE_ONLY by default", () => {
+  const f = makeCanonicalFixtures();
+  assert.equal(f.reelPackage.planType, "reel_package_plan_v1");
+  assert.equal(f.reelPackage.brandIntegrationMode, "STANDALONE_ONLY", "brand integration stays owner-gated (Rule 9)");
+  assert.equal(f.reelPackage.mainVideoIntegration, null);
+  assert.equal(f.reelPackage.contentReels.length, 2);
+  assert.equal(f.reelPackage.brandReel.role, "brand_reel");
+  assert.notEqual(f.reelPackage.contentReels[0].hook, f.reelPackage.contentReels[1].hook);
+  assert.notEqual(
+    JSON.stringify(f.reelPackage.contentReels[0].segments),
+    JSON.stringify(f.reelPackage.contentReels[1].segments),
+    "genuinely distinct segment plans",
+  );
+  assert.equal(f.reelPackage.brandReel.productIdentityKey, "channel-agent-01");
+  assert.equal(f.reelPackage.contentReels[0].productIdentityKey, null);
+});
+
+test("canonical reels: copying a content reel fails closed (independence enforcement)", async () => {
+  const spec = CANONICAL_REELS[0];
+  const { createReelPlan, assertReelIndependence } = await import("../src/production/reelPlan.js");
+  const copy = createReelPlan({
+    agentId: "agent-01", productionRunId: RUN_ID, role: "content_reel",
+    hook: spec.hook, objective: spec.objective, aspectRatio: "9:16", durationSeconds: 12,
+    captionConcept: "x", segments: [{ artifactRef: `sha256:${"c".repeat(64)}`, kind: "still_image", durationSeconds: 12 }],
+    destinations: ["youtube_shorts"],
+  });
+  assert.throws(() => assertReelIndependence(copy, copy), /REEL_/);
+  void copy;
+});
+
+test("canonical reels: INTEGRATED brand mode is never constructed by the pipeline (owner gate)", () => {
+  // The pipeline-side builder only ever produces STANDALONE_ONLY; INTEGRATED
+  // requires ownerAuthorization bound to the run (Rule 9) and is constructed
+  // solely through the S-M34-01 contract with owner material.
+  assert.ok(CANONICAL_REELS.every((r) => r.role !== "integration"));
+});
+
+test("canonical S-M37 manifest binds the whole package; production-ready check passes", () => {
+  const f = makeCanonicalFixtures();
+  assert.equal(f.canonicalManifest.manifestType, "media_package_manifest_v1");
+  assert.equal(f.canonicalManifest.agentId, "agent-01");
+  assert.equal(f.canonicalManifest.mainVideo.verificationState, "VERIFIED");
+  assert.equal(f.canonicalManifest.contentReelArtifacts.length, 2);
+  assert.equal(f.canonicalManifest.brandReelArtifact.verificationState, "VERIFIED");
+  assert.equal(f.canonicalManifest.thumbnailPlans.length, 1);
+  assert.equal(f.canonicalManifest.brandIntegrationMode, "STANDALONE_ONLY");
+
+  const f2 = makeCanonicalFixtures();
+  const verdict = evaluateEpisodeQcGate({
+    release: RELEASE,
+    manifest: buildEpisodePackageManifest({
+      release: RELEASE,
+      stageInputs: STAGE_INPUTS,
+      assemblyArtifact: { ...f2.assemblyArtifact, descriptor: f2.assemblyArtifact.descriptor },
+      audioArtifact: f2.narration,
+      visualArtifact: f2.visual,
+      thumbnail: f2.thumbnail,
+      subtitleRecord: buildDocumentRecord({ kind: "subtitle", doc: { x: 1 } }),
+      metadataRecord: buildDocumentRecord({ kind: "metadata", doc: { x: 2 } }),
+    }),
+    manifestRecord: null,
+    recordedArtifacts: [...f2.reelArtifacts, f2.assemblyArtifact, f2.narration, f2.visual],
+    canonicalManifest: f2.canonicalManifest,
+    now: NOW,
+  });
+  assert.equal(verdict.verdict, "approved");
+  assert.ok(verdict.checks.some((c) => c.check === "CANONICAL_PACKAGE_READY" && c.passed === true));
+});
+
+test("canonical QC rejects an unverified reel binding through the S-M37 production-ready gate", () => {
+  const f = makeCanonicalFixtures();
+  const unverifiedReel = {
+    ...f.reelArtifacts[0],
+    descriptor: {
+      ...f.reelArtifacts[0].descriptor,
+      verification: { state: "UNVERIFIED", inspectedBy: null, inspectedAt: null, reasonCode: "NO_INSPECTION_RESULT" },
+    },
+  };
+  const tamperedManifest = buildCanonicalMediaPackageManifest({
+    release: RELEASE,
+    productionRunId: RUN_ID,
+    reelPackage: f.reelPackage,
+    assemblyArtifact: f.assemblyArtifact,
+    reelArtifacts: [unverifiedReel, f.reelArtifacts[1], f.reelArtifacts[2]],
+    thumbnail: f.thumbnail,
+    thumbnailInspection: f.thumbnailInspection,
+  });
+  const verdict = evaluateEpisodeQcGate({
+    release: RELEASE,
+    manifest: buildEpisodePackageManifest({
+      release: RELEASE,
+      stageInputs: STAGE_INPUTS,
+      assemblyArtifact: f.assemblyArtifact,
+      audioArtifact: f.narration,
+      visualArtifact: f.visual,
+      thumbnail: f.thumbnail,
+      subtitleRecord: buildDocumentRecord({ kind: "subtitle", doc: { x: 1 } }),
+      metadataRecord: buildDocumentRecord({ kind: "metadata", doc: { x: 2 } }),
+    }),
+    manifestRecord: null,
+    recordedArtifacts: [unverifiedReel, ...f.reelArtifacts.slice(1), f.assemblyArtifact, f.narration, f.visual],
+    canonicalManifest: tamperedManifest,
+    now: NOW,
+  });
+  assert.equal(verdict.verdict, "rejected");
+  assert.equal(verdict.reasonCode, "MEDIA_STATUS_NOT_VERIFIED");
+});
+
+test("canonical manifest refuses cross-Director descriptors (isolation) and foreign runs", () => {
+  const f = makeCanonicalFixtures();
+  const foreignReel = { ...f.reelArtifacts[0], descriptor: makeVerifiedDescriptor({ artifactType: "video", sha: "1".repeat(64), runId: RUN_ID }) };
+  foreignReel.descriptor = {
+    ...foreignReel.descriptor,
+    producer: { ...foreignReel.descriptor.producer, agentId: "agent-02" },
+  };
+  assert.throws(
+    () => buildCanonicalMediaPackageManifest({
+      release: RELEASE,
+      productionRunId: RUN_ID,
+      reelPackage: f.reelPackage,
+      assemblyArtifact: f.assemblyArtifact,
+      reelArtifacts: [foreignReel, f.reelArtifacts[1], f.reelArtifacts[2]],
+      thumbnail: f.thumbnail,
+      thumbnailInspection: f.thumbnailInspection,
+    }),
+    /MANIFEST_ARTIFACT_CROSS_DIRECTOR/,
+  );
+  const foreignRun = { ...f.reelArtifacts[0], descriptor: makeVerifiedDescriptor({ artifactType: "video", sha: "1".repeat(64), runId: "episode-forei00" }) };
+  assert.throws(
+    () => buildCanonicalMediaPackageManifest({
+      release: RELEASE,
+      productionRunId: RUN_ID,
+      reelPackage: f.reelPackage,
+      assemblyArtifact: f.assemblyArtifact,
+      reelArtifacts: [foreignRun, f.reelArtifacts[1], f.reelArtifacts[2]],
+      thumbnail: f.thumbnail,
+      thumbnailInspection: f.thumbnailInspection,
+    }),
+    /MANIFEST_ARTIFACT_RUN_MISMATCH/,
+  );
+});
+
+test("short-form assembly plans carry the short-form QC window per canonical reel", () => {
+  const f = makeCanonicalFixtures();
+  const plans = buildReelAssemblyPlans({
+    reelPackage: f.reelPackage,
+    narrationArtifact: f.narration,
+    visualArtifact: f.visual,
+    paths: { episode: "/stph/media/episodes" },
+    productionRunId: RUN_ID,
+  });
+  assert.equal(plans.length, 3);
+  for (const entry of plans) {
+    assert.ok(["content_reel_1", "content_reel_2", "brand_reel"].includes(entry.plan.outputTarget), "short-form output target drives the 5–180 s QC gate");
+    assert.equal(entry.plan.aspectRatio, "9:16");
+    const planned = entry.plan.segments.filter((s) => s.kind === "still_image").reduce((sum, s) => sum + s.durationSeconds, 0);
+    assert.ok(planned >= 5 && planned <= 180, `planned duration ${planned}s inside the short-form window`);
+  }
+  assert.notEqual(plans[0].plan.id, plans[1].plan.id, "per-reel plans are distinct canonical plans");
 });

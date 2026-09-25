@@ -35,6 +35,8 @@ const STAGE_KINDS = Object.freeze({
   thumbnail: { kind: "image", label: "episode_thumbnail" },
   packaging: { kind: "metadata", label: "episode_manifest" },
   qc: { kind: "metadata", label: "qc_verdict" },
+  // Canonical short-form stage (Issue #189): 2 content Reels + 1 brand Reel.
+  reels: { kind: "video", label: "canonical_reels" },
 });
 
 /**
@@ -519,6 +521,14 @@ export async function runEpisodePipelineWithExecutors({
   const executorStages = ["audio", "visual", "assembly"];
   const recordedByStage = new Map();
 
+  /**
+   * ONE production run identity for the entire pipeline pass (Issue #189):
+   * every executor descriptor of this run carries producer.runId = this
+   * value, so the S-M37 manifest's run-scope check binds coherently and a
+   * resumed run stays idempotent.
+   */
+  const productionRunId = `episode-${String(releaseId).slice(0, 8)}`;
+
   /** Descriptor bindings for the assembly stage: sha256:… → {descriptor, path}. */
   const artifactBindings = () => {
     const bindings = {};
@@ -546,6 +556,7 @@ export async function runEpisodePipelineWithExecutors({
           ...runnerArgs,
           recordedArtifacts: Object.freeze([...recordedByStage.values()]),
           artifactBindings: Object.freeze(artifactBindings()),
+          productionRunId,
         }),
       });
     } catch (error) {
@@ -637,6 +648,94 @@ export async function runEpisodePipelineWithExecutors({
   }
 
   // ---------------------------------------------------------------------
+  // Reels stage (Issue #189): canonical short-form package — 2 INDEPENDENT
+  // content Reels + 1 standalone brand Reel (S-M34-01 plans, built per-
+  // Director by the runner; each executed by the REAL FFmpeg executor and
+  // bridge-recorded as video artifacts with short-form duration QC).
+  // ---------------------------------------------------------------------
+  const { evaluateExecutorArtifact: evaluateReelArtifact, recordExecutorArtifact: recordReelArtifact } = await import("./executorIntegration.js");
+
+  await production.recordPipelineEvent({ releaseId, ownerId, stage: "reels", status: "started" });
+  let reelPackage = null;
+  try {
+    const init = await executorRunner({
+      release,
+      stage: "reels:init",
+      stageInputs,
+      agentId: release.agentId,
+      recordedArtifacts: Object.freeze([...recordedByStage.values()]),
+      artifactBindings: Object.freeze(artifactBindings()),
+      productionRunId,
+    });
+    reelPackage = init.reelPackage;
+    for (const entry of init.reelPlans) {
+      const executorResult = await executorRunner({
+        release,
+        stage: "reels",
+        stageInputs,
+        agentId: release.agentId,
+        reelPlan: entry,
+        recordedArtifacts: Object.freeze([...recordedByStage.values()]),
+        artifactBindings: Object.freeze(artifactBindings()),
+        productionRunId,
+      });
+      // Waiting/failure are truthful, not stage crashes: each plan is one
+      // genuine short-form render; a wait re-plans the release durably.
+      if (executorResult.quotaState === "WAITING_FOR_QUOTA") {
+        const code = executorResult.failureCode ?? "QUOTA_EXHAUSTED";
+        await production.recordPipelineEvent({ releaseId, ownerId, stage: "reels", status: "failed", detail: { waiting: true, errorCode: code, reel: entry.key } });
+        await production.updateReleaseStatus(ownerId, releaseId, "planned");
+        await markJobWaiting(jobs, release.jobId, code);
+        return { releaseId, status: "planned", waited: true, waitingStage: "reels", waitingCode: code, artifacts };
+      }
+      const verdict = evaluateReelArtifact({ stage: "assembly", release, executorResult });
+      if (verdict.waiting === true) {
+        await production.updateReleaseStatus(ownerId, releaseId, "planned");
+        await markJobWaiting(jobs, release.jobId, verdict.failureCode ?? "QUOTA_EXHAUSTED");
+        return { releaseId, status: "planned", waited: true, waitingStage: "reels", waitingCode: verdict.failureCode ?? "QUOTA_EXHAUSTED", artifacts };
+      }
+      if (verdict.verified !== true) {
+        // A reel that misses its REAL short-form duration QC (5–180 s) is a
+        // truthful rework condition (§5): the release re-plans; earlier
+        // stages stay recorded.
+        await recordStageFailure(production, evidenceLedger, { ownerId, releaseId, stage: "reels", errorCode: String(verdict.failureCode ?? "REELS_MEDIA_REJECTED").slice(0, 120) });
+        await production.updateReleaseStatus(ownerId, releaseId, "planned");
+        await markJobFailed(jobs, release.jobId, verdict.failureCode ?? "REELS_MEDIA_REJECTED");
+        return { releaseId, status: "planned", failedStage: "reels", failureCode: verdict.failureCode, reel: entry.key, artifacts };
+      }
+      const storedReel = await recordReelArtifact({ releaseId, ownerId, production, stage: "reels", verdict });
+      if (storedReel !== null) artifacts.push(storedReel);
+      recordedByStage.set(`reel:${entry.key}`, {
+        stage: `reel:${entry.key}`,
+        agentId: release.agentId,
+        sha256: verdict.sha256,
+        descriptor: verdict.descriptor,
+        storagePath: typeof executorResult.outputPath === "string" ? executorResult.outputPath : null,
+        reelKey: entry.key,
+      });
+      await production.recordPipelineEvent({
+        releaseId, ownerId, stage: "reels", status: "succeeded",
+        detail: { reel: entry.key, sha256: verdict.sha256, generationMode: verdict.generationMode },
+      });
+    }
+  } catch (error) {
+    await recordStageFailure(production, evidenceLedger, {
+      ownerId, releaseId, stage: "reels",
+      errorCode: String(error?.code ?? error?.message ?? "REELS_STAGE_FAILED").slice(0, 120),
+    });
+    await production.updateReleaseStatus(ownerId, releaseId, "planned");
+    throw error;
+  }
+  if (evidenceLedger) {
+    await evidenceLedger.append({
+      subjectId: releaseId,
+      kind: "pipeline_stage_succeeded",
+      classification: "real_executor_generation",
+      payload: { stage: "reels", reels: 3 },
+    });
+  }
+
+  // ---------------------------------------------------------------------
   // Packaging stage (Issue #185): thumbnail media (runner-driven, bridge-
   // recorded), subtitle + metadata documents, and the episode package
   // manifest binding the release's OWN recorded artifacts.
@@ -650,10 +749,12 @@ export async function runEpisodePipelineWithExecutors({
       release,
       stageInputs,
       recordedArtifacts: Object.freeze([...recordedByStage.values()]),
+      reelPackage,
       runner: (runnerArgs) => executorRunner({
         ...runnerArgs,
         recordedArtifacts: Object.freeze([...recordedByStage.values()]),
         artifactBindings: Object.freeze(artifactBindings()),
+        productionRunId,
       }),
     });
   } catch (error) {
@@ -720,6 +821,9 @@ export async function runEpisodePipelineWithExecutors({
     ["subtitle", packaging.documents.subtitle],
     ["metadata", packaging.documents.metadata],
     ["manifest", packaging.documents.manifest],
+    ...(packaging.documents.canonicalManifest
+      ? [["canonical_manifest", packaging.documents.canonicalManifest]]
+      : []),
   ];
   for (const [docKind, record] of documentRecords) {
     const storedDoc = await production.recordArtifact({
@@ -763,6 +867,7 @@ export async function runEpisodePipelineWithExecutors({
   // ---------------------------------------------------------------------
   await production.recordPipelineEvent({ releaseId, ownerId, stage: "qc", status: "started" });
   let runnerChecks = [];
+  const canonicalManifest = packaging.canonicalManifest ?? null;
   try {
     const qcChecks = await executorRunner({
       release,
@@ -772,6 +877,7 @@ export async function runEpisodePipelineWithExecutors({
       manifest: packaging.manifest,
       recordedArtifacts: Object.freeze([...recordedByStage.values()]),
       artifactBindings: Object.freeze(artifactBindings()),
+      productionRunId,
     });
     if (Array.isArray(qcChecks)) runnerChecks = qcChecks;
   } catch {
@@ -787,6 +893,7 @@ export async function runEpisodePipelineWithExecutors({
       subtitle: packaging.documents.subtitle.content,
       metadata: packaging.documents.metadata.content,
     },
+    canonicalManifest,
     runnerChecks,
   });
 

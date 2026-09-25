@@ -43,6 +43,7 @@ import {
 } from "../media/visualAdapter.js";
 import { executeVisualGeneration } from "../media/visualExecutor.js";
 import { executeAssemblyPlan, resolvePlanInputs, buildRenderPlan } from "../media/ffmpegAssemblyExecutor.js";
+import { buildCanonicalReelPackagePlan, buildReelAssemblyPlans } from "./reelsStage.js";
 import {
   createAssemblyPlan,
   verifyAssemblyPlanIntegrity,
@@ -183,13 +184,44 @@ export function bindProductionRunner(binding = {}) {
       throw runnerError("RUNNER_AGENT_MISMATCH");
     }
 
+    // ONE run identity per pipeline pass: the pipeline supplies it, every
+    // executor descriptor of this run carries producer.runId = this value
+    // (S-M37 run-scope binding), falling back to the release-derived id.
+    const releaseKey = typeof release.id === "string" ? release.id.slice(0, 8) : "release";
+    const productionRunId = typeof request.productionRunId === "string" && request.productionRunId.length > 0
+      ? request.productionRunId
+      : `${paths.runPrefix}-${releaseKey}`;
+
     // The QC stage consumes the runner's optional policy checks.
     if (stage === "qc") {
       return deepFreeze([...(binding.qcChecks ?? [])]);
     }
 
-    const releaseKey = typeof release.id === "string" ? release.id.slice(0, 8) : "release";
-    const productionRunId = `${paths.runPrefix}-${releaseKey}`;
+    // The reels stage builds its canonical plans through the runner-side
+    // module (per-Director, release-scoped) and invokes the runner once per
+    // reel assembly plan.
+    if (stage === "reels:init") {
+      const narration = (request.recordedArtifacts ?? []).find((a) => a.stage === "audio");
+      const visual = (request.recordedArtifacts ?? []).find((a) => a.stage === "visual");
+      if (!narration?.sha256 || !visual?.sha256) {
+        throw runnerError("RUNNER_REQUEST_INVALID");
+      }
+      const reelPackage = buildCanonicalReelPackagePlan({
+        agentId,
+        productionRunId,
+        narrationArtifact: narration,
+        visualArtifact: visual,
+        brandIdentityKey: binding.brandIdentityKey ?? `channel-${agentId}`,
+      });
+      const reelPlans = buildReelAssemblyPlans({
+        reelPackage,
+        narrationArtifact: narration,
+        visualArtifact: visual,
+        paths,
+        productionRunId,
+      });
+      return deepFreeze({ reelPackage, reelPlans });
+    }
 
     if (stage === "audio") {
       const voiceProfile = binding.tts?.profile ?? createVoiceProfile({
@@ -260,8 +292,8 @@ export function bindProductionRunner(binding = {}) {
       });
     }
 
-    if (stage === "assembly") {
-      // Assembly consumes the release's OWN verified artifacts (bridge-
+    if (stage === "assembly" || stage === "reels") {
+      // Assembly/reels consume the release's OWN verified artifacts (bridge-
       // recorded in the audio/visual stages of THIS pipeline run).
       const narration = (request.recordedArtifacts ?? []).find((a) => a.stage === "audio");
       const visual = (request.recordedArtifacts ?? []).find((a) => a.stage === "visual");
@@ -270,15 +302,28 @@ export function bindProductionRunner(binding = {}) {
       }
       let plan;
       let renderPlan;
+      let outputPath;
       try {
-        plan = buildLongformAssemblyPlan({
-          agentId,
-          productionRunId,
-          narrationArtifact: narration,
-          visualArtifact: visual,
-        });
+        if (stage === "assembly") {
+          plan = buildLongformAssemblyPlan({
+            agentId,
+            productionRunId,
+            narrationArtifact: narration,
+            visualArtifact: visual,
+          });
+          outputPath = `${paths.episode}/${productionRunId}.mp4`;
+        } else {
+          // Canonical short-form package (Issue #189): one pre-built reel
+          // assembly plan per invocation (content_reel_1/2, brand_reel).
+          const reelPlan = request.reelPlan;
+          if (!isPlainObject(reelPlan) || !isPlainObject(reelPlan.plan) || typeof reelPlan.outputPath !== "string") {
+            throw runnerError("RUNNER_REQUEST_INVALID");
+          }
+          plan = reelPlan.plan;
+          outputPath = reelPlan.outputPath;
+        }
         const resolved = resolvePlanInputs(plan, artifactBindings ?? {});
-        renderPlan = buildRenderPlan(plan, resolved, `${paths.episode}/${productionRunId}.mp4`);
+        renderPlan = buildRenderPlan(plan, resolved, outputPath);
       } catch (err) {
         // Unresolvable bindings or unbuildable plans are honest failures —
         // the pipeline records the stage failure with this stable code.
@@ -293,7 +338,7 @@ export function bindProductionRunner(binding = {}) {
       }
       return executeAssemblyPlan(plan, {
         artifactBindings: artifactBindings ?? {},
-        outputPath: `${paths.episode}/${productionRunId}.mp4`,
+        outputPath,
         spawnImpl: binding.spawnImpl,
         readFileImpl: binding.readFileImpl,
         now: binding.now,

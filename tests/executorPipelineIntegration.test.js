@@ -21,6 +21,11 @@ const NOW = () => new Date("2026-09-25T10:00:00.000Z");
 const NARRATION_BYTES = Buffer.from("fake-mp3-pipeline-bytes");
 const FRAME_BYTES = Buffer.from("fake-png-pipeline-bytes");
 const EPISODE_BYTES = Buffer.from("fake-mp4-pipeline-bytes");
+const REEL_BYTES = {
+  content_reel_1: Buffer.from("fake-reel-c1-bytes"),
+  content_reel_2: Buffer.from("fake-reel-c2-bytes"),
+  brand_reel: Buffer.from("fake-reel-brand-bytes"),
+};
 
 function sha256(buf) {
   return createHash("sha256").update(buf).digest("hex");
@@ -37,11 +42,14 @@ function makeSpawn() {
     if (command === "ffprobe") {
       if (args[0] === "-version") return { exitCode: 0, stdout: "ffprobe version 7.0", stderr: "", timedOut: false };
       const target = args[args.length - 1];
+      const reelKey = Object.keys(REEL_BYTES).find((key) => target.includes(key));
       const payload = target.endsWith(".mp3")
         ? makeFfprobePayload({ bytes: NARRATION_BYTES, formatName: "mp3", codecType: "audio", extraStream: { codec_name: "mp3", sample_rate: "24000" } })
         : target.endsWith(".png")
           ? makeFfprobePayload({ bytes: FRAME_BYTES, formatName: "png", codecType: "video", extraStream: { codec_name: "png", width: 1920, height: 1080 } })
-          : makeFfprobePayload({ bytes: EPISODE_BYTES, formatName: "mp4", codecType: "video", extraStream: { codec_name: "h264", width: 1920, height: 1080 }, durationSeconds: 1890 });
+          : reelKey
+            ? makeFfprobePayload({ bytes: REEL_BYTES[reelKey], formatName: "mp4", codecType: "video", extraStream: { codec_name: "h264", width: 1080, height: 1920 }, durationSeconds: 12 })
+            : makeFfprobePayload({ bytes: EPISODE_BYTES, formatName: "mp4", codecType: "video", extraStream: { codec_name: "h264", width: 1920, height: 1080 }, durationSeconds: 1890 });
       return { exitCode: 0, stdout: JSON.stringify(payload), stderr: "", timedOut: false };
     }
     return { exitCode: 0, stdout: "", stderr: "written", timedOut: false };
@@ -56,6 +64,10 @@ function makeFiles() {
   files.set("/run/thumbnail.png", FRAME_BYTES);
   return async (path) => {
     if (files.has(path)) return files.get(path);
+    // Reel renders are keyed by the canonical reel identity in the path
+    // (release-id-keyed names make exact paths unpredictable).
+    const reelKey = Object.keys(REEL_BYTES).find((key) => path.includes(key));
+    if (reelKey) return REEL_BYTES[reelKey];
     throw new Error("ENOENT");
   };
 }
@@ -91,7 +103,7 @@ function makeRunner({ overrides = {} } = {}) {
     },
   };
 
-  return async ({ stage, agentId, artifactBindings }) => {
+  return async ({ stage, agentId, artifactBindings, recordedArtifacts: requestRecorded, reelPlan, release: runnerRelease, productionRunId = "episode-runner" }) => {
     if (overrides.before) await overrides.before({ stage, agentId });
     if (agentId !== "agent-01") throw new Error(`ISOLATION: runner invoked for foreign Director ${agentId}`);
 
@@ -106,7 +118,7 @@ function makeRunner({ overrides = {} } = {}) {
         spawnImpl: makeSpawn(),
         readFileImpl: makeFiles(),
         now: NOW,
-        productionRunId: "run-183",
+        productionRunId,
         ...override.args,
       });
     }
@@ -136,7 +148,7 @@ function makeRunner({ overrides = {} } = {}) {
         spawnImpl: makeSpawn(),
         readFileImpl: makeFiles(),
         now: NOW,
-        productionRunId: "run-183",
+        productionRunId,
       });
     }
 
@@ -149,7 +161,7 @@ function makeRunner({ overrides = {} } = {}) {
       }
       const plan = createAssemblyPlan({
         agentId: "agent-01",
-        productionRunId: "run-183",
+        productionRunId,
         outputTarget: "main_longform",
         aspectRatio: "16:9",
         segments: [
@@ -160,6 +172,44 @@ function makeRunner({ overrides = {} } = {}) {
       return executeAssemblyPlan(plan, {
         artifactBindings,
         outputPath: "/run/episode.mp4",
+        spawnImpl: makeSpawn(),
+        readFileImpl: makeFiles(),
+        now: NOW,
+        skipPreflight: false,
+      });
+    }
+
+    if (stage === "reels:init") {
+      // The production runner builds the canonical plans per-Director with
+      // the pipeline's unified run identity.
+      const { buildCanonicalReelPackagePlan, buildReelAssemblyPlans } = await import("../src/pipeline/reelsStage.js");
+      const narration = (requestRecorded ?? []).find((a) => a.stage === "audio");
+      const visual = (requestRecorded ?? []).find((a) => a.stage === "visual");
+      const reelPackage = buildCanonicalReelPackagePlan({
+        agentId,
+        productionRunId,
+        narrationArtifact: narration,
+        visualArtifact: visual,
+        brandIdentityKey: `channel-${agentId}`,
+      });
+      return {
+        reelPackage,
+        reelPlans: buildReelAssemblyPlans({
+          reelPackage,
+          narrationArtifact: narration,
+          visualArtifact: visual,
+          paths: { episode: "/run/reels", runPrefix: "episode" },
+          productionRunId,
+        }),
+      };
+    }
+
+    if (stage === "reels") {
+      const { executeAssemblyPlan } = await import("../src/media/ffmpegAssemblyExecutor.js");
+      const plan = reelPlan.plan;
+      return executeAssemblyPlan(plan, {
+        artifactBindings,
+        outputPath: reelPlan.outputPath,
         spawnImpl: makeSpawn(),
         readFileImpl: makeFiles(),
         now: NOW,
@@ -197,7 +247,7 @@ function makeRunner({ overrides = {} } = {}) {
         spawnImpl: makeSpawn(),
         readFileImpl: makeFiles(),
         now: NOW,
-        productionRunId: "run-183",
+        productionRunId,
       });
     }
 
@@ -408,9 +458,10 @@ test("runner is always invoked with the release's OWN Director binding", async (
     executorRunner: makeRunner({ overrides: { before: ({ agentId }) => { seenAgents.push(agentId); } } }),
   });
   assert.equal(result.status, "review");
-  // audio, visual, assembly, packaging (thumbnail), qc — every stage gets
-  // exactly the release's own Director binding.
-  assert.deepEqual(seenAgents, ["agent-01", "agent-01", "agent-01", "agent-01", "agent-01"], "every stage invoked with release.agentId only");
+  // audio, visual, assembly, reels:init + 3 reel renders, packaging
+  // (thumbnail), qc — every invocation gets the release's own binding.
+  assert.ok(seenAgents.length === 9, `runner invoked once per stage (${seenAgents.length})`);
+  assert.ok(seenAgents.every((agent) => agent === "agent-01"), "every stage invoked with release.agentId only");
 });
 
 // ---------------------------------------------------------------------------
