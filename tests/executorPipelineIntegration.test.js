@@ -53,6 +53,7 @@ function makeFiles() {
   files.set("/run/narration.mp3", NARRATION_BYTES);
   files.set("/run/frame.png", FRAME_BYTES);
   files.set("/run/episode.mp4", EPISODE_BYTES);
+  files.set("/run/thumbnail.png", FRAME_BYTES);
   return async (path) => {
     if (files.has(path)) return files.get(path);
     throw new Error("ENOENT");
@@ -164,6 +165,44 @@ function makeRunner({ overrides = {} } = {}) {
         now: NOW,
         skipPreflight: false,
       });
+    }
+
+    if (stage === "packaging") {
+      const thumbOverride = overrides.packagingThumbnail ?? {};
+      if (thumbOverride.noProvider) {
+        return { success: false, descriptor: null, inspection: null, outcome: null, quotaState: "WAITING_FOR_QUOTA", mediaStatus: "unverified", generationMode: "not_evidenced", failureCode: "QUOTA_EXHAUSTED" };
+      }
+      // Thumbnail media through the same visual chain (bridge-verified).
+      const { executeVisualGeneration } = await import("../src/media/visualExecutor.js");
+      const request = createVisualGenerationRequest({
+        styleProfile,
+        modality: "image",
+        provider: { providerId: "pollinations", providerRole: "approved_free_primary", modelIdentifier: "flux" },
+        scenePlanRef: "sceneplan-183#thumbnail",
+      });
+      return executeVisualGeneration(styleProfile, {
+        request,
+        prompt: "episode thumbnail key art, bold title composition",
+        outputPath: "/run/thumbnail.png",
+        registry: {
+          pollinations: {
+            declared: {
+              capabilitiesType: "visual_provider_capabilities_v1", adapterId: "visual-pollinations",
+              modalities: ["image", "still_acquisition"], aspectRatios: ["16:9", "9:16", "1:1", "4:5"],
+              maxClipSeconds: null, supportsCharacterContinuity: false, capabilitiesId: "seed",
+            },
+            quotaExhausted: false, modelIdentifier: "flux",
+          },
+        },
+        spawnImpl: makeSpawn(),
+        readFileImpl: makeFiles(),
+        now: NOW,
+        productionRunId: "run-183",
+      });
+    }
+
+    if (stage === "qc") {
+      return overrides.qcChecks ?? [{ name: "duration_policy", passed: true }];
     }
 
     throw new Error(`UNKNOWN RUNNER STAGE ${stage}`);
@@ -369,12 +408,70 @@ test("runner is always invoked with the release's OWN Director binding", async (
     executorRunner: makeRunner({ overrides: { before: ({ agentId }) => { seenAgents.push(agentId); } } }),
   });
   assert.equal(result.status, "review");
-  assert.deepEqual(seenAgents, ["agent-01", "agent-01", "agent-01"], "every executor stage invoked with release.agentId only");
+  // audio, visual, assembly, packaging (thumbnail), qc — every stage gets
+  // exactly the release's own Director binding.
+  assert.deepEqual(seenAgents, ["agent-01", "agent-01", "agent-01", "agent-01", "agent-01"], "every stage invoked with release.agentId only");
 });
 
 // ---------------------------------------------------------------------------
 // Integration surface units
 // ---------------------------------------------------------------------------
+
+test("QC gate needs_human lands the release in review with the verdict recorded", async () => {
+  const { production, ownerId, release } = await buildHarness();
+  const result = await runEpisodePipeline({
+    ownerId, releaseId: release.id, release, production,
+    jobs: { updateStatus: async () => {} },
+    executorRunner: makeRunner({ overrides: { qcChecks: [{ name: "brand_visibility_audit", requiresHuman: true }] } }),
+  });
+  assert.equal(result.status, "review", "needs_human is durable: the owner gate holds the release");
+  assert.equal(result.qcVerdict.verdict, "needs_human");
+  assert.equal(result.qcVerdict.decidedBy, "automated");
+  assert.equal(result.qcVerdict.reasonCode, "QC_HUMAN_REVIEW_REQUIRED");
+  const updated = await production.getRelease(ownerId, release.id);
+  assert.equal(updated.status, "review");
+  // The verdict was recorded content-addressed as evidence.
+  const artifacts = await production.listArtifactsForRelease(ownerId, release.id);
+  assert.ok(artifacts.some((a) => a.stage === "qc"), "QC verdict artifact recorded");
+  assert.ok(artifacts.some((a) => a.stage === "packaging"), "packaging artifacts recorded");
+});
+
+test("QC gate rejection is a truthful stage failure with release re-planned", async () => {
+  const { production, ownerId, release } = await buildHarness();
+  const jobUpdates = [];
+  const result = await runEpisodePipeline({
+    ownerId, releaseId: release.id, release, production,
+    jobs: { updateStatus: async (id, status, detail) => { jobUpdates.push({ id, status, detail }); } },
+    executorRunner: makeRunner({ overrides: { qcChecks: [{ name: "duration_policy", passed: false, reason: "QC_DURATION_OUT_OF_RANGE" }] } }),
+  });
+  assert.equal(result.status, "planned");
+  assert.equal(result.failedStage, "qc");
+  assert.equal(result.failureCode, "QC_DURATION_OUT_OF_RANGE");
+  const updated = await production.getRelease(ownerId, release.id);
+  assert.equal(updated.status, "planned");
+  assert.equal(jobUpdates[0].status, "failed");
+  const events = await production.listPipelineEvents(ownerId, release.id);
+  assert.ok(events.some((e) => e.stage === "qc" && e.status === "failed"));
+});
+
+test("packaging thumbnail quota wait is a durable wait, release re-planned", async () => {
+  const { production, ownerId, release } = await buildHarness();
+  const result = await runEpisodePipeline({
+    ownerId, releaseId: release.id, release, production,
+    jobs: { updateStatus: async () => {} },
+    executorRunner: makeRunner({ overrides: { packagingThumbnail: { noProvider: true } } }),
+  });
+  assert.equal(result.status, "planned");
+  assert.equal(result.waited, true);
+  assert.equal(result.waitingStage, "packaging");
+  assert.equal(result.waitingCode, "QUOTA_EXHAUSTED");
+  const updated = await production.getRelease(ownerId, release.id);
+  assert.equal(updated.status, "planned");
+  const artifacts = await production.listArtifactsForRelease(ownerId, release.id);
+  // audio/visual/assembly stay recorded; no thumbnail/manifest fabricated.
+  assert.ok(artifacts.some((a) => a.stage === "assembly"));
+  assert.equal(artifacts.find((a) => a.stage === "qc"), undefined);
+});
 
 test("classifyExecutorWait fails closed: unknown codes are failures, not waits", () => {
   assert.deepEqual(classifyExecutorWait({ quotaState: "WAITING_FOR_QUOTA", failureCode: "QUOTA_EXHAUSTED" }), { waiting: true, failureCode: "QUOTA_EXHAUSTED" });
