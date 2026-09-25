@@ -51,6 +51,11 @@ This is a clean, ST-owned secure foundation for consolidating the strongest idea
   - Real tamper detection: a substituted on-disk file fails the descriptor hash check (`INSPECTION_HASH_MISMATCH`) even when ffprobe succeeds on it.
   - Honest failure matrix — absent binary, timeout, non-zero exit, unparseable/empty output all yield truthful failure codes; the descriptor stays `UNVERIFIED` (`ffprobe_verified:false`). Nothing is fabricated.
 
+- **FFmpeg Assembly Executor (validated plan → real media processing)**:
+  - Callable boundary from `media_assembly_plan_v1` to actual rendering: plan-integrity gate → artifactRefs resolved ONLY through descriptor bindings (`sha256:` ↔ content hash) → FFmpeg argv built as frozen ARRAY ARGS (no shell, paths validated, output path last) → injectable spawn → post-render re-probe of the rendered bytes → QC duration gate.
+  - QC duration policy enforced on the REAL post-render inspection: `main_longform` inside [1800, 3000] s via the S-M33-01 gate; short-form reels inside [3, 90] s via the new short-form gate — claimed-vs-measured conflicts and missing durations fail closed.
+  - Honest outcomes only: absent ffmpeg, timeout, non-zero exit, unreadable render, or out-of-window duration each produce a stable failure code; success requires real execution + a matching-hash inspection of the rendered file + a passing QC gate. Approximations (e.g. `wipe` rendered as fade) are labeled degradations, never silent.
+
 - **Hermes Manager Layer (decision authority without secret access)**:
   - Frozen authority matrix: autonomous production/scheduling/provider decisions; owner-policy-controlled publishing/deletion/spending; structurally prohibited secret access, control disabling, and ledger modification. Unknown actions fail closed; refusals are recorded as audit evidence.
   - Append-only, auditable decision history with honest outcomes — `EXECUTED` only with a ledger-verified evidence receipt; completions supersede, never mutate.
