@@ -600,6 +600,8 @@ export async function runEpisodePipelineWithExecutors({
     }
     if (stored !== null) artifacts.push(stored);
     recordedByStage.set(stage, {
+      stage,
+      agentId: release.agentId,
       sha256: outcome.verdict.sha256,
       storagePath: typeof outcome.executorResult?.outputPath === "string" ? outcome.executorResult.outputPath : null,
       descriptor: outcome.verdict.descriptor ?? null,
@@ -627,6 +629,207 @@ export async function runEpisodePipelineWithExecutors({
     }
   }
 
+  // ---------------------------------------------------------------------
+  // Packaging stage (Issue #185): thumbnail media (runner-driven, bridge-
+  // recorded), subtitle + metadata documents, and the episode package
+  // manifest binding the release's OWN recorded artifacts.
+  // ---------------------------------------------------------------------
+  const { runPackagingStage, evaluateEpisodeQcGate, recordHumanQcDecision } = await import("./packagingQc.js");
+
+  await production.recordPipelineEvent({ releaseId, ownerId, stage: "packaging", status: "started" });
+  let packaging;
+  try {
+    packaging = await runPackagingStage({
+      release,
+      stageInputs,
+      recordedArtifacts: Object.freeze([...recordedByStage.values()]),
+      runner: (runnerArgs) => executorRunner({
+        ...runnerArgs,
+        recordedArtifacts: Object.freeze([...recordedByStage.values()]),
+        artifactBindings: Object.freeze(artifactBindings()),
+      }),
+    });
+  } catch (error) {
+    await recordStageFailure(production, evidenceLedger, {
+      ownerId, releaseId, stage: "packaging",
+      errorCode: String(error?.code ?? error?.message ?? "PACKAGING_FAILED").slice(0, 120),
+    });
+    await production.updateReleaseStatus(ownerId, releaseId, "planned");
+    throw error;
+  }
+
+  if (packaging.status === "waiting") {
+    const code = packaging.failureCode ?? "QUOTA_EXHAUSTED";
+    await production.recordPipelineEvent({
+      releaseId, ownerId, stage: "packaging", status: "failed",
+      detail: { waiting: true, quotaState: "WAITING_FOR_QUOTA", errorCode: code },
+    });
+    if (evidenceLedger) {
+      await evidenceLedger.append({
+        subjectId: releaseId,
+        kind: "pipeline_stage_waiting",
+        classification: "executor_waiting_for_quota",
+        payload: { stage: "packaging", errorCode: code },
+      });
+    }
+    await production.updateReleaseStatus(ownerId, releaseId, "planned");
+    await markJobWaiting(jobs, release.jobId, code);
+    log(`packaging waiting: ${code}`);
+    return { releaseId, status: "planned", waited: true, waitingStage: "packaging", waitingCode: code, artifacts };
+  }
+
+  if (packaging.status === "failed") {
+    await recordStageFailure(production, evidenceLedger, {
+      ownerId, releaseId, stage: "packaging",
+      errorCode: String(packaging.failureCode ?? "PACKAGING_FAILED").slice(0, 120),
+    });
+    await production.updateReleaseStatus(ownerId, releaseId, "planned");
+    await markJobFailed(jobs, release.jobId, packaging.failureCode ?? "PACKAGING_FAILED");
+    log(`packaging failed: ${packaging.failureCode}`);
+    return { releaseId, status: "planned", failedStage: "packaging", failureCode: packaging.failureCode, artifacts };
+  }
+
+  // Record the verified thumbnail media through the #182 bridge (image kind).
+  const thumbnailStored = await recordExecutorArtifact({
+    releaseId,
+    ownerId,
+    production,
+    stage: "visual",
+    verdict: packaging.thumbnailVerdict,
+  });
+  if (thumbnailStored !== null) artifacts.push(thumbnailStored);
+  recordedByStage.set("thumbnail", {
+    stage: "thumbnail",
+    agentId: release.agentId,
+    sha256: packaging.thumbnailVerdict.sha256,
+    descriptor: packaging.thumbnailVerdict.descriptor,
+    storagePath: typeof packaging.executorResult?.outputPath === "string" ? packaging.executorResult.outputPath : null,
+  });
+
+  // Record the deterministic documents content-addressed (idempotent).
+  const documentRecords = [
+    ["subtitle", packaging.documents.subtitle],
+    ["metadata", packaging.documents.metadata],
+    ["manifest", packaging.documents.manifest],
+  ];
+  for (const [docKind, record] of documentRecords) {
+    const storedDoc = await production.recordArtifact({
+      releaseId,
+      ownerId,
+      kind: docKind,
+      stage: docKind === "manifest" ? "packaging" : docKind,
+      sha256: record.sha256,
+      sizeBytes: Buffer.byteLength(record.content, "utf8"),
+      mimeType: "application/json",
+      payload: { generationMode: "deterministic_local" },
+    });
+    if (storedDoc !== null) artifacts.push(storedDoc);
+  }
+
+  await production.recordPipelineEvent({
+    releaseId, ownerId, stage: "packaging", status: "succeeded",
+    detail: {
+      manifestId: packaging.manifest.manifestId,
+      thumbnailSha256: packaging.thumbnailVerdict.sha256,
+      documents: ["subtitle", "metadata", "manifest"],
+    },
+  });
+  if (evidenceLedger) {
+    await evidenceLedger.append({
+      subjectId: releaseId,
+      kind: "pipeline_stage_succeeded",
+      classification: "real_executor_generation",
+      payload: {
+        stage: "packaging",
+        manifestId: packaging.manifest.manifestId,
+        thumbnailSha256: packaging.thumbnailVerdict.sha256,
+      },
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // QC stage (Issue #185): gate over the recorded manifest + artifacts.
+  // Automated checks now; needs_human is a durable verdict that lands the
+  // release in `review` (the owner gate) for a future human decision.
+  // ---------------------------------------------------------------------
+  await production.recordPipelineEvent({ releaseId, ownerId, stage: "qc", status: "started" });
+  let runnerChecks = [];
+  try {
+    const qcChecks = await executorRunner({
+      release,
+      stage: "qc",
+      stageInputs,
+      agentId: release.agentId,
+      manifest: packaging.manifest,
+      recordedArtifacts: Object.freeze([...recordedByStage.values()]),
+      artifactBindings: Object.freeze(artifactBindings()),
+    });
+    if (Array.isArray(qcChecks)) runnerChecks = qcChecks;
+  } catch {
+    // Runner checks are optional policy; absence never weakens the gate.
+  }
+
+  const qcVerdict = evaluateEpisodeQcGate({
+    release,
+    manifest: packaging.manifest,
+    manifestRecord: packaging.documents.manifest,
+    recordedArtifacts: Object.freeze([...recordedByStage.values()]),
+    storedDocuments: {
+      subtitle: packaging.documents.subtitle.content,
+      metadata: packaging.documents.metadata.content,
+    },
+    runnerChecks,
+  });
+
+  // The QC verdict is recorded content-addressed as durable evidence.
+  const qcVerdictContent = JSON.stringify(qcVerdict, null, 2);
+  const qcVerdictRecord = await production.recordArtifact({
+    releaseId,
+    ownerId,
+    kind: "qc",
+    stage: "qc",
+    sha256: createHash("sha256").update(qcVerdictContent).digest("hex"),
+    sizeBytes: Buffer.byteLength(qcVerdictContent, "utf8"),
+    mimeType: "application/json",
+    payload: { generationMode: "deterministic_local" },
+  });
+  if (qcVerdictRecord !== null) artifacts.push(qcVerdictRecord);
+
+  if (qcVerdict.verdict === "rejected") {
+    await recordStageFailure(production, evidenceLedger, {
+      ownerId, releaseId, stage: "qc",
+      errorCode: String(qcVerdict.reasonCode ?? "QC_REJECTED").slice(0, 120),
+    });
+    await production.updateReleaseStatus(ownerId, releaseId, "planned");
+    await markJobFailed(jobs, release.jobId, qcVerdict.reasonCode ?? "QC_REJECTED");
+    log(`qc rejected: ${qcVerdict.reasonCode}`);
+    return {
+      releaseId, status: "planned", failedStage: "qc",
+      failureCode: qcVerdict.reasonCode, qcVerdict, artifacts,
+    };
+  }
+
+  await production.recordPipelineEvent({
+    releaseId, ownerId, stage: "qc", status: "succeeded",
+    detail: { verdict: qcVerdict.verdict, decidedBy: qcVerdict.decidedBy, manifestId: qcVerdict.manifestId },
+  });
+  if (evidenceLedger) {
+    await evidenceLedger.append({
+      subjectId: releaseId,
+      kind: "pipeline_stage_succeeded",
+      classification: "real_executor_generation",
+      payload: {
+        stage: "qc",
+        verdict: qcVerdict.verdict,
+        decidedBy: qcVerdict.decidedBy,
+        manifestId: qcVerdict.manifestId,
+      },
+    });
+  }
+  // needs_human: the release lands in `review` (owner gate) with the
+  // recorded verdict; a human decision is recorded, never auto-derived.
+  log(`qc verdict: ${qcVerdict.verdict}`);
+
   // Story remains a deterministic plan document (not media).
   await production.recordPipelineEvent({ releaseId, ownerId, stage: "story", status: "started" });
   const storyContent = renderStageContent("story", stageInputs);
@@ -647,10 +850,10 @@ export async function runEpisodePipelineWithExecutors({
       subjectId: releaseId,
       kind: "pipeline_completed",
       classification: "real_executor_generation",
-      payload: { stages: [...executorStages, "story"], artifactCount: artifacts.length },
+      payload: { stages: [...executorStages, "packaging", "qc", "story"], artifactCount: artifacts.length },
     });
   }
-  return { releaseId, status: "review", artifacts };
+  return { releaseId, status: "review", artifacts, qcVerdict, packagingManifestId: packaging.manifest.manifestId };
 }
 
 /** Truthful pipeline-events + evidence record for a failed stage. */
