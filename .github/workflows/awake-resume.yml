@@ -26,6 +26,14 @@ jobs:
       JULES_KEY: ${{ secrets.JULES_API_KEY }}
 
     steps:
+      # Issue #92: reconcile WITHOUT invalidating in-flight verification.
+      # Ordering contract (fail-closed): for every autonomous task/* PR,
+      # 1. observe the PR head FIRST and count active exact-head gate runs;
+      # 2. if any gate run is active at that head, DO NOTHING — moving the
+      #    head (merge-refresh) while CI/referee are in flight would
+      #    silently invalidate their exact-head guarantees;
+      # 3. only an idle PR (no active gate runs) whose gates have not all
+      #    passed is refreshed from main and re-dispatched.
       - name: Reconcile and reverify existing autonomous pull requests
         shell: bash
         run: |
@@ -36,6 +44,7 @@ jobs:
             pr="$(base64 --decode <<<"$encoded")"
             number="$(jq -r '.number' <<<"$pr")"
             branch="$(jq -r '.headRefName' <<<"$pr")"
+            head="$(jq -r '.headRefOid' <<<"$pr")"
             lane="$(jq -r '[.labels[].name | select(. == "lane-1" or . == "lane-2" or . == "lane-3")][0] // empty' <<<"$pr")"
 
             if [ -z "$lane" ]; then
@@ -46,22 +55,31 @@ jobs:
               gh pr edit "$number" --add-label "$lane" --add-label autopilot
             fi
 
+            # Observe activity at the CURRENT head before any reconciliation.
+            active="$(gh run list --commit "$head" --limit 100 --json workflowName,status --jq '[.[] | select((.workflowName == "ST Production House CI" or .workflowName == "PR Gate" or .workflowName == "Autonomous Merge Referee") and (.status != "completed"))] | length')"
+            if [ "$active" != "0" ]; then
+              echo "::notice::PR #$number has $active active exact-head gate run(s) at $head; no reconciliation while verification is in flight."
+              continue
+            fi
+
+            passed="$(gh run list --commit "$head" --limit 100 --json workflowName,status,conclusion --jq '[.[] | select((.workflowName == "ST Production House CI" or .workflowName == "PR Gate" or .workflowName == "Autonomous Merge Referee") and .status == "completed" and .conclusion == "success") | .workflowName] | unique | length')"
+            if [ "$passed" = "3" ]; then
+              continue
+            fi
+
+            # Idle AND not fully verified: refresh from main, then dispatch
+            # at the (possibly new) head.
             merge_code="$(gh api -X POST "repos/$GITHUB_REPOSITORY/merges" -f base="$branch" -f head=main -f commit_message="chore(autopilot): refresh $branch from verified main" --silent --include | head -n 1 | awk '{print $2}' || true)"
-            if [ "$merge_code" = 409 ]; then
+            if [ "$merge_code" = "409" ]; then
               echo "::warning::PR #$number conflicts with main and requires correction in its existing lane."
               continue
             fi
-            if [ "$merge_code" != 201 ] && [ "$merge_code" != 204 ]; then
+            if [ "$merge_code" != "201" ] && [ "$merge_code" != "204" ]; then
               echo "::warning::Could not safely refresh PR #$number from main (HTTP ${merge_code:-unknown})."
               continue
             fi
 
             head="$(gh pr view "$number" --json headRefOid --jq '.headRefOid')"
-            active="$(gh run list --commit "$head" --limit 100 --json workflowName,status --jq '[.[] | select((.workflowName == "ST Production House CI" or .workflowName == "PR Gate" or .workflowName == "Autonomous Merge Referee") and (.status != "completed"))] | length')"
-            [ "$active" = 0 ] || continue
-            passed="$(gh run list --commit "$head" --limit 100 --json workflowName,status,conclusion --jq '[.[] | select((.workflowName == "ST Production House CI" or .workflowName == "PR Gate" or .workflowName == "Autonomous Merge Referee") and .status == "completed" and .conclusion == "success") | .workflowName] | unique | length')"
-            [ "$passed" = 3 ] && continue
-
             gh workflow run ci.yml --ref "$branch" -f pr_number="$number" -f expected_head="$head"
             gh workflow run pr-gate.yml --ref "$branch" -f pr_number="$number" -f expected_head="$head"
             gh workflow run autonomous-merge.yml --ref "$branch" -f pr_number="$number" -f expected_head="$head"

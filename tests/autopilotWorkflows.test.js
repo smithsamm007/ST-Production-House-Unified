@@ -44,3 +44,36 @@ test('merge controller is globally serialized and re-verifies remaining autopilo
   assert.match(reverify, /gh pr list[^\n]*--label autopilot/);
   assert.match(reverify, /workflow run autonomous-merge\.yml/);
 });
+
+test('issue #92: wake controller observes gate activity BEFORE any merge refresh', () => {
+  const workflow = read('.github/workflows/awake-resume.yml');
+  const observeIndex = workflow.indexOf('active="$(gh run list --commit "$head"');
+  const passedIndex = workflow.indexOf('passed="$(gh run list --commit "$head"');
+  const refreshIndex = workflow.indexOf('repos/$GITHUB_REPOSITORY/merges"');
+  assert.ok(observeIndex !== -1, 'active-run observation exists');
+  assert.ok(passedIndex > observeIndex, 'gate-pass check follows the active-run observation');
+  assert.ok(refreshIndex > passedIndex, 'merge refresh happens only after both head checks');
+  assert.match(workflow, /no reconciliation while verification is in flight/);
+  assert.match(workflow, /conflicts with main and requires correction in its existing lane/);
+});
+
+test('issue #90: night-shift recovery never re-queues an issue that already has a PR', () => {
+  const workflow = read('.github/workflows/night-shift.yml');
+  assert.match(workflow, /Return failed issue to a recoverable queue \(only when no PR exists\)/);
+  assert.match(workflow, /gh pr list --state open --search "Closes #\$number"/);
+  assert.match(workflow, /already has an open autonomous PR; it stays in-progress/);
+});
+
+test('issue #90: autodev verifies before publishing and attaches real evidence', () => {
+  const workflow = read('.github/workflows/autodev.yml');
+  const verifyIndex = workflow.indexOf('npm test 2>&1 | tee /tmp/npm-test.log');
+  const commitIndex = workflow.indexOf('git add -A');
+  const prIndex = workflow.indexOf('gh pr create');
+  assert.ok(verifyIndex !== -1, 'verification step exists');
+  assert.ok(commitIndex > verifyIndex, 'commit happens only after verification');
+  assert.ok(prIndex > commitIndex, 'PR creation happens only after commit');
+  assert.match(workflow, /Verify before publishing/);
+  assert.match(workflow, /produced no repository change/);
+  assert.match(workflow, /npm-test\.log/);
+  assert.match(workflow, /npm-verify\.log/);
+});
