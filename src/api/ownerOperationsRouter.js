@@ -50,6 +50,7 @@ import {
   AnalyticsService,
   AnalyticsServiceError,
 } from "../analytics/analyticsService.js";
+import { PostgresAnalyticsRepository } from "../analytics/postgresAnalyticsRepository.js";
 
 // ---------------------------------------------------------------------------
 // Validation constants
@@ -208,7 +209,14 @@ export function createOwnerOperationsRouter(options = {}) {
   const evidenceLedger = options.evidenceLedger ?? null;
   const smokeTransport = options.providerSmokeTransport ?? null;
   const publishingPublisher = options.publishingPublisher ?? null;
-  const analyticsService = options.analyticsService ?? new AnalyticsService({ evidenceLedger });
+  // Durable analytics (Issue #194): when a database adapter is available,
+  // analytics records persist in PostgreSQL (sql/027) through the durable
+  // repository. Without one, the service's labeled in-memory DEMO transport
+  // applies — visibly non-durable, never claimed as durable.
+  const analyticsStorage = options.analyticsStorage ?? (dbAdapter && typeof dbAdapter.query === "function"
+    ? new PostgresAnalyticsRepository(dbAdapter)
+    : null);
+  const analyticsService = options.analyticsService ?? new AnalyticsService({ evidenceLedger, storage: analyticsStorage });
   const hasLedger = evidenceLedger !== null && evidenceLedger !== undefined;
 
   if (!sessions || typeof sessions.get !== "function") {
@@ -279,6 +287,13 @@ export function createOwnerOperationsRouter(options = {}) {
       throw fail(code ?? fallbackCode, 422);
     }
     throw fail(fallbackCode, 500);
+  }
+
+  /** Storage unavailability degrades honestly (503), never a fake write. */
+  function mapStorageError(error) {
+    if (error?.code === "ANALYTICS_STORAGE_NOT_CONFIGURED") {
+      throw fail("ANALYTICS_STORAGE_NOT_CONFIGURED", 503);
+    }
   }
 
   function parseLimit(raw) {
@@ -537,7 +552,7 @@ export function createOwnerOperationsRouter(options = {}) {
 
       let record;
       try {
-        record = analyticsService.ingestAnalytics({
+        record = await analyticsService.ingestAnalytics({
           ownerId,
           platformPostId,
           platformUrl,
@@ -546,6 +561,7 @@ export function createOwnerOperationsRouter(options = {}) {
           metadata: req.body.metadata ?? {},
         });
       } catch (error) {
+        mapStorageError(error);
         mapServiceError(error, "ANALYTICS_INGEST_FAILED");
       }
 
@@ -575,8 +591,14 @@ export function createOwnerOperationsRouter(options = {}) {
       if (!analyticsService || typeof analyticsService.listByOwner !== "function") {
         throw fail("ANALYTICS_SERVICE_UNAVAILABLE", 503);
       }
-      const rows = await analyticsService.listByOwner(ownerId);
-      const records = (rows ?? []).slice(0, limit).map(analyticsRecordDto);
+      let rows;
+      try {
+        rows = await analyticsService.listByOwner(ownerId, { limit });
+      } catch (error) {
+        mapStorageError(error);
+        mapServiceError(error, "ANALYTICS_LIST_FAILED");
+      }
+      const records = (rows ?? []).map(analyticsRecordDto);
       res.status(200).json({ ownerId, count: records.length, records });
     })
   );

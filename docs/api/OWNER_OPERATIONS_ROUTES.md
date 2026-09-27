@@ -55,6 +55,29 @@ the owner can actually operate them. Mounted at `/ops` behind `requireAuth` in
   fractional numbers), URLs must be HTTPS-only, and platforms are the four
   supported allowlisted destinations.
 
+## Durable analytics storage (Issue #194)
+
+Analytics records persist in PostgreSQL (`sql/027 owner_analytics_records`)
+through `src/analytics/postgresAnalyticsRepository.js` whenever the owner API
+is constructed with a database adapter. Storage properties:
+
+- **Append-only** (Rule 1): rows are immutable — a mutation-blocking trigger
+  rejects UPDATE/DELETE (`APPEND_ONLY_VIOLATION`). A later collection for the
+  same post is a NEW snapshot row; history is never rewritten.
+- **Owner-scoped**: every read is bound to the session owner;
+  cross-owner reads are indistinguishable from not-found.
+- **DB-enforced bounds**: non-negative integer metrics are enforced by CHECK
+  constraints (defense in depth behind the service gates).
+- **Honest degradation**: without a database adapter the service falls back
+  to its labeled in-memory DEMO transport (non-durable, process-lifetime);
+  a storage failure surfaces as a clean 4xx/5xx — never a fabricated write.
+
+Verification: offline unit tests run the repository over the labeled demo
+adapter (`tests/postgresAnalyticsRepository.test.js`); the real-PostgreSQL
+integration (`tests/analyticsPostgres.integration.js`, part of
+`npm run test:integration`) proves restart durability, append-only
+enforcement, owner isolation, and DB-level bounds on live PostgreSQL.
+
 ## Honest degradation
 
 | Condition | Response |

@@ -79,6 +79,7 @@ class MemoryOpsDb {
   constructor() {
     this.name = "MemoryOpsDb";
     this.auditRows = [];
+    this.analyticsRows = [];
   }
   async query(text, params) {
     if (text.startsWith("INSERT INTO owner_control_audit")) {
@@ -89,6 +90,39 @@ class MemoryOpsDb {
         detail: JSON.parse(params[3]),
       });
       return { rowCount: 1, rows: [] };
+    }
+    // Durable analytics table (sql/027) emulation: same contract the demo
+    // adapter satisfies for the repository's single-table SQL subset.
+    if (text.startsWith("INSERT INTO owner_analytics_records")) {
+      const row = {
+        id: this.analyticsRows.length + 1,
+        record_id: params[0],
+        owner_id: params[1],
+        agent_id: params[2],
+        platform_post_id: params[3],
+        platform_url: params[4],
+        platform: params[5],
+        views: Number(params[6]),
+        watch_time_seconds: Number(params[7]),
+        likes: Number(params[8]),
+        shares: Number(params[9]),
+        comments_count: Number(params[10]),
+        impressions: Number(params[11]),
+        metadata: params[12],
+        collected_at: params[13],
+      };
+      this.analyticsRows.push(row);
+      return { rowCount: 1, rows: [row] };
+    }
+    if (text.startsWith("SELECT * FROM owner_analytics_records")) {
+      let rows = [...this.analyticsRows];
+      const recordIdMatch = text.match(/record_id = \$(\d+)/);
+      if (recordIdMatch) rows = rows.filter((r) => r.record_id === params[Number(recordIdMatch[1]) - 1]);
+      const ownerMatch = text.match(/owner_id = \$(\d+)/);
+      if (ownerMatch) rows = rows.filter((r) => r.owner_id === params[Number(ownerMatch[1]) - 1]);
+      const limitMatch = text.match(/LIMIT (\d+)/);
+      if (limitMatch) rows = rows.slice(0, Number(limitMatch[1]));
+      return { rowCount: rows.length, rows };
     }
     throw new Error(`MEMORY_DB_UNEXPECTED_QUERY: ${text.slice(0, 40)}`);
   }
@@ -453,14 +487,30 @@ test("analytics ingest: records genuine metrics with audit row and reads back ow
     "collectedAt", "metrics", "ownerId", "platform", "platformPostId", "platformUrl", "recordId",
   ]);
   assert.equal(db.auditRows.length, 1);
-  assert.equal(db.auditRows[0].action, "analytics_ingest");
-
-  const read = await request(app).get("/ops/analytics").set("Authorization", `Bearer ${token}`);
+  assert.equal(db.auditRows[0].action, "analytics_ingest");  const read = await request(app).get("/ops/analytics").set("Authorization", `Bearer ${token}`);
   assert.equal(read.status, 200);
   assert.equal(read.body.count, 1);
   assert.equal(read.body.records[0].platformPostId, "yt_post_777");
   // The metadata field never serializes (internal capture only, Rule 17).
-  assert.ok(!("metadata" in read.body.records[0]));
+  assert.ok(!( "metadata" in read.body.records[0]));
+
+  // DURABILITY (Issue #194): the row lives in the DB adapter, not a
+  // process Map — a completely FRESH router+service over the same adapter
+  // reads the same record back.
+  const freshApp = createOwnerApp({
+    bootstrapToken: VALID_BOOTSTRAP_TOKEN,
+    bootstrapOwnerId: "owner-alpha",
+    dbAdapter: db,
+  });
+  const freshSession = await request(freshApp)
+    .post("/session/start")
+    .send({ bootstrapToken: VALID_BOOTSTRAP_TOKEN });
+  const freshRead = await request(freshApp)
+    .get("/ops/analytics")
+    .set("Authorization", `Bearer ${freshSession.body.token}`);
+  assert.equal(freshRead.status, 200);
+  assert.equal(freshRead.body.count, 1);
+  assert.equal(freshRead.body.records[0].recordId, record.recordId);
 });
 
 test("analytics ingest: negative or non-integer metrics are rejected (no invented numbers)", async () => {
@@ -543,6 +593,32 @@ test("analytics ingest: internal agent names and secret locators in metadata are
 // ---------------------------------------------------------------------------
 // Cross-cutting owner scoping
 // ---------------------------------------------------------------------------
+
+test("analytics ingest with failing storage degrades honestly (503), never a fabricated write", async () => {
+  const failingDb = {
+    name: "FailingOpsDb",
+    async query(text) {
+      if (text.startsWith("INSERT INTO owner_analytics_records")) {
+        throw new Error("PG_CONNECTION_RESET");
+      }
+      throw new Error(`MEMORY_DB_UNEXPECTED_QUERY: ${text.slice(0, 40)}`);
+    },
+  };
+  const { app } = buildApp({ dbAdapter: failingDb });
+  const { token, csrfToken } = await createSession(app);
+  const res = await request(app)
+    .post("/ops/analytics/ingest")
+    .set("Authorization", `Bearer ${token}`)
+    .set("x-csrf-token", csrfToken)
+    .send({
+      platformPostId: "yt_post_fail",
+      platformUrl: "https://youtube.com/watch?v=yt_post_fail",
+      platform: "youtube",
+      metrics: { views: 5 },
+    });
+  assert.equal(res.status, 500);
+  assert.equal(res.body.error, "INTERNAL_SERVER_ERROR");
+});
 
 test("client-supplied ownerId mismatch is rejected (server-authoritative scoping)", async () => {
   const transport = new FakeProviderSmokeTransport();

@@ -1,4 +1,33 @@
-import { createHash, randomUUID } from "node:crypto";
+/**
+ * ST Production House — genuine external analytics ingestion service.
+ *
+ * Records REAL platform-collected metrics (Module 26): no locally invented
+ * numbers, no fabricated engagement counts (Rules 1–2). The service layer
+ * owns validation + integrity gates; persistence is delegated to an
+ * injected storage repository.
+ *
+ * Storage (Issue #194):
+ *   - `storage` injected at construction: the durable
+ *     PostgresAnalyticsRepository (sql/027 owner_analytics_records) in
+ *     production.
+ *   - Without an injected repository the process-lifetime in-memory Map
+ *     remains as the labeled DEMO transport (non-durable, never claimed
+ *     as durable) so the complete product runs without a DB server.
+ *   - All operations are async so the call shape is identical for the
+ *     in-memory and PostgreSQL transports; the `/ops` routes already
+ *     await every service call.
+ *
+ * Contract rules (AGENTS.md):
+ *   - Honest evidence only: the service validates non-negative integer
+ *     metrics (no invented or fractional numbers), HTTPS-only platform
+ *     URLs, and the four allowlisted platforms.
+ *   - Rule 15/17: internal agent names and secret-shaped material in the
+ *     payload are rejected BEFORE any persistence (fail closed).
+ *   - Owner scoping is caller-enforced server-side: every read below is
+ *     scoped by the requesting owner through the storage layer.
+ */
+
+import { randomUUID } from "node:crypto";
 
 const AGENT_NAME_PATTERN = /\b(?:JARVIS|SHERLOCK|LAKME|VEDA|PANCHI|NEWTON)\b/i;
 const SECRET_LIKE = /(?:password|api[_ -]?key|bearer\s|vault:\/\/|opaque:\/\/|private[_ -]?key|access[_ -]?token|secret[_ -]?locator|authorization)/i;
@@ -14,14 +43,18 @@ export class AnalyticsServiceError extends Error {
 }
 
 export class AnalyticsService {
-  #records = new Map();
+  // Labeled demo transport: non-durable, process-lifetime only. Production
+  // injects PostgresAnalyticsRepository as `storage` (Issue #194).
+  #demoRecords = new Map();
+  #storage;
   #evidenceLedger;
 
-  constructor({ evidenceLedger = null } = {}) {
+  constructor({ evidenceLedger = null, storage = null } = {}) {
     this.#evidenceLedger = evidenceLedger;
+    this.#storage = storage;
   }
 
-  ingestAnalytics({
+  async ingestAnalytics({
     ownerId,
     agentId,
     platformPostId,
@@ -81,47 +114,69 @@ export class AnalyticsService {
       platformUrl,
       platform: platform.toLowerCase(),
       metrics: Object.freeze(sanitizedMetrics),
+      metadata: Object.freeze({ ...(metadata ?? {}) }),
       collectedAt
     });
 
-    this.#records.set(recordId, record);
-
-    if (this.#evidenceLedger) {
-      this.#evidenceLedger.append({
-        subjectId: platformPostId,
-        kind: "analytics_ingestion",
-        classification: "genuine_external_analytics",
-        payload: {
-          recordId,
-          ownerId,
-          platformPostId,
-          platform: record.platform,
-          views: sanitizedMetrics.views,
-          collectedAt
-        }
-      });
+    // Durable path (Issue #194): delegate to the injected storage
+    // repository. Failures surface truthfully (no in-memory fallback that
+    // would pretend a lost write succeeded).
+    if (this.#storage) {
+      const stored = await this.#storage.append(record);
+      this.#appendEvidence(stored);
+      return stored;
     }
 
+    this.#demoRecords.set(recordId, record);
+    this.#appendEvidence(record);
     return record;
   }
 
-  getRecord(recordId) {
-    return this.#records.get(recordId) ?? null;
+  #appendEvidence(record) {
+    if (this.#evidenceLedger) {
+      this.#evidenceLedger.append({
+        subjectId: record.platformPostId,
+        kind: "analytics_ingestion",
+        classification: "genuine_external_analytics",
+        payload: {
+          recordId: record.recordId,
+          ownerId: record.ownerId,
+          platformPostId: record.platformPostId,
+          platform: record.platform,
+          views: record.metrics.views,
+          collectedAt: record.collectedAt
+        }
+      });
+    }
   }
 
-  listByPost(platformPostId) {
+  async getRecord(ownerId, recordId) {
+    if (this.#storage) {
+      return this.#storage.getByRecordId(ownerId, recordId);
+    }
+    const record = this.#demoRecords.get(recordId) ?? null;
+    return record && record.ownerId === ownerId ? record : null;
+  }
+
+  async listByPost(platformPostId, { ownerId, limit } = {}) {
+    if (this.#storage) {
+      return this.#storage.listByPost(platformPostId, { ownerId, limit });
+    }
     const results = [];
-    for (const record of this.#records.values()) {
-      if (record.platformPostId === platformPostId) {
+    for (const record of this.#demoRecords.values()) {
+      if (record.platformPostId === platformPostId && (ownerId === undefined || record.ownerId === ownerId)) {
         results.push(record);
       }
     }
     return results;
   }
 
-  listByOwner(ownerId) {
+  async listByOwner(ownerId, { limit } = {}) {
+    if (this.#storage) {
+      return this.#storage.listByOwner(ownerId, { limit });
+    }
     const results = [];
-    for (const record of this.#records.values()) {
+    for (const record of this.#demoRecords.values()) {
       if (record.ownerId === ownerId) {
         results.push(record);
       }
