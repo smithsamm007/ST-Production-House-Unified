@@ -4,6 +4,7 @@ import { AgentRegistry } from "../catalog/agents.js";
 import { initializeSeedState, retrieveActiveCharter, sanitizeSecrets } from "../catalog/creativeCharter.js";
 import { createContentRunsRouter } from "./contentRunsRouter.js";
 import { createOwnerControlRouter } from "./ownerControlRouter.js";
+import { createOwnerOperationsRouter } from "./ownerOperationsRouter.js";
 
 function safeCompareTokens(providedToken, expectedToken) {
   if (typeof providedToken !== "string" || typeof expectedToken !== "string") {
@@ -188,6 +189,27 @@ export function createOwnerApp(options = {}) {
     "/control",
     requireAuth,
     control
+  );
+
+  // Owner live-operations surface (Issue #192): provider smoke test,
+  // private-first publishing test, and analytics ingestion. Mounted behind
+  // requireAuth; every mutation additionally requires a per-session CSRF
+  // token and writes an owner_control_audit row (Rule 6). Transports
+  // (provider slots / publishing publisher) are server-side options only —
+  // never request input — and degrade honestly (503) when unconfigured.
+  app.use(
+    "/ops",
+    requireAuth,
+    createOwnerOperationsRouter({
+      sessions,
+      dbAdapter: options.dbAdapter ?? null,
+      evidenceLedger: options.evidenceLedger ?? null,
+      providerSmokeTransport: options.providerSmokeTransport ?? null,
+      publishingPublisher: options.publishingPublisher ?? null,
+      publishingService: options.publishingService ?? null,
+      resolvePublishingIdentity: options.resolvePublishingIdentity ?? null,
+      analyticsService: options.analyticsService ?? null
+    })
   );
 
   // Malformed / oversized JSON bodies fail closed as a clean 4xx (never 500, never leaked internals).
