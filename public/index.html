@@ -4,127 +4,290 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ST Production House — Owner Console</title>
-  <style>
-    :root {
-      --bg: #0b0f17; --panel: #121826; --panel-2: #0f1522; --line: #232c40;
-      --text: #e7ecf5; --muted: #8b96ab; --ok: #34d399; --warn: #fbbf24;
-      --bad: #f87171; --accent: #7aa2ff;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0; background: var(--bg); color: var(--text);
-      font: 15px/1.55 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
-    }
-    header {
-      padding: 28px 24px 20px; border-bottom: 1px solid var(--line);
-      background: linear-gradient(180deg, #0e1420, var(--bg));
-    }
-    header h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: 0.3px; }
-    header p { margin: 0; color: var(--muted); font-size: 13.5px; }
-    main { max-width: 1080px; margin: 0 auto; padding: 24px; display: grid; gap: 18px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
-    .panel {
-      background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-      padding: 16px 18px;
-    }
-    .panel h2 {
-      margin: 0 0 10px; font-size: 12px; letter-spacing: 1.4px;
-      text-transform: uppercase; color: var(--muted);
-    }
-    .kv { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 14px; }
-    .kv span:first-child { color: var(--muted); }
-    .pill { padding: 2px 10px; border-radius: 999px; font-size: 12.5px; border: 1px solid var(--line); }
-    .pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
-    .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
-    .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
-    form { display: flex; flex-direction: column; gap: 10px; }
-    input {
-      background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
-      border-radius: 8px; padding: 9px 12px; font-size: 14px; outline: none;
-    }
-    input:focus { border-color: var(--accent); }
-    button {
-      background: var(--accent); color: #0b1020; font-weight: 600; border: 0;
-      border-radius: 8px; padding: 10px 14px; cursor: pointer; font-size: 14px;
-    }
-    button:disabled { opacity: 0.55; cursor: default; }
-    .error { color: var(--bad); font-size: 13px; min-height: 18px; }
-    .muted { color: var(--muted); font-size: 13px; }
-    ul.metrics { list-style: none; margin: 0; padding: 0; }
-    ul.metrics li { padding: 3px 0; display: flex; justify-content: space-between; }
-    footer { text-align: center; color: var(--muted); font-size: 12.5px; padding: 18px 0 28px; }
-    code { color: var(--accent); font-size: 12.5px; }
-  </style>
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <header>
-    <h1>ST Production House</h1>
-    <p>Owner console — live system status from the unified control plane. All data on this page comes from real API responses; nothing is simulated.</p>
-  </header>
-  <main>
-    <section class="grid">
-      <div class="panel">
-        <h2>Liveness</h2>
-        <div class="kv"><span>Service</span><span id="health-status" class="pill">…</span></div>
-        <div class="kv"><span>Storage mode</span><span id="health-storage">…</span></div>
-        <div class="kv"><span>Served at</span><span id="health-time">…</span></div>
+  <!-- ============================ LOGIN ============================ -->
+  <div id="login-view" class="login-wrap hidden">
+    <form id="login-form" class="login-card" autocomplete="on">
+      <div class="brand brand-lg"><span class="logo">ST</span><div><h1>PRODUCTION HOUSE</h1><span class="brand-sub">UNIFIED · Owner Console</span></div></div>
+      <p class="muted">Sign in to the unified control plane. Every value on the next screen comes from a real API response — nothing on this console is simulated.</p>
+      <input id="email" type="email" placeholder="owner email" autocomplete="username" required />
+      <input id="password" type="password" placeholder="password" autocomplete="current-password" required />
+      <button type="submit" id="login-btn">Sign in</button>
+      <div class="error" id="login-error" role="alert"></div>
+      <div class="muted" id="demo-hint"></div>
+    </form>
+  </div>
+
+  <!-- ============================ APP SHELL ============================ -->
+  <div id="app-view" class="hidden">
+    <header class="topbar">
+      <div class="brand"><span class="logo">ST</span><div><h1>PRODUCTION HOUSE</h1><span class="brand-sub">UNIFIED · Owner Console</span></div></div>
+      <div class="top-tags">
+        <span>Multiple Directors</span><i></i><span>Independent Universes</span><i></i><span>One AI-Powered Production House</span>
       </div>
-      <div class="panel">
-        <h2>Readiness (deploy gate)</h2>
-        <div class="kv"><span>Database</span><span id="ready-db">…</span></div>
-        <div class="kv"><span>Overall</span><span id="ready-status" class="pill">…</span></div>
+      <div class="top-right">
+        <span id="storage-pill" class="pill">…</span>
+        <span id="owner-email" class="muted"></span>
+        <button id="logout-btn" class="btn-ghost">Sign out</button>
       </div>
-      <div class="panel">
-        <h2>Session</h2>
-        <div id="auth-area">
-          <form id="login-form">
-            <input id="email" type="email" placeholder="owner email" autocomplete="username" required />
-            <input id="password" type="password" placeholder="password" autocomplete="current-password" required />
-            <button type="submit" id="login-btn">Sign in</button>
-            <div class="error" id="login-error"></div>
-            <div class="muted">Sessions are HttpOnly cookies; registration is closed after the first owner bootstraps.</div>
-          </form>
+    </header>
+
+    <div class="shell">
+      <nav class="sidebar" aria-label="Owner dashboard sections">
+        <div class="side-title">Owner Dashboard</div>
+        <button class="nav-item active" data-view="overview"><span class="ico">▦</span>Command Center</button>
+        <button class="nav-item" data-view="directors"><span class="ico">◉</span>Directors</button>
+        <button class="nav-item" data-view="communication"><span class="ico">✉</span>Director Communication</button>
+        <button class="nav-item" data-view="memory"><span class="ico">▣</span>Director Memory</button>
+        <button class="nav-item" data-view="production"><span class="ico">▶</span>Production</button>
+        <button class="nav-item" data-view="jobs"><span class="ico">≡</span>Active Jobs</button>
+        <button class="nav-item" data-view="providers"><span class="ico">⛁</span>Provider Status</button>
+        <button class="nav-item" data-view="quotas"><span class="ico">◔</span>Quotas</button>
+        <button class="nav-item" data-view="connections"><span class="ico">⚿</span>Secrets &amp; Connections</button>
+        <button class="nav-item" data-view="publishing"><span class="ico">⇪</span>Publishing Accounts</button>
+        <button class="nav-item" data-view="approvals"><span class="ico">✓</span>Approvals</button>
+        <button class="nav-item" data-view="analytics"><span class="ico">≈</span>Analytics</button>
+        <button class="nav-item" data-view="hermes"><span class="ico">✳</span>Hermes Decisions</button>
+        <button class="nav-item" data-view="evidence"><span class="ico">⛓</span>Evidence</button>
+        <button class="nav-item" data-view="alerts"><span class="ico">⚑</span>Alerts</button>
+        <button class="nav-item" data-view="settings"><span class="ico">⚙</span>Settings</button>
+
+        <div class="hermes-mini">
+          <div class="side-title">Hermes · ST AI Manager</div>
+          <div class="mini-kv"><span>Registered directors</span><b id="mini-directors">…</b></div>
+          <div class="mini-kv"><span>Channels (live)</span><b id="mini-channels">…</b></div>
+          <div class="mini-kv"><span>Central platform</span><b>1</b></div>
+          <div class="mini-kv"><span>Storage</span><b id="mini-storage">…</b></div>
+          <p class="mini-note">Counts are live from the control plane. Channels are capped by the owner registry; story slots grow with the catalog.</p>
         </div>
-      </div>
-    </section>
+      </nav>
 
-    <section class="panel" id="metrics-panel" hidden>
-      <h2>Operational metrics (authenticated)</h2>
-      <ul class="metrics" id="metrics-list"></ul>
-    </section>
+      <main id="main">
+        <!-- Command Center -->
+        <section id="view-overview" class="view">
+          <div class="metrics-strip" id="metrics-strip"></div>
+          <div class="panel wide">
+            <h2>The Production Pipeline</h2>
+            <p class="muted">Every director runs its own independent production team. Stage set is the durable <code>pipeline_events</code> enum (sql/020 + 024 + 025) — the same stages the worker writes.</p>
+            <div class="pipeline" id="pipeline-strip"></div>
+          </div>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Director channels</h2><button class="btn-ghost" id="overview-refresh">Refresh</button></div>
+            <div class="cards" id="overview-channels"></div>
+          </div>
+          <div class="panel wide">
+            <h2>Real output examples</h2>
+            <p class="muted">Latest recorded artifacts across all releases. Artifacts are labeled with their true generation mode and verification state — nothing is promoted without a real inspection.</p>
+            <div id="overview-artifacts" class="artifact-list"></div>
+          </div>
+        </section>
 
-    <section class="panel" id="hermes-panel" hidden>
-      <h2>Hermes Command Center</h2>
-      <p class="muted">Manager decision layer — decision authority without secret access. Every decision is recorded and auditable; prohibited actions are structurally refused.</p>
-      <ul class="metrics" id="hermes-overview-list"></ul>
-      <h2 style="margin-top:14px;">Recent decisions</h2>
-      <ul class="metrics" id="hermes-decisions-list"></ul>
-    </section>
+        <!-- Directors -->
+        <section id="view-directors" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Director channels</h2><button class="btn-ghost" id="directors-refresh">Refresh</button></div>
+            <p class="muted">Public channel branding only. Internal director identities stay server-side and never render here. Registered agents: <span id="directors-agent-count">…</span> (registry hard cap 50).</p>
+            <div class="cards" id="directors-cards"></div>
+            <div id="directors-channel-detail"></div>
+          </div>
+        </section>
 
-    <section class="panel" id="connections-panel" hidden>
-      <h2>Secrets &amp; Connections — provider catalog</h2>
-      <p class="muted">Secret fields are stored ONLY as opaque secret-manager locators (vault:// / opaque://); plaintext secrets are structurally impossible to persist. Configuration fields are non-secret.</p>
-      <ul class="metrics" id="providers-list"></ul>
-    </section>
+        <!-- Director Communication -->
+        <section id="view-communication" class="view" hidden>
+          <div class="panel wide">
+            <h2>Director communication window</h2>
+            <p class="muted">One persistent window per director. Messages carry explicit semantics (conversation | proposal | instruction | decision); recording never triggers production or publishing.</p>
+            <div class="form-row">
+              <label for="comm-agent">Director</label>
+              <select id="comm-agent"></select>
+              <button id="comm-load">Load window</button>
+            </div>
+            <div id="comm-thread" class="thread"></div>
+            <form id="comm-form" class="stack hidden">
+              <div class="form-row">
+                <select id="comm-kind">
+                  <option value="conversation">conversation</option>
+                  <option value="proposal">proposal</option>
+                  <option value="instruction">instruction</option>
+                  <option value="decision">decision</option>
+                </select>
+                <select id="comm-sender">
+                  <option value="owner">owner</option>
+                  <option value="director">director</option>
+                </select>
+              </div>
+              <textarea id="comm-body" rows="3" maxlength="8000" placeholder="Message body (max 8000 chars)"></textarea>
+              <button type="submit">Record message</button>
+              <div class="error" id="comm-error"></div>
+            </form>
+          </div>
+        </section>
 
-    <section class="panel">
-      <h2>API surface</h2>
-      <div class="muted">
-        <code>GET /api/health</code> · <code>GET /api/ready</code> ·
-        <code>/api/auth/*</code> · <code>/api/agents</code> ·
-        <code>/api/channels</code> · <code>/api/productions</code> ·
-        <code>/api/directors/:agentId/conversation|roadmap|memory</code> ·
-        <code>/api/providers/catalog</code> ·
-        <code>/api/connections/directors/:agentId/…</code> ·
-        <code>/api/hermes/*</code> ·
-        <code>/api/evidence</code> · <code>/api/metrics</code> ·
-        <code>/api/control/*</code> — all owner routes require an authenticated session.
-      </div>
-    </section>
-  </main>
-  <footer>ST Production House Unified · evidence-first control plane · publishing remains owner-gated</footer>
+        <!-- Director Memory -->
+        <section id="view-memory" class="view" hidden>
+          <div class="panel wide">
+            <h2>Director memory (isolated)</h2>
+            <p class="muted">One JSON entry per category, scoped to owner + director. No cross-director leakage.</p>
+            <div class="form-row">
+              <label for="memory-agent">Director</label>
+              <select id="memory-agent"></select>
+              <button id="memory-load">Load memory</button>
+            </div>
+            <div id="memory-list" class="memory-grid"></div>
+          </div>
+        </section>
+
+        <!-- Production -->
+        <section id="view-production" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Productions</h2><button class="btn-ghost" id="production-refresh">Refresh</button></div>
+            <form id="production-form" class="stack">
+              <div class="form-row">
+                <select id="prod-channel" required></select>
+                <input id="prod-title" placeholder="Episode title" required />
+                <input id="prod-season" type="number" min="1" max="100" placeholder="Season" required />
+                <input id="prod-episode" type="number" min="1" max="2000" placeholder="Episode" required />
+              </div>
+              <div class="form-row">
+                <button type="submit">Queue production</button>
+                <span class="muted">One planned release per (channel, season, episode) slot — a failed attempt creates a new job, never a second logical release.</span>
+              </div>
+              <div class="error" id="production-error"></div>
+            </form>
+            <div id="production-list"></div>
+          </div>
+          <div class="panel wide hidden" id="release-detail-panel">
+            <div class="panel-head"><h2 id="release-detail-title">Release detail</h2><button class="btn-ghost" id="release-detail-close">Close</button></div>
+            <div id="release-detail"></div>
+          </div>
+        </section>
+
+        <!-- Active Jobs -->
+        <section id="view-jobs" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Active jobs</h2><button class="btn-ghost" id="jobs-refresh">Refresh</button></div>
+            <div id="jobs-by-status" class="chips"></div>
+            <div id="jobs-list"></div>
+          </div>
+        </section>
+
+        <!-- Provider Status -->
+        <section id="view-providers" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Provider catalog</h2><button class="btn-ghost" id="providers-refresh">Refresh</button></div>
+            <p class="muted">Governed provider catalog with official credential URLs. No provider is live until the owner binds secrets in the secret manager.</p>
+            <div id="providers-list" class="cards"></div>
+          </div>
+        </section>
+
+        <!-- Quotas -->
+        <section id="view-quotas" class="view" hidden>
+          <div class="panel wide">
+            <h2>Quotas</h2>
+            <div id="quotas-body"></div>
+          </div>
+        </section>
+
+        <!-- Secrets & Connections -->
+        <section id="view-connections" class="view" hidden>
+          <div class="panel wide">
+            <h2>Secrets &amp; Connections</h2>
+            <p class="muted">Per-director provider bindings. Secret fields are stored only as opaque secret-manager locators; this panel lists field KEYS only — locator values never serialize.</p>
+            <div class="form-row">
+              <label for="conn-agent">Director</label>
+              <select id="conn-agent"></select>
+              <button id="conn-load">Load connections</button>
+            </div>
+            <div id="connections-list"></div>
+          </div>
+        </section>
+
+        <!-- Publishing Accounts -->
+        <section id="view-publishing" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Publishing accounts (per channel)</h2><button class="btn-ghost" id="publishing-refresh">Refresh</button></div>
+            <p class="muted">Platform destinations with owner-defined public attribution. Publishing records intent + evidence only — live platform calls remain pending until accounts are connected.</p>
+            <div id="publishing-list"></div>
+            <form id="destination-form" class="stack">
+              <div class="form-row">
+                <select id="dest-channel" required></select>
+                <select id="dest-platform">
+                  <option value="youtube">youtube</option>
+                  <option value="instagram">instagram</option>
+                  <option value="facebook">facebook</option>
+                  <option value="snapchat">snapchat</option>
+                </select>
+                <input id="dest-handle" placeholder="@handle" required />
+              </div>
+              <input id="dest-attribution" placeholder="Public attribution (shown with published content; internal director names are rejected)" required />
+              <label class="check"><input type="checkbox" id="dest-primary" /> Primary destination</label>
+              <button type="submit">Add destination</button>
+              <div class="error" id="destination-error"></div>
+            </form>
+          </div>
+        </section>
+
+        <!-- Approvals -->
+        <section id="view-approvals" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Owner approval queue</h2><button class="btn-ghost" id="approvals-refresh">Refresh</button></div>
+            <div id="approvals-body"></div>
+          </div>
+        </section>
+
+        <!-- Analytics -->
+        <section id="view-analytics" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Analytics (operational counters)</h2><button class="btn-ghost" id="analytics-refresh">Refresh</button></div>
+            <div id="analytics-body"></div>
+          </div>
+        </section>
+
+        <!-- Hermes Decisions -->
+        <section id="view-hermes" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Hermes decision command center</h2><button class="btn-ghost" id="hermes-refresh">Refresh</button></div>
+            <p class="muted">Decision authority without secret access. Every decision is recorded and auditable; prohibited actions are structurally refused.</p>
+            <div id="hermes-overview" class="cards"></div>
+            <h2 class="mt">Authority matrix</h2>
+            <div id="hermes-authority" class="chips"></div>
+            <h2 class="mt">Recent decisions</h2>
+            <div id="hermes-decisions" class="thread"></div>
+          </div>
+        </section>
+
+        <!-- Evidence -->
+        <section id="view-evidence" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Evidence ledger</h2><button class="btn-ghost" id="evidence-refresh">Refresh</button></div>
+            <p class="muted">Append-only, hash-chained events. Unverified claims cannot enter this ledger.</p>
+            <div id="evidence-list" class="thread"></div>
+          </div>
+        </section>
+
+        <!-- Alerts -->
+        <section id="view-alerts" class="view" hidden>
+          <div class="panel wide">
+            <h2>Alerts</h2>
+            <div id="alerts-body"></div>
+          </div>
+        </section>
+
+        <!-- Settings -->
+        <section id="view-settings" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Settings</h2><button class="btn-ghost" id="settings-refresh">Refresh</button></div>
+            <div id="settings-owner"></div>
+            <h2 class="mt">Active sessions</h2>
+            <div id="sessions-list" class="thread"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
   <script src="/dashboard.js"></script>
-  <script src="/connections.js"></script>
-  <script src="/hermes.js"></script>
 </body>
 </html>
