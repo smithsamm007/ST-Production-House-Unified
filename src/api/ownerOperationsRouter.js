@@ -5,13 +5,13 @@
  * operate them:
  *   - configured-provider smoke test       (src/providers/providerSmokeTest.js)
  *   - private-first publishing test        (src/publishing/privatePublishingTest.js)
- *   - genuine external analytics ingestion (src/analytics/analyticsService.js)
+ *   - server-sourced analytics collection (src/analytics/analyticsService.js)
  *
  * Routes (mounted at `/ops` behind requireAuth in ownerServer.js)
  * ---------------------------------------------------------------
  *   POST /ops/providers/:agentId/smoke-test    → provider smoke test
  *   POST /ops/publishing/:agentId/private-test → private-first publish test
- *   POST /ops/analytics/ingest                 → record genuine platform metrics
+ *   POST /ops/analytics/ingest                 → collect and record platform metrics
  *   GET  /ops/analytics                        → owner-scoped analytics records
  *
  * Security contract (AGENTS.md Rules 1–3, 6, 15, 17):
@@ -59,6 +59,14 @@ import { PostgresAnalyticsRepository } from "../analytics/postgresAnalyticsRepos
 const AGENT_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{1,79}$/;
 const OWNER_ID_RE = /^[a-zA-Z0-9_-]{3,80}$/;
 const PLATFORMS = new Set(["youtube", "instagram", "facebook", "snapchat"]);
+const ANALYTICS_METRIC_FIELDS = Object.freeze([
+  "views",
+  "watchTimeSeconds",
+  "likes",
+  "shares",
+  "commentsCount",
+  "impressions",
+]);
 const MAX_CAPTION_BYTES = 4096;
 const MAX_METADATA_BYTES = 2048;
 const MAX_LIMIT = 200;
@@ -209,6 +217,7 @@ export function createOwnerOperationsRouter(options = {}) {
   const evidenceLedger = options.evidenceLedger ?? null;
   const smokeTransport = options.providerSmokeTransport ?? null;
   const publishingPublisher = options.publishingPublisher ?? null;
+  const analyticsTransport = options.analyticsTransport ?? null;
   // Durable analytics (Issue #194): when a database adapter is available,
   // analytics records persist in PostgreSQL (sql/027) through the durable
   // repository. Without one, the service's labeled in-memory DEMO transport
@@ -537,28 +546,64 @@ export function createOwnerOperationsRouter(options = {}) {
         throw fail("SCOPE_MISMATCH", 403);
       }
       const platformPostId = requireString(req.body.platformPostId, "PLATFORM_POST_ID_REQUIRED", { max: 200 });
-      const platformUrl = requireHttpsUrl(req.body.platformUrl, "INVALID_PLATFORM_URL");
-      const platform = requireString(req.body.platform, "INVALID_PLATFORM", { max: 20 });
-      if (!PLATFORMS.has(platform.toLowerCase())) {
-        throw fail("INVALID_PLATFORM");
+      if (Object.keys(req.body).some((key) => !["ownerId", "platformPostId"].includes(key))) {
+        throw fail("CLIENT_TRANSPORT_FORBIDDEN", 400);
       }
-      if (req.body.metrics !== undefined) {
-        requirePlainObject(req.body.metrics, "INVALID_ANALYTICS_METRICS");
+
+      if (!analyticsTransport || typeof analyticsTransport.fetchSnapshot !== "function") {
+        throw fail("ANALYTICS_TRANSPORT_UNAVAILABLE", 503);
       }
-      if (req.body.metadata !== undefined) {
-        requirePlainObject(req.body.metadata, "INVALID_ANALYTICS_METADATA");
-        boundedJson(req.body.metadata, "INVALID_ANALYTICS_METADATA", MAX_METADATA_BYTES);
+      let snapshot;
+      try {
+        snapshot = await analyticsTransport.fetchSnapshot({ ownerId, platformPostId });
+      } catch {
+        throw fail("ANALYTICS_TRANSPORT_UNAVAILABLE", 503);
+      }
+      if (
+        !snapshot || typeof snapshot !== "object" || Array.isArray(snapshot) ||
+        snapshot.platformPostId !== platformPostId
+      ) {
+        throw fail("ANALYTICS_TRANSPORT_UNAVAILABLE", 503);
+      }
+      let platformUrl;
+      let platform;
+      let metrics;
+      let metadata;
+      try {
+        platformUrl = requireHttpsUrl(snapshot.platformUrl, "INVALID_PLATFORM_URL");
+        platform = requireString(snapshot.platform, "INVALID_PLATFORM", { max: 20 });
+        if (!PLATFORMS.has(platform.toLowerCase())) throw new Error("INVALID_PLATFORM");
+        requirePlainObject(snapshot.metrics, "INVALID_ANALYTICS_METRICS");
+        const metricFields = Object.keys(snapshot.metrics);
+        if (
+          metricFields.length !== ANALYTICS_METRIC_FIELDS.length ||
+          ANALYTICS_METRIC_FIELDS.some((field) =>
+            !Object.hasOwn(snapshot.metrics, field) ||
+            typeof snapshot.metrics[field] !== "number" ||
+            !Number.isSafeInteger(snapshot.metrics[field]) ||
+            snapshot.metrics[field] < 0
+          )
+        ) {
+          throw new Error("INVALID_ANALYTICS_METRICS");
+        }
+        metrics = snapshot.metrics;
+        metadata = snapshot.metadata ?? {};
+        requirePlainObject(metadata, "INVALID_ANALYTICS_METADATA");
+        boundedJson(metadata, "INVALID_ANALYTICS_METADATA", MAX_METADATA_BYTES);
+      } catch {
+        throw fail("ANALYTICS_TRANSPORT_UNAVAILABLE", 503);
       }
 
       let record;
       try {
         record = await analyticsService.ingestAnalytics({
           ownerId,
-          platformPostId,
+          agentId: snapshot.agentId ?? null,
+          platformPostId: snapshot.platformPostId,
           platformUrl,
           platform,
-          metrics: req.body.metrics ?? {},
-          metadata: req.body.metadata ?? {},
+          metrics,
+          metadata,
         });
       } catch (error) {
         mapStorageError(error);
