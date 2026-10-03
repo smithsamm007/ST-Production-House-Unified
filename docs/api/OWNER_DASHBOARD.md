@@ -27,8 +27,8 @@ Loading, error, and empty states are explicit; nothing is simulated
 
 | Sidebar item | Data source (all under `/api`, session-authenticated) |
 |---|---|
-| Command Center | `/api/health`, `/api/metrics`, `/api/channels`, `/api/productions`, real artifact rows |
-| Directors | `/api/channels` + `/api/channels/:id` (public branding + releases + destinations) |
+| Command Center | `/api/health`, `/api/metrics`, `/api/channels`, `/api/productions`, real artifact rows; channel cards with destination chips + media-slot grid |
+| Directors | `/api/channels` + `/api/channels/:id` (public branding + releases + destinations); same channel cards |
 | Director Communication | `/api/directors/:agentId/conversation` (GET + POST) |
 | Director Memory | `/api/directors/:agentId/memory` |
 | Production | `/api/productions` (GET/POST), `/api/productions/:id` (+`/run`, `/publish`) |
@@ -47,6 +47,31 @@ Loading, error, and empty states are explicit; nothing is simulated
 The production-pipeline strip renders exactly the durable stage enum from
 `pipeline_events` (sql/020 + 024 + 025): `story → visual → audio → assembly →
 reels → packaging → qc → complete`. No fabricated stages are displayed.
+
+### Channel cards (Command Center + Directors)
+
+Each channel card renders only real, durable data:
+
+- **Platform chips** — the channel's configured publishing destinations from
+  `/api/channels/:id` (platform + primary marker). No destinations → an
+  explicit "no destinations configured" chip; a failed lookup → an explicit
+  "destination lookup failed" chip. Unconfigured platforms are never shown as
+  if connected.
+- **Media-slot grid** — bound to the channel's most recent release
+  (`/api/productions/:id`). The four canonical slots (S-M34-01):
+  - `Main Video` — filled only by an artifact with kind `video` recorded at
+    the `assembly` stage.
+  - `Short 1` / `Short 2` / `Brand Reel` — filled only by a `reels` stage
+    pipeline event with status `succeeded` whose `detail.reel` is
+    `content_reel_1` / `content_reel_2` / `brand_reel` (the canonical
+    identities from `src/pipeline/reelsStage.js`), matched to its artifact by
+    sha256.
+  - A slot without that evidence shows "no media yet — ffprobe verification
+    pending"; a channel without releases shows "no release planned yet"; a
+    failed detail lookup shows an explicit error note. No thumbnails,
+    durations, dates, or engagement numbers are ever invented (Rule 1).
+- **Footer** — the channel tagline, plus release count, slug, language and
+  director-slot rows.
 
 ## Security posture
 
@@ -72,5 +97,6 @@ reels → packaging → qc → complete`. No fabricated stages are displayed.
 ## Tests
 
 `tests/staticDashboard.test.js` verifies the served files, SPA fallback,
-descriptor, and scans the public assets for Rule 15 name leakage and
-secret-shaped literals.
+descriptor, the pipeline stage enum, the canonical media-slot identities
+(against `CANONICAL_REELS`), and scans the public assets for Rule 15 name
+leakage and secret-shaped literals.
