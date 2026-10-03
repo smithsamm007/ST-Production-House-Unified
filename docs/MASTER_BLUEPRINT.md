@@ -4,7 +4,8 @@
 > single organized specification derived from it, mapped against the repository's
 > VERIFIED state. Claims are separated into **Delivered (verified)**,
 > **In progress**, and **Not started**. Nothing is marked delivered without a
-> merged implementation and passing tests.
+> merged implementation and passing tests. Read this as offline code readiness,
+> not proof of live provider operation or a production burn-in.
 
 ## 1. Ultimate vision (one sentence)
 
@@ -36,18 +37,21 @@ evidence, and owner approval at every legally/technically sensitive boundary.
 | Circuit breakers, quarantine, emergency pause, owner alerts | **Delivered** | migration 014, `src/resilience/**` |
 | Durable checkpoints and worker results | **Delivered** | migrations 015–016, `src/checkpoints/**`, `src/workers/**` |
 | Deterministic JARVIS stage planners (outline → subtitles) | **Delivered** | `src/jarvis/deterministic*.js` + tests |
-| Full deterministic content package through real workflow | **Delivered** | `src/jarvis/contentPackageOrchestrator.js` (PR #107) |
+| Deterministic content planning and production executor chain | **Delivered (offline/code-side)** | `src/jarvis/contentPackageOrchestrator.js`, `src/pipeline/productionExecutorRunner.js`, `src/pipeline/executorIntegration.js`; real external production burn-in not verified |
 | AI News provenance-first research briefs | **Delivered** | `src/aiNews/deterministicResearchBrief.js` (PR #106) |
 | AI News deterministic editorial plans from verified briefs | **Delivered** | `src/aiNews/deterministicEditorialPlan.js` + `docs/aiNews/EDITORIAL_PLAN_CONTRACT.md` |
 | AI News deterministic metadata & thumbnail plans | **Delivered** | `src/aiNews/deterministicMetadataPlan.js` + `docs/aiNews/METADATA_PLAN_CONTRACT.md` |
 | Autonomous backlog feeder (closed-loop roadmap → issues → lanes → merge → re-feed) | **Delivered** | `src/automation/backlogFeeder.js`, `automation/backlog/slices.json`, `.github/workflows/backlog-feeder.yml` + `docs/AUTONOMOUS_BACKLOG_FEEDER.md` |
 | Evidence ledger (append-only, hash-chained) | **Delivered** | `src/evidence/evidenceLedger.js` |
 | Promotion policy: one-Reel identity, main-video independence, affiliate rules | **Delivered** | `src/promotion/promotionPolicy.js` + tests |
-| Publishing service (receipt verification, no fake IDs) | **Delivered** | `src/publishing/publishingService.js` + tests |
+| Publishing request/approval/receipt contracts | **Delivered (service contract)** | `src/publishing/publishingService.js`, private-first owner operation route; no official live platform publisher or real upload verified |
 | Adversarial hardening: fuzzing, SQLi matrix, runbook | **Delivered** | `tests/adversarial/**`, `docs/RUNBOOK.md` (PR #105) |
-| Media generation via approved free providers | **Not started** | Requires owner-configured provider capacity + secret-manager locators; routing/gating contracts are merged and ready |
-| Live OAuth and platform publishing | **Not started** | Per Contract Rule 16: slots exist, all unconfigured; official-API adapter pending |
-| Analytics ingestion and automatic optimization | **Not started** | Depends on live publishing |
+| TTS, visual, FFmpeg assembly, FFprobe and package/QC executor infrastructure | **Delivered (offline/code-side)** | `src/media/ttsExecutor.js`, `src/media/visualExecutor.js`, `src/media/ffmpegAssemblyExecutor.js`, `src/pipeline/packagingQc.js`; no real rendered package or 30–50 minute FFprobe burn-in verified |
+| Owner dashboard console and evidence-backed channel cards | **Delivered (dashboard surface)** | `public/index.html`, `public/dashboard.js` (PRs #197, #199); connection bindings are read-only in this UI and OAuth connect/revoke controls are absent |
+| Live provider generation | **Not started (owner-gated)** | Executor/routing code exists, but owner credentials, real quota snapshots, and provider-generated media evidence are absent |
+| Official OAuth and platform publishing adapters | **Not started** | Connection slots and CRUD APIs exist; no official OAuth authorization/callback/revocation route or real platform publisher is configured |
+| Durable analytics storage and owner ingestion boundary | **Delivered (offline/code-side)** | `sql/027`, `src/analytics/postgresAnalyticsRepository.js`, `src/api/ownerOperationsRouter.js` (PRs #193, #195; server-sourced collector boundary in PR #201); no official analytics collector or real platform response verified |
+| Hermes learning/optimization from real platform analytics | **Not started** | Requires official analytics collection and durable real observations first |
 | Comments/community management | **Not started** | Depends on live accounts |
 | Postiz integration | **Not started** | AGPL; separate deployment + API adapter (Rule 11) |
 
@@ -80,18 +84,25 @@ claiming verification without durable evidence (Rule 1).
 ## 7. Roadmap from current state to fully operational ST
 
 1. **Owner secret-manager + provider capacity onboarding** — configure the
-   three private provider slots per agent with `vault://`-style locators;
-   wire live quota snapshots into the dispatch admission path.
-2. **Media adapters** — TTS (Edge-TTS/Piper class), image, and FFmpeg assembly
-   behind the worker contracts; FFprobe-verified artifacts only.
-3. **Owner dashboard completion** — surface the catalog, charters, package
-   runs, approvals, and evidence timeline through the authenticated API.
-4. **Publishing path** — owner-configured OAuth via official APIs/Postiz;
-   private-first first, live only after explicit owner approval.
-5. **Analytics + optimization loop** — real platform analytics ingestion;
-   no locally invented metrics, ever.
-6. **Scale-out** — proven JARVIS workflow templates are reused per-agent
-   (the orchestrator pattern generalizes); 20 → 50 agents by catalog design.
+   three private provider slots per Director with opaque locators and quota
+   metadata, then verify live quota snapshots and the truthful wait/resume path.
+2. **Real media burn-in** — use the existing TTS, visual, FFmpeg, FFprobe, and
+   packaging executors with owner-approved free capacity; prove a complete
+   package and measure the main artifact at 1800–3000 seconds.
+3. **Owner controls** — the dashboard has the core console and honest read
+   surfaces, but still needs usable provider-binding management and official
+   OAuth connect/revoke flows; the connection-list view alone is not onboarding.
+4. **Official publishing path** — implement/configure official platform OAuth
+   and publisher adapters, then verify private-first uploads and real receipts
+   under exact owner approval. No live account is connected today.
+5. **Analytics + Hermes learning** — add official platform collectors behind
+   the server-side ingestion boundary, persist real snapshots, then add
+   Director-scoped Hermes analysis. Current records/storage alone are not
+   platform analytics evidence.
+6. **Cloud autonomy and scale-out** — deploy and observe the durable scheduler
+   and workers while the owner device is offline; separately prove Director
+   isolation and production burn-in beyond the first test Director before
+   claiming readiness for 50 Directors.
 
 ## 8. Operating model (who does what)
 
