@@ -194,12 +194,26 @@
         <section id="view-connections" class="view" hidden>
           <div class="panel wide">
             <h2>Secrets &amp; Connections</h2>
-            <p class="muted">Per-director provider bindings. Secret fields are stored only as opaque secret-manager locators; this panel lists field KEYS only — locator values never serialize.</p>
+            <p class="muted">Per-director provider bindings. Enter only opaque secret-manager locators, never API keys or passwords. Saved locators are not returned to the dashboard, and a connection test may honestly remain unverified until a live transport is configured.</p>
             <div class="form-row">
               <label for="conn-agent">Director</label>
               <select id="conn-agent"></select>
               <button id="conn-load">Load connections</button>
             </div>
+            <form id="connection-form" class="stack">
+              <div class="form-row">
+                <label for="conn-provider">Provider</label>
+                <select id="conn-provider" required></select>
+                <span class="sub">connection kind: <b id="conn-kind">—</b></span>
+                <input id="conn-label" maxlength="120" placeholder="Owner-only label" autocomplete="off" />
+              </div>
+              <div id="connection-fields" class="stack"></div>
+              <div class="form-row">
+                <button type="submit">Save provider binding</button>
+                <span class="muted">This stores configuration only; it does not connect OAuth or prove provider availability.</span>
+              </div>
+              <div class="error" id="connection-error" aria-live="polite"></div>
+            </form>
             <div id="connections-list"></div>
           </div>
         </section>

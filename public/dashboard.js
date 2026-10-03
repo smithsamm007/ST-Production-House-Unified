@@ -20,6 +20,7 @@
     csrfToken: null,
     health: null,
     metrics: null,
+    providers: [],
     channels: [],
     productions: [],
     activeView: "overview",
@@ -801,8 +802,7 @@
     const host = $("providers-list");
     host.innerHTML = '<div class="loading">Loading governed catalog…</div>';
     try {
-      const data = await api("/api/providers/catalog");
-      const providers = data.providers || [];
+      const providers = await refreshProviderCatalog();
       host.innerHTML = providers.length === 0
         ? '<div class="empty">Provider catalog is empty.</div>'
         : providers.map(function (p) {
@@ -820,6 +820,47 @@
     } catch (err) {
       host.innerHTML = errorBox(storageErrorMessage(err));
     }
+  }
+
+  async function refreshProviderCatalog() {
+    const data = await api("/api/providers/catalog");
+    state.providers = Array.isArray(data.providers) ? data.providers : [];
+    fillConnectionProviderSelect();
+    return state.providers;
+  }
+
+  function fillConnectionProviderSelect() {
+    const select = $("conn-provider");
+    if (!select) return;
+    const current = select.value;
+    select.innerHTML = state.providers.length === 0
+      ? '<option value="">provider catalog unavailable</option>'
+      : state.providers.map(function (provider) {
+          return '<option value="' + esc(provider.providerKey) + '">' + esc(provider.displayName) + "</option>";
+        }).join("");
+    if (state.providers.some(function (provider) { return provider.providerKey === current; })) {
+      select.value = current;
+    }
+    renderConnectionFields();
+  }
+
+  function renderConnectionFields() {
+    const select = $("conn-provider");
+    const host = $("connection-fields");
+    const provider = state.providers.find(function (item) { return item.providerKey === select.value; });
+    $("conn-kind").textContent = provider ? provider.category : "—";
+    host.innerHTML = !provider || !Array.isArray(provider.fields) || provider.fields.length === 0
+      ? '<div class="empty">No catalog fields are available for this provider.</div>'
+      : provider.fields.map(function (field) {
+          const secret = field.kind === "secret";
+          const detail = secret ? "Opaque locator only (vault:// or opaque://)" : "Non-secret configuration";
+          return '<label class="stack-field" for="conn-field-' + esc(field.key) + '">' +
+            '<span>' + esc(field.label) + (field.required ? " · required" : " · optional") + '</span>' +
+            '<input id="conn-field-' + esc(field.key) + '" data-connection-field="' + esc(field.key) +
+            '" data-connection-kind="' + (secret ? "secret" : "config") + '" maxlength="' + (secret ? "512" : "300") +
+            '" placeholder="' + esc(detail) + '" autocomplete="off"' + (field.required ? " required" : "") + " />" +
+            "</label>";
+        }).join("");
   }
 
   async function loadQuotas() {
@@ -848,6 +889,7 @@
     if (!agentId) { host.innerHTML = '<div class="empty">Pick a director to list its provider bindings.</div>'; return; }
     host.innerHTML = '<div class="loading">Loading connections…</div>';
     try {
+      if (state.providers.length === 0) await refreshProviderCatalog();
       const data = await api("/api/connections/directors/" + encodeURIComponent(agentId));
       const items = data.items || [];
       host.innerHTML = items.length === 0
@@ -861,10 +903,49 @@
               pill(c.kind, "info") + pill(c.status || "unknown") +
               '<span class="sub">' + esc(c.credentialLabel || "no label") + "</span>" +
               '<span class="platforms">' + (secretKeys || '<span class="plat">no secret fields</span>') + "</span>" +
-              '<span class="spacer"></span>' +
               '<span class="sub">config keys: ' + esc(Object.keys(c.configFields || {}).join(", ") || "—") + "</span>" +
+              '<span class="connection-actions">' +
+              '<button type="button" data-connection-test="' + esc(c.id) + '">Test</button>' +
+              '<button type="button" data-connection-delete="' + esc(c.id) + '">Delete</button>' +
+              "</span>" +
               "</div>";
           }).join("") + "</div>";
+      for (const button of host.querySelectorAll("button[data-connection-test]")) {
+        button.addEventListener("click", async function () {
+          button.disabled = true;
+          try {
+            const result = await api("/api/connections/directors/" + encodeURIComponent(agentId) + "/" +
+              encodeURIComponent(button.getAttribute("data-connection-test")) + "/test", { method: "POST" });
+            await loadConnections();
+            const notice = document.createElement("div");
+            notice.className = "empty";
+            notice.textContent = "Connection test: " + (result.result?.outcome || "unknown") +
+              (result.result?.errorCode ? " · " + result.result.errorCode : "");
+            host.prepend(notice);
+          } catch (err) {
+            host.prepend(Object.assign(document.createElement("div"), {
+              className: "empty",
+              textContent: storageErrorMessage(err),
+            }));
+          }
+        });
+      }
+      for (const button of host.querySelectorAll("button[data-connection-delete]")) {
+        button.addEventListener("click", async function () {
+          button.disabled = true;
+          try {
+            await api("/api/connections/directors/" + encodeURIComponent(agentId) + "/" +
+              encodeURIComponent(button.getAttribute("data-connection-delete")), { method: "DELETE" });
+            await loadConnections();
+          } catch (err) {
+            button.disabled = false;
+            host.prepend(Object.assign(document.createElement("div"), {
+              className: "empty",
+              textContent: storageErrorMessage(err),
+            }));
+          }
+        });
+      }
     } catch (err) {
       host.innerHTML = errorBox(storageErrorMessage(err));
     }
@@ -1102,6 +1183,56 @@
     $("comm-load").addEventListener("click", loadConversation);
     $("memory-load").addEventListener("click", loadMemory);
     $("conn-load").addEventListener("click", loadConnections);
+    $("conn-agent").addEventListener("change", loadConnections);
+    $("conn-provider").addEventListener("change", renderConnectionFields);
+
+    $("connection-form").addEventListener("submit", async function (event) {
+      event.preventDefault();
+      const errorEl = $("connection-error");
+      const provider = state.providers.find(function (item) { return item.providerKey === $("conn-provider").value; });
+      errorEl.textContent = "";
+      if (!provider || !$("conn-agent").value) {
+        errorEl.textContent = "Select a director and an available provider.";
+        return;
+      }
+      const secretFields = {};
+      const configFields = {};
+      for (const field of $("connection-fields").querySelectorAll("[data-connection-field]")) {
+        const value = field.value.trim();
+        if (!value) continue;
+        const key = field.getAttribute("data-connection-field");
+        if (field.getAttribute("data-connection-kind") === "secret") {
+          if (!/^(?:vault|opaque):\/\/[^\s]+$/.test(value)) {
+            errorEl.textContent = "Secret fields accept opaque vault:// or opaque:// locators only.";
+            return;
+          }
+          secretFields[key] = value;
+        } else {
+          configFields[key] = value;
+        }
+      }
+      const submit = $("connection-form").querySelector('button[type="submit"]');
+      submit.disabled = true;
+      try {
+        await api("/api/connections/directors/" + encodeURIComponent($("conn-agent").value), {
+          method: "POST",
+          body: JSON.stringify({
+            providerKey: provider.providerKey,
+            kind: provider.category,
+            secretFields,
+            configFields,
+            credentialLabel: $("conn-label").value.trim(),
+          }),
+        });
+        $("connection-form").reset();
+        fillConnectionProviderSelect();
+        await loadConnections();
+      } catch (err) {
+        errorEl.textContent = storageErrorMessage(err);
+      } finally {
+        submit.disabled = false;
+      }
+    });
 
     $("comm-form").addEventListener("submit", async function (event) {
       event.preventDefault();

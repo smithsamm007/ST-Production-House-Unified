@@ -258,6 +258,7 @@ main { padding: 20px; min-width: 0; }
   border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer;
 }
 .row-item button:hover { border-color: var(--accent); }
+.row-item button:disabled { opacity: 0.55; cursor: default; }
 
 /* ---------- Threads (messages, evidence, decisions) ---------- */
 .thread { display: grid; gap: 8px; margin-top: 10px; }
@@ -275,6 +276,8 @@ main { padding: 20px; min-width: 0; }
 
 /* ---------- Forms ---------- */
 .stack { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
+.stack-field { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12.5px; }
+.stack-field input { width: min(560px, 100%); }
 .form-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
 .form-row label { color: var(--muted); font-size: 12.5px; }
 select, input, textarea {
