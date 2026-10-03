@@ -192,11 +192,12 @@ export function createOwnerApp(options = {}) {
   );
 
   // Owner live-operations surface (Issue #192): provider smoke test,
-  // private-first publishing test, and analytics ingestion. Mounted behind
+  // private-first publishing test, and server-sourced analytics ingestion. Mounted behind
   // requireAuth; every mutation additionally requires a per-session CSRF
   // token and writes an owner_control_audit row (Rule 6). Transports
-  // (provider slots / publishing publisher) are server-side options only —
-  // never request input — and degrade honestly (503) when unconfigured.
+  // (provider slots / publishing publisher / analytics collector) are
+  // server-side options only — never request input — and degrade honestly
+  // (503) when unconfigured.
   app.use(
     "/ops",
     requireAuth,
@@ -208,6 +209,7 @@ export function createOwnerApp(options = {}) {
       publishingPublisher: options.publishingPublisher ?? null,
       publishingService: options.publishingService ?? null,
       resolvePublishingIdentity: options.resolvePublishingIdentity ?? null,
+      analyticsTransport: options.analyticsTransport ?? null,
       analyticsService: options.analyticsService ?? null
     })
   );

@@ -10,7 +10,7 @@ the owner can actually operate them. Mounted at `/ops` behind `requireAuth` in
 |---|---|---|
 | POST | `/ops/providers/:agentId/smoke-test` | Configured-provider smoke test with receipt verification |
 | POST | `/ops/publishing/:agentId/private-test` | Private-first publishing test (owner approval + genuine platform receipt) |
-| POST | `/ops/analytics/ingest` | Record genuine external platform analytics |
+| POST | `/ops/analytics/ingest` | Collect and record platform analytics through a server-side transport |
 | GET | `/ops/analytics?limit=` | Owner-scoped analytics records (read-only) |
 
 ## Security contract
@@ -51,9 +51,16 @@ the owner can actually operate them. Mounted at `/ops` behind `requireAuth` in
   Only `private` and `draft` modes are permitted (`PRIVATE_FIRST_MODE_REQUIRED`
   otherwise). Genuine platform receipts are mandatory; a publisher response
   missing `platformPostId`/`platformUrl`/`rawResponse` fails honestly.
-- **Analytics**: metrics must be non-negative integers (no invented or
-  fractional numbers), URLs must be HTTPS-only, and platforms are the four
-  supported allowlisted destinations.
+- **Analytics**: the request identifies only `platformPostId`. Platform,
+  URL, metrics, and metadata are fetched through the server-configured
+  `analyticsTransport.fetchSnapshot({ ownerId, platformPostId })`; caller-
+  supplied provenance or measurements are rejected. The response must bind
+  to the requested post, include all six metric fields as non-negative safe
+  integers (including explicit zeros), use an HTTPS URL, and name one of the
+  four supported destinations. Missing, failing, malformed, or mismatched
+  transport returns `503 ANALYTICS_TRANSPORT_UNAVAILABLE`; no record or
+  success audit is written. This server-side boundary does not itself assert
+  that an official platform integration or live credential is configured.
 
 ## Durable analytics storage (Issue #194)
 
@@ -84,6 +91,7 @@ enforcement, owner isolation, and DB-level bounds on live PostgreSQL.
 |---|---|
 | Smoke transport unconfigured or failing slot resolution | `503 PROVIDER_SMOKE_TRANSPORT_UNAVAILABLE` |
 | Publisher transport unconfigured | `503 PUBLISHING_TRANSPORT_UNAVAILABLE` |
+| Analytics transport unconfigured, failing, or invalid | `503 ANALYTICS_TRANSPORT_UNAVAILABLE` |
 | Audit adapter unavailable | `503 DATABASE_ADAPTER_UNAVAILABLE` |
 | All providers fail the smoke test | `422 ALL_PROVIDERS_FAILED` (attempts are evidence, nothing fabricated) |
 | Provider/publishing/analitics domain rejection | `422 <stable service code>` |

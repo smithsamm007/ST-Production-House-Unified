@@ -8,6 +8,18 @@ const VALID_BOOTSTRAP_TOKEN = "0123456789abcdef0123456789abcdef"; // 32 bytes
 const VALID_ARTIFACT_HASH = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const AGENT_ID = "agent-01";
 
+function analyticsMetrics(overrides = {}) {
+  return {
+    views: 0,
+    watchTimeSeconds: 0,
+    likes: 0,
+    shares: 0,
+    commentsCount: 0,
+    impressions: 0,
+    ...overrides,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Server-side fixtures: transports and stores. None of these are reachable
 // from request bodies by contract — the tests assert that too.
@@ -464,7 +476,20 @@ test("private publishing test route: publisher and publishingService cannot come
 // ---------------------------------------------------------------------------
 
 test("analytics ingest: records genuine metrics with audit row and reads back owner-scoped", async () => {
-  const { app, db } = buildApp({});
+  const { app, db } = buildApp({
+    analyticsTransport: {
+      fetchSnapshot: async ({ ownerId, platformPostId }) => {
+        assert.equal(ownerId, "owner-alpha");
+        assert.equal(platformPostId, "yt_post_777");
+        return {
+          platformPostId,
+          platformUrl: "https://youtube.com/watch?v=yt_post_777",
+          platform: "youtube",
+          metrics: analyticsMetrics({ views: 1200, likes: 40 }),
+        };
+      },
+    },
+  });
   const { token, csrfToken } = await createSession(app);
   const headers = { Authorization: `Bearer ${token}`, "x-csrf-token": csrfToken };
 
@@ -473,16 +498,13 @@ test("analytics ingest: records genuine metrics with audit row and reads back ow
     .set(headers)
     .send({
       platformPostId: "yt_post_777",
-      platformUrl: "https://youtube.com/watch?v=yt_post_777",
-      platform: "youtube",
-      metrics: { views: 1200, likes: 40 },
     });
   assert.equal(res.status, 201);
   const record = res.body.record;
   assert.equal(record.platformPostId, "yt_post_777");
   assert.equal(record.metrics.views, 1200);
   assert.equal(record.metrics.likes, 40);
-  assert.equal(record.metrics.shares, 0); // missing metrics zero-fill honestly
+  assert.equal(record.metrics.shares, 0); // Explicitly supplied by the collector.
   assert.deepEqual(Object.keys(record).sort(), [
     "collectedAt", "metrics", "ownerId", "platform", "platformPostId", "platformUrl", "recordId",
   ]);
@@ -514,80 +536,134 @@ test("analytics ingest: records genuine metrics with audit row and reads back ow
 });
 
 test("analytics ingest: negative or non-integer metrics are rejected (no invented numbers)", async () => {
-  const { app } = buildApp({});
+  const { app } = buildApp({
+    analyticsTransport: {
+      fetchSnapshot: async ({ platformPostId }) => ({
+        platformPostId,
+        platformUrl: `https://youtube.com/watch?v=${platformPostId}`,
+        platform: "youtube",
+        metrics: analyticsMetrics({ views: platformPostId.endsWith("778") ? -5 : 1.5 }),
+      }),
+    },
+  });
   const { token, csrfToken } = await createSession(app);
   const headers = { Authorization: `Bearer ${token}`, "x-csrf-token": csrfToken };
 
   const negative = await request(app)
     .post("/ops/analytics/ingest")
     .set(headers)
-    .send({
-      platformPostId: "yt_post_778",
-      platformUrl: "https://youtube.com/watch?v=yt_post_778",
-      platform: "youtube",
-      metrics: { views: -5 },
-    });
-  assert.equal(negative.status, 422);
-  assert.equal(negative.body.error, "INVALID_ANALYTICS_METRICS");
+    .send({ platformPostId: "yt_post_778" });
+  assert.equal(negative.status, 503);
+  assert.equal(negative.body.error, "ANALYTICS_TRANSPORT_UNAVAILABLE");
 
   const fractional = await request(app)
     .post("/ops/analytics/ingest")
     .set(headers)
-    .send({
-      platformPostId: "yt_post_779",
-      platformUrl: "https://youtube.com/watch?v=yt_post_779",
-      platform: "youtube",
-      metrics: { views: 1.5 },
-    });
-  assert.equal(fractional.status, 422);
-  assert.equal(fractional.body.error, "INVALID_ANALYTICS_METRICS");
+    .send({ platformPostId: "yt_post_779" });
+  assert.equal(fractional.status, 503);
+  assert.equal(fractional.body.error, "ANALYTICS_TRANSPORT_UNAVAILABLE");
 });
 
 test("analytics ingest: non-HTTPS platform URLs are rejected", async () => {
-  const { app } = buildApp({});
+  const { app } = buildApp({
+    analyticsTransport: {
+      fetchSnapshot: async ({ platformPostId }) => ({
+        platformPostId,
+        platformUrl: "http://youtube.com/watch?v=yt_post_780",
+        platform: "youtube",
+      }),
+    },
+  });
   const { token, csrfToken } = await createSession(app);
   const res = await request(app)
     .post("/ops/analytics/ingest")
     .set("Authorization", `Bearer ${token}`)
     .set("x-csrf-token", csrfToken)
-    .send({
-      platformPostId: "yt_post_780",
-      platformUrl: "http://youtube.com/watch?v=yt_post_780",
-      platform: "youtube",
-    });
-  assert.equal(res.status, 400);
-  assert.equal(res.body.error, "INVALID_PLATFORM_URL");
+    .send({ platformPostId: "yt_post_780" });
+  assert.equal(res.status, 503);
+  assert.equal(res.body.error, "ANALYTICS_TRANSPORT_UNAVAILABLE");
 });
 
 test("analytics ingest: internal agent names and secret locators in metadata are blocked (Rules 15/17)", async () => {
-  const { app, db } = buildApp({});
+  const { app, db } = buildApp({
+    analyticsTransport: {
+      fetchSnapshot: async ({ platformPostId }) => ({
+        platformPostId,
+        platformUrl: `https://youtube.com/watch?v=${platformPostId}`,
+        platform: "youtube",
+        metrics: analyticsMetrics(),
+        metadata: platformPostId.endsWith("781")
+          ? { note: "created by SHERLOCK" }
+          : { key: "vault://secret" },
+      }),
+    },
+  });
   const { token, csrfToken } = await createSession(app);
   const headers = { Authorization: `Bearer ${token}`, "x-csrf-token": csrfToken };
 
   const leak = await request(app)
     .post("/ops/analytics/ingest")
     .set(headers)
-    .send({
-      platformPostId: "yt_post_781",
-      platformUrl: "https://youtube.com/watch?v=yt_post_781",
-      platform: "youtube",
-      metadata: { note: "created by SHERLOCK" },
-    });
+    .send({ platformPostId: "yt_post_781" });
   assert.equal(leak.status, 422);
   assert.equal(leak.body.error, "AGENT_NAME_LEAKAGE_DENIED");
 
   const secret = await request(app)
     .post("/ops/analytics/ingest")
     .set(headers)
-    .send({
-      platformPostId: "yt_post_782",
-      platformUrl: "https://youtube.com/watch?v=yt_post_782",
-      platform: "youtube",
-      metadata: { key: "vault://secret" },
-    });
+    .send({ platformPostId: "yt_post_782" });
   assert.equal(secret.status, 422);
   assert.equal(secret.body.error, "SECRET_LEAKAGE_DENIED");
   assert.equal(db.auditRows.length, 0);
+});
+
+test("analytics ingest: client cannot supply platform measurements or provenance", async () => {
+  const { app, db } = buildApp({
+    analyticsTransport: { fetchSnapshot: async () => assert.fail("transport must not run") },
+  });
+  const { token, csrfToken } = await createSession(app);
+  const res = await request(app)
+    .post("/ops/analytics/ingest")
+    .set("Authorization", `Bearer ${token}`)
+    .set("x-csrf-token", csrfToken)
+    .send({
+      platformPostId: "yt_post_spoofed",
+      platformUrl: "https://youtube.com/watch?v=yt_post_spoofed",
+      platform: "youtube",
+      metrics: { views: 999999 },
+    });
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, "CLIENT_TRANSPORT_FORBIDDEN");
+  assert.equal(db.analyticsRows.length, 0);
+  assert.equal(db.auditRows.length, 0);
+});
+
+test("analytics ingest: missing, failing, or mismatched source fails honestly", async () => {
+  for (const analyticsTransport of [
+    null,
+    { fetchSnapshot: async () => ({ platformPostId: "another-post" }) },
+    { fetchSnapshot: async () => { throw new Error("PLATFORM_AUTH_FAILURE"); } },
+    {
+      fetchSnapshot: async ({ platformPostId }) => ({
+        platformPostId,
+        platformUrl: `https://youtube.com/watch?v=${platformPostId}`,
+        platform: "youtube",
+        metrics: { views: 10 },
+      }),
+    },
+  ]) {
+    const { app, db } = buildApp({ analyticsTransport });
+    const { token, csrfToken } = await createSession(app);
+    const res = await request(app)
+      .post("/ops/analytics/ingest")
+      .set("Authorization", `Bearer ${token}`)
+      .set("x-csrf-token", csrfToken)
+      .send({ platformPostId: "yt_post_unavailable" });
+    assert.equal(res.status, 503);
+    assert.equal(res.body.error, "ANALYTICS_TRANSPORT_UNAVAILABLE");
+    assert.equal(db.analyticsRows.length, 0);
+    assert.equal(db.auditRows.length, 0);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -604,18 +680,23 @@ test("analytics ingest with failing storage degrades honestly (503), never a fab
       throw new Error(`MEMORY_DB_UNEXPECTED_QUERY: ${text.slice(0, 40)}`);
     },
   };
-  const { app } = buildApp({ dbAdapter: failingDb });
+  const { app } = buildApp({
+    dbAdapter: failingDb,
+    analyticsTransport: {
+      fetchSnapshot: async ({ platformPostId }) => ({
+        platformPostId,
+        platformUrl: `https://youtube.com/watch?v=${platformPostId}`,
+        platform: "youtube",
+        metrics: analyticsMetrics({ views: 5 }),
+      }),
+    },
+  });
   const { token, csrfToken } = await createSession(app);
   const res = await request(app)
     .post("/ops/analytics/ingest")
     .set("Authorization", `Bearer ${token}`)
     .set("x-csrf-token", csrfToken)
-    .send({
-      platformPostId: "yt_post_fail",
-      platformUrl: "https://youtube.com/watch?v=yt_post_fail",
-      platform: "youtube",
-      metrics: { views: 5 },
-    });
+    .send({ platformPostId: "yt_post_fail" });
   assert.equal(res.status, 500);
   assert.equal(res.body.error, "INTERNAL_SERVER_ERROR");
 });
