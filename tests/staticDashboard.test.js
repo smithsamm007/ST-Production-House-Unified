@@ -118,6 +118,22 @@ test("Rule 17 hygiene: dashboard runtime carries no secret-shaped literals", () 
   assert.doesNotMatch(indexHtml, secretLiteral);
 });
 
+test("Connections: owner controls use catalog metadata and existing scoped APIs", () => {
+  assert.ok(indexHtml.includes('id="connection-form"'));
+  assert.ok(indexHtml.includes('id="conn-provider"'));
+  assert.ok(indexHtml.includes('id="connection-fields"'));
+  assert.match(stylesCss, /\.stack-field input/);
+  assert.match(dashboardJs, /await api\("\/api\/providers\/catalog"\)/);
+  assert.match(dashboardJs, /provider\.fields\.map/);
+  assert.match(dashboardJs, /data-connection-kind="' \+ \(secret \? "secret" : "config"\)/);
+  assert.match(dashboardJs, /vault\|opaque/);
+  assert.match(dashboardJs, /method: "POST"/);
+  assert.match(dashboardJs, /method: "DELETE"/);
+  assert.match(dashboardJs, /\/test/);
+  assert.ok(dashboardJs.includes("Connection test:"));
+  assert.ok(dashboardJs.includes('result.result?.outcome || "unknown"'));
+});
+
 test("Static: pipeline strip uses the real durable stage enum only", () => {
   // The runtime's PIPELINE_STAGES literal must equal the durable stage enum
   // exactly (sql/020 + sql/024 + sql/025 CHECK constraint) — no fabricated

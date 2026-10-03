@@ -47,7 +47,7 @@ evidence, and owner approval at every legally/technically sensitive boundary.
 | Publishing request/approval/receipt contracts | **Delivered (service contract)** | `src/publishing/publishingService.js`, private-first owner operation route; no official live platform publisher or real upload verified |
 | Adversarial hardening: fuzzing, SQLi matrix, runbook | **Delivered** | `tests/adversarial/**`, `docs/RUNBOOK.md` (PR #105) |
 | TTS, visual, FFmpeg assembly, FFprobe and package/QC executor infrastructure | **Delivered (offline/code-side)** | `src/media/ttsExecutor.js`, `src/media/visualExecutor.js`, `src/media/ffmpegAssemblyExecutor.js`, `src/pipeline/packagingQc.js`; no real rendered package or 30–50 minute FFprobe burn-in verified |
-| Owner dashboard console and evidence-backed channel cards | **Delivered (dashboard surface)** | `public/index.html`, `public/dashboard.js` (PRs #197, #199); connection bindings are read-only in this UI and OAuth connect/revoke controls are absent |
+| Owner dashboard console and evidence-backed channel cards | **Delivered (dashboard surface)** | `public/index.html`, `public/dashboard.js` (PRs #197, #199); per-Director provider binding controls use existing scoped APIs, while OAuth connect/revoke flows remain absent |
 | Live provider generation | **Not started (owner-gated)** | Executor/routing code exists, but owner credentials, real quota snapshots, and provider-generated media evidence are absent |
 | Official OAuth and platform publishing adapters | **Not started** | Connection slots and CRUD APIs exist; no official OAuth authorization/callback/revocation route or real platform publisher is configured |
 | Durable analytics storage and owner ingestion boundary | **Delivered (offline/code-side)** | `sql/027`, `src/analytics/postgresAnalyticsRepository.js`, `src/api/ownerOperationsRouter.js` (PRs #193, #195; server-sourced collector boundary in PR #201); no official analytics collector or real platform response verified |
@@ -89,9 +89,10 @@ claiming verification without durable evidence (Rule 1).
 2. **Real media burn-in** — use the existing TTS, visual, FFmpeg, FFprobe, and
    packaging executors with owner-approved free capacity; prove a complete
    package and measure the main artifact at 1800–3000 seconds.
-3. **Owner controls** — the dashboard has the core console and honest read
-   surfaces, but still needs usable provider-binding management and official
-   OAuth connect/revoke flows; the connection-list view alone is not onboarding.
+3. **Owner controls** — the dashboard has the core console, honest read
+   surfaces, and per-Director provider-binding management. Official OAuth
+   connect/revoke flows remain unimplemented; binding a locator is not OAuth
+   onboarding or proof of provider connectivity.
 4. **Official publishing path** — implement/configure official platform OAuth
    and publisher adapters, then verify private-first uploads and real receipts
    under exact owner approval. No live account is connected today.

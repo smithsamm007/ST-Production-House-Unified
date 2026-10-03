@@ -35,7 +35,7 @@ Loading, error, and empty states are explicit; nothing is simulated
 | Active Jobs | `/api/metrics` counters + `/api/content-runs` |
 | Provider Status | `/api/providers/catalog` (governed catalog, official credential URLs) |
 | Quotas | honest note: no quota read route exists on this server; real queue counters from `/api/metrics` |
-| Secrets & Connections | `/api/connections/directors/:agentId` (field KEYS only, Rule 17) |
+| Secrets & Connections | `/api/providers/catalog`; `/api/connections/directors/:agentId` (list/upsert/delete/test; secret field KEYS only, Rule 17) |
 | Publishing Accounts | `/api/channels/:id/destinations` (GET + POST) |
 | Approvals | `/api/control/approvals` |
 | Analytics | operational counters from `/api/metrics` (sql/027 records live in the owner-operations service; not exposed here) |
@@ -81,8 +81,14 @@ Each channel card renders only real, durable data:
 - Rule 15: internal director names are never fetched or rendered. Director
   selectors label entries as `Director <agentId> · <public channel name>`;
   panels show only public channel branding.
-- Rule 17: the connections panel lists secret field KEYS only; locator
-  values never serialize to the client.
+- Rule 17: the connections panel builds fields from the safe provider catalog,
+  accepts only opaque secret-manager locators for secret references, clears
+  them after saving, and lists secret field KEYS only; saved locator values
+  never serialize back to the client. Existing owner-scoped routes enforce
+  CSRF, validation, audit, and deletion scoping.
+- Connection tests display the API's real outcome. Without a configured live
+  test transport, the result is `unverified`, never success. Saving a binding
+  does not perform OAuth or prove provider connectivity.
 - Publishing: the UI records publish intent only (Rule 7 gate is enforced
   server-side); live platform calls remain pending.
 
