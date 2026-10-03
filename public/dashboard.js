@@ -119,6 +119,20 @@
     ["complete", "published state"],
   ];
 
+  // The four canonical media slots of a release (S-M34-01): the longform main
+  // video plus the canonical short-form package — 2 independent content Reels
+  // and 1 standalone brand Reel. The reel keys are the CANONICAL_REELS
+  // identities from src/pipeline/reelsStage.js. A slot fills ONLY from
+  // durable evidence (see releaseSlotState); anything else stays an explicit
+  // empty slot (Rule 1): no invented thumbnail, duration, date, or engagement
+  // number is ever rendered.
+  const MEDIA_SLOTS = [
+    { key: "main_video", label: "Main Video", hint: "longform episode" },
+    { key: "content_reel_1", label: "Short 1", hint: "content reel" },
+    { key: "content_reel_2", label: "Short 2", hint: "content reel" },
+    { key: "brand_reel", label: "Brand Reel", hint: "standalone brand promo" },
+  ];
+
   // ------------------------------------------------------------------
   // Boot, auth, shell
   // ------------------------------------------------------------------
@@ -322,15 +336,124 @@
     }).join("");
   }
 
-  function channelCard(c) {
-    return '<div class="card">' +
-      "<h3>" + esc(c.displayName) + "</h3>" +
-      '<div class="tagline">' + esc(c.tagline || "—") + "</div>" +
-      '<div class="meta">' + pill(c.agentEnabled === false ? "director disabled" : "director enabled", c.agentEnabled === false ? "bad" : "ok") +
-      " " + pill((c.releaseCount ?? 0) + " releases", "info") + "</div>" +
+  // ------------------------------------------------------------------
+  // Channel cards (Command Center + Directors) — real data only
+  // ------------------------------------------------------------------
+  // One enrichment pass per render: the real channel detail (releases +
+  // destinations) for every channel, plus the durable pipeline detail of
+  // each channel's most recent release. A failed lookup stays visible on
+  // the card as an explicit error note — never silently downgraded to an
+  // empty state (Rule 1).
+  async function loadChannelCardData() {
+    const details = await Promise.allSettled(
+      state.channels.map(function (c) { return api("/api/channels/" + encodeURIComponent(c.id)); })
+    );
+    // listReleasesForChannel orders by season DESC, episode DESC: the first
+    // row is the channel's most recent release.
+    const latestReleases = details.map(function (result) {
+      if (result.status !== "fulfilled") return null;
+      return (result.value.releases || [])[0] || null;
+    });
+    const latestData = await Promise.allSettled(latestReleases.map(function (release) {
+      return release ? api("/api/productions/" + encodeURIComponent(release.id)) : Promise.resolve(null);
+    }));
+    return state.channels.map(function (channel, i) {
+      return {
+        channel: channel,
+        detail: details[i].status === "fulfilled" ? details[i].value : null,
+        detailError: details[i].status === "rejected",
+        latest: latestReleases[i],
+        latestData: latestData[i].status === "fulfilled" ? latestData[i].value : null,
+        latestDataError: latestData[i].status === "rejected",
+      };
+    });
+  }
+
+  // Platform chips come ONLY from the channel's real configured publishing
+  // destinations (/api/channels/:id). Unconfigured platforms are never shown
+  // as if connected.
+  function platformChips(entry) {
+    if (entry.detailError) {
+      return '<div class="platforms"><span class="plat">destination lookup failed</span></div>';
+    }
+    const destinations = (entry.detail && entry.detail.destinations) || [];
+    if (destinations.length === 0) {
+      return '<div class="platforms"><span class="plat">no destinations configured</span></div>';
+    }
+    return '<div class="platforms">' + destinations.map(function (d) {
+      return '<span class="plat on"' + (d.handle ? ' title="' + esc(d.handle) + '"' : "") + ">" +
+        esc(d.platform) + (d.isPrimary ? " ★" : "") + "</span>";
+    }).join("") + "</div>";
+  }
+
+  // Slot binding through durable evidence only:
+  //   Main Video           — artifact kind "video" recorded at stage "assembly"
+  //   Short 1 / Short 2 /  — pipeline event stage "reels" status "succeeded"
+  //   Brand Reel             carrying detail.reel (content_reel_1 /
+  //                          content_reel_2 / brand_reel), matched to its
+  //                          artifact by the event's sha256.
+  function releaseSlotState(latestData) {
+    const events = (latestData && latestData.events) || [];
+    const artifacts = (latestData && latestData.artifacts) || [];
+    const artifactBySha = new Map(artifacts.map(function (a) { return [a.sha256, a]; }));
+    const reelArtifacts = new Map();
+    for (const event of events) {
+      const detail = event && event.detail;
+      if (event.stage === "reels" && event.status === "succeeded" &&
+          detail && typeof detail.reel === "string" && typeof detail.sha256 === "string") {
+        reelArtifacts.set(detail.reel, artifactBySha.get(detail.sha256) || null);
+      }
+    }
+    const mainVideo = artifacts.find(function (a) { return a.kind === "video" && a.stage === "assembly"; }) || null;
+    return { mainVideo: mainVideo, reelArtifacts: reelArtifacts };
+  }
+
+  function mediaSlot(slot, entry) {
+    const label = '<div class="slot-label">' + esc(slot.label) + "</div>";
+    if (!entry.latest) {
+      return '<div class="slot empty" title="' + esc(slot.hint) + '">' + label +
+        '<div class="slot-note">no release planned yet</div></div>';
+    }
+    if (entry.latestDataError || !entry.latestData) {
+      return '<div class="slot empty" title="' + esc(slot.hint) + '">' + label +
+        '<div class="slot-note">release detail unavailable (lookup failed)</div></div>';
+    }
+    const slots = releaseSlotState(entry.latestData);
+    const artifact = slot.key === "main_video"
+      ? slots.mainVideo
+      : slots.reelArtifacts.get(slot.key) || null;
+    if (!artifact) {
+      return '<div class="slot empty" title="' + esc(slot.hint) + '">' + label +
+        '<div class="slot-note">no media yet — ffprobe verification pending</div></div>';
+    }
+    return '<div class="slot filled" title="' + esc(slot.hint) + '">' + label +
+      '<div class="slot-note">' + esc(artifact.kind) + (artifact.stage ? " · " + esc(artifact.stage) : "") + "</div>" +
+      pill(artifact.ffprobeVerified === true ? "ffprobe verified" : "ffprobe unverified", artifact.ffprobeVerified === true ? "ok" : "warn") +
+      '<div class="slot-note">mode ' + esc(artifact.generationMode || "unknown") + "</div>" +
+      '<div class="sha" title="SHA-256">' + esc(shortHash(artifact.sha256, 10)) + "</div>" +
+      "</div>";
+  }
+
+  function channelCard(entry, options) {
+    const c = entry.channel;
+    const opts = options || {};
+    return '<div class="card channel-card">' +
+      '<div class="card-head"><h3>' + esc(c.displayName) + "</h3>" +
+        pill(c.agentEnabled === false ? "director disabled" : "director enabled", c.agentEnabled === false ? "bad" : "ok") + "</div>" +
+      platformChips(entry) +
+      (opts.mediaSlots
+        ? '<div class="media-slots">' + MEDIA_SLOTS.map(function (slot) { return mediaSlot(slot, entry); }).join("") + "</div>" +
+          (entry.latest
+            ? '<div class="slot-release">latest release ' + esc("S" + entry.latest.season + "E" + entry.latest.episode) +
+              " · " + esc(entry.latest.title) + " " + pill(entry.latest.status) + "</div>"
+            : '<div class="slot-release">no releases yet</div>')
+        : "") +
+      '<div class="meta">' + pill((c.releaseCount ?? 0) + " releases", "info") + "</div>" +
       '<div class="row"><span>slug</span><b>' + esc(c.slug) + "</b></div>" +
       '<div class="row"><span>language</span><b>' + esc(c.language || "—") + "</b></div>" +
       '<div class="row"><span>director slot</span><b>' + esc(c.agentId) + "</b></div>" +
+      (opts.actionsButton ? '<div class="actions"><button data-channel="' + esc(c.id) + '">Open detail</button></div>' : "") +
+      '<div class="card-footer tagline">' + esc(c.tagline || "—") + "</div>" +
       "</div>";
   }
 
@@ -349,9 +472,13 @@
     renderMetricsStrip();
     renderPipelineStrip();
     const cards = $("overview-channels");
-    cards.innerHTML = state.channels.length === 0
-      ? '<div class="empty">No channels yet — create one to give a director its first universe.</div>'
-      : state.channels.map(channelCard).join("");
+    if (state.channels.length === 0) {
+      cards.innerHTML = '<div class="empty">No channels yet — create one to give a director its first universe.</div>';
+    } else {
+      cards.innerHTML = '<div class="loading">Loading channel cards…</div>';
+      const entries = await loadChannelCardData();
+      cards.innerHTML = entries.map(function (entry) { return channelCard(entry, { mediaSlots: true }); }).join("");
+    }
 
     // Latest artifacts across the most recent releases (real data only).
     const target = $("overview-artifacts");
@@ -402,11 +529,15 @@
   async function loadDirectors() {
     $("directors-agent-count").textContent = state.metrics ? String(state.metrics.agents ?? "—") : "…";
     const host = $("directors-cards");
-    host.innerHTML = state.channels.length === 0
-      ? '<div class="empty">No channels yet — each director gets its public brand through a channel.</div>'
-      : state.channels.map(function (c) {
-          return channelCard(c) .replace("</div>", '<div class="actions"><button data-channel="' + esc(c.id) + '">Open detail</button></div></div>');
-        }).join("");
+    if (state.channels.length === 0) {
+      host.innerHTML = '<div class="empty">No channels yet — each director gets its public brand through a channel.</div>';
+    } else {
+      host.innerHTML = '<div class="loading">Loading channel cards…</div>';
+      const entries = await loadChannelCardData();
+      host.innerHTML = entries.map(function (entry) {
+        return channelCard(entry, { mediaSlots: true, actionsButton: true });
+      }).join("");
+    }
     for (const button of host.querySelectorAll("button[data-channel]")) {
       button.addEventListener("click", function () { loadChannelDetail(button.getAttribute("data-channel")); });
     }

@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import app from "../src/catalog/server.js";
+import { CANONICAL_REELS } from "../src/pipeline/reelsStage.js";
 
 const publicDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "public");
 const indexHtml = await readFile(path.join(publicDir, "index.html"), "utf8");
@@ -125,4 +126,42 @@ test("Static: pipeline strip uses the real durable stage enum only", () => {
   assert.ok(block, "PIPELINE_STAGES literal must exist");
   const stages = Array.from(block[1].matchAll(/\["([a-z]+)"/g)).map((m) => m[1]);
   assert.deepEqual(stages, ["story", "visual", "audio", "assembly", "reels", "packaging", "qc", "complete"]);
+});
+
+test("Channel cards: media slots use exactly the canonical reel identities", () => {
+  // The card slot grid mirrors the S-M34-01 canonical package: one main
+  // video plus CANONICAL_REELS (2 content reels + 1 brand reel) from
+  // src/pipeline/reelsStage.js — no invented mockup slots.
+  const block = /const MEDIA_SLOTS = \[([\s\S]*?)\];/.exec(dashboardJs);
+  assert.ok(block, "MEDIA_SLOTS literal must exist");
+  const slotKeys = Array.from(block[1].matchAll(/key: "([a-z0-9_]+)"/g)).map((m) => m[1]);
+  const labels = Array.from(block[1].matchAll(/label: "([^"]+)"/g)).map((m) => m[1]);
+  assert.deepEqual(slotKeys, ["main_video", ...CANONICAL_REELS.map((reel) => reel.key)]);
+  assert.deepEqual(labels, ["Main Video", "Short 1", "Short 2", "Brand Reel"]);
+});
+
+test("Channel cards: slots fill only from durable evidence with honest empty states", () => {
+  // Empty slots are explicit; no slot may render invented media metadata.
+  assert.ok(dashboardJs.includes("no media yet — ffprobe verification pending"));
+  assert.ok(dashboardJs.includes("no release planned yet"));
+  assert.ok(dashboardJs.includes("release detail unavailable (lookup failed)"));
+  // Reel slots bind through the succeeded reels event's detail.reel, matched
+  // to the artifact by sha256 — never by list order or invention.
+  assert.match(dashboardJs, /event\.stage === "reels" && event\.status === "succeeded"/);
+  assert.match(dashboardJs, /reelArtifacts\.set\(detail\.reel, artifactBySha\.get\(detail\.sha256\)/);
+  // The main video slot binds to the real assembly-stage video artifact.
+  assert.match(dashboardJs, /a\.kind === "video" && a\.stage === "assembly"/);
+});
+
+test("Channel cards: platform chips derive from real destinations only", () => {
+  assert.match(dashboardJs, /function platformChips\(entry\)/);
+  assert.match(dashboardJs, /entry\.detail\.destinations/);
+  assert.ok(dashboardJs.includes("no destinations configured"));
+  assert.ok(dashboardJs.includes("destination lookup failed"));
+});
+
+test("Directors: detail buttons bind through explicit card options, not string surgery", () => {
+  assert.doesNotMatch(dashboardJs, /\.replace\("<\/div>"/);
+  assert.ok(dashboardJs.includes("actionsButton"));
+  assert.ok(dashboardJs.includes("mediaSlots"));
 });
