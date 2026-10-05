@@ -140,6 +140,37 @@ adapter errors are sanitized (locators/secret-shaped strings redacted) and
 normalized to stable codes; `writeSecret` results that are not locator-shaped
 are structurally rejected before reaching the OAuth service.
 
+#### Durable custody: built-in Vault adapter (Issue #210)
+
+`STPH_SECRET_MANAGER_ADAPTER=vault-http` selects the built-in adapter for the
+**official HashiCorp Vault KV v2 HTTP API** — DURABLE external custody, the
+recommended production choice over the `builtin-env` stopgap:
+
+- `STPH_SECRET_MANAGER_VAULT_ADDRESS` — Vault base URL. HTTPS required
+  (plain http is accepted only for `localhost`/`127.0.0.1`/`[::1]` local
+  development). Credentials and query strings in the address are rejected.
+- `STPH_SECRET_MANAGER_VAULT_TOKEN` or `STPH_SECRET_MANAGER_VAULT_TOKEN_FILE`
+  — the Vault token (the file form suits container/secret-volume deploys).
+  The token is never logged, serialized, or included in error details.
+- `STPH_SECRET_MANAGER_VAULT_MOUNT` — KV v2 mount (default `secret`).
+
+Behavior: OAuth token bundles are written under
+`stph/{ownerId}/{agentId}/{providerKey}/{unique}` in the Vault namespace —
+Director + owner scoping is structural — and PostgreSQL persists only the
+returned opaque `vault://{mount}/…` locator (existing CHECK constraints
+already accept the scheme). A locator whose mount does not match the
+configured mount is never resolved (confused-deputy fail-closed); raw `.`/`..`
+traversal in a locator is rejected before any request. Vault 403/401 →
+`SECRET_MANAGER_AUTH_FAILED`, 404 → `SECRET_MANAGER_ENTRY_NOT_FOUND`,
+network failure → `SECRET_MANAGER_UNREACHABLE`; no error is ever translated
+into success. `/api/health` reports `nonDurable: false` for this adapter.
+
+OWNER ACTION REQUIRED for live operation: deploy/choose the Vault server,
+provision a KV v2 mount, and issue a token whose policy grants create/read/
+delete on `/{mount}/data/stph/**` and `/{mount}/metadata/stph/**`; then set
+the env vars above. Until then the adapter wiring is code-complete but no
+live custody occurs (tests inject the transport; no Vault is contacted).
+
 Remaining operator steps for live YouTube connection (owner-gated, unchanged):
 provide the Google OAuth client credentials (`STPH_YOUTUBE_OAUTH_CLIENT_ID`,
 `STPH_YOUTUBE_OAUTH_CLIENT_SECRET`, `STPH_YOUTUBE_OAUTH_REDIRECT_BASE_URL`)
