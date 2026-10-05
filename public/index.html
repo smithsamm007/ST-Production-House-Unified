@@ -214,6 +214,16 @@
               </div>
               <div class="error" id="connection-error" aria-live="polite"></div>
             </form>
+            <div class="youtube-oauth stack">
+              <h2>YouTube account (official OAuth)</h2>
+              <p class="muted">Official Google OAuth lifecycle for the selected director: authorization → token exchange → official YouTube account verification → revocation. Tokens go only to the external secret manager; the database stores an opaque locator. No client secret, token, authorization code, or locator is ever displayed here.</p>
+              <div id="youtube-status" class="stack"></div>
+              <div class="form-row">
+                <button id="youtube-connect" type="button">Connect YouTube</button>
+                <button id="youtube-revoke" type="button" hidden>Revoke YouTube access</button>
+              </div>
+              <div class="error" id="youtube-error" aria-live="polite"></div>
+            </div>
             <div id="connections-list"></div>
           </div>
         </section>

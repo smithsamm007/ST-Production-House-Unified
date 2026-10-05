@@ -35,7 +35,7 @@ Loading, error, and empty states are explicit; nothing is simulated
 | Active Jobs | `/api/metrics` counters + `/api/content-runs` |
 | Provider Status | `/api/providers/catalog` (governed catalog, official credential URLs) |
 | Quotas | honest note: no quota read route exists on this server; real queue counters from `/api/metrics` |
-| Secrets & Connections | `/api/providers/catalog`; `/api/connections/directors/:agentId` (list/upsert/delete/test; secret field KEYS only, Rule 17) |
+| Secrets & Connections | `/api/providers/catalog`; `/api/connections/directors/:agentId` (list/upsert/delete/test; secret field KEYS only, Rule 17); YouTube OAuth status/connect/revoke via `/api/youtube/*` (below) |
 | Publishing Accounts | `/api/channels/:id/destinations` (GET + POST) |
 | Approvals | `/api/control/approvals` |
 | Analytics | operational counters from `/api/metrics` (sql/027 records live in the owner-operations service; not exposed here) |
@@ -73,6 +73,46 @@ Each channel card renders only real, durable data:
 - **Footer** — the channel tagline, plus release count, slug, language and
   director-slot rows.
 
+### YouTube account (official OAuth, Issue #206)
+
+The Secrets & Connections panel includes an owner-scoped YouTube OAuth
+lifecycle per Director (`/api/youtube`, session-authenticated; mutations
+carry the CSRF token):
+
+- `POST /api/youtube/directors/:agentId/oauth/start` — mints a
+  cryptographically random single-use state (stored ONLY as a SHA-256 hash,
+  bound to owner + director + provider + the server-controlled HTTPS redirect
+  URI, expiring after 10 minutes) and returns the official
+  `accounts.google.com` authorization URL. Requires operator-configured
+  Google OAuth client credentials; otherwise an honest 503
+  `OAUTH_NOT_CONFIGURED`.
+- `GET /api/youtube/callback` — Google returns the owner's browser here; the
+  state is atomically consumed (replay/expiry/mismatch → an honest
+  `oauth=failed&code=…` redirect), the authorization code is exchanged at the
+  official token endpoint server-side, and the YouTube channel is verified
+  via the official API. The authorization code never appears in any redirect
+  or response.
+- `GET /api/youtube/directors/:agentId/status` — honest Director-scoped
+  status from real rows: `unconfigured | connected | expired | disconnected`
+  (the existing sql/003 enum), verified channel identity, token expiry,
+  pending authorization, and whether the OAuth client and the external
+  secret manager are configured. Nothing claims connectivity without a
+  verified channel row.
+- `POST /api/youtube/directors/:agentId/revoke` — owner-authorized
+  revocation at the official Google endpoint plus secret-manager cleanup,
+  reported as separate honest facts; a failed provider revocation keeps the
+  account connected and records the error code.
+
+Token storage: access/refresh tokens are handed ONLY to the injected external
+secret-manager adapter; PostgreSQL persists the returned opaque `vault://` /
+`opaque://` locator (sql/028) and nothing secret-shaped. Raw tokens never
+serialize through any DTO, redirect, audit payload, or error message.
+
+Honest gap: production wiring is intentionally not connected yet. The server
+ships no secret-manager adapter, so until an operator wires one (via the
+service runtime registry) and configures the Google OAuth client env vars,
+connect attempts return an explicit 503 instead of pretending to connect.
+
 ## Security posture
 
 - Sessions: the login form posts to `/api/auth/login`; the session is an
@@ -89,6 +129,10 @@ Each channel card renders only real, durable data:
 - Connection tests display the API's real outcome. Without a configured live
   test transport, the result is `unverified`, never success. Saving a binding
   does not perform OAuth or prove provider connectivity.
+- YouTube OAuth (Issue #206) uses only official Google endpoints over HTTPS
+  with a server-controlled redirect URI; the state token is stored only as a
+  hash and is single-use; every start/callback/revoke writes an audit event
+  carrying only agentId/providerKey/error-code facts.
 - Publishing: the UI records publish intent only (Rule 7 gate is enforced
   server-side); live platform calls remain pending.
 

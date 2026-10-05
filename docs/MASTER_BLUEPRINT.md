@@ -47,9 +47,9 @@ evidence, and owner approval at every legally/technically sensitive boundary.
 | Publishing request/approval/receipt contracts | **Delivered (service contract)** | `src/publishing/publishingService.js`, private-first owner operation route; no official live platform publisher or real upload verified |
 | Adversarial hardening: fuzzing, SQLi matrix, runbook | **Delivered** | `tests/adversarial/**`, `docs/RUNBOOK.md` (PR #105) |
 | TTS, visual, FFmpeg assembly, FFprobe and package/QC executor infrastructure | **Delivered (offline/code-side)** | `src/media/ttsExecutor.js`, `src/media/visualExecutor.js`, `src/media/ffmpegAssemblyExecutor.js`, `src/pipeline/packagingQc.js`; no real rendered package or 30–50 minute FFprobe burn-in verified |
-| Owner dashboard console and evidence-backed channel cards | **Delivered (dashboard surface)** | `public/index.html`, `public/dashboard.js` (PRs #197, #199); per-Director provider binding controls use existing scoped APIs, while OAuth connect/revoke flows remain absent |
+| Owner dashboard console and evidence-backed channel cards | **Delivered (dashboard surface)** | `public/index.html`, `public/dashboard.js` (PRs #197, #199); per-Director provider binding controls use existing scoped APIs; the official YouTube OAuth lifecycle is wired into the Secrets & Connections panel (Issue #206) |
 | Live provider generation | **Not started (owner-gated)** | Executor/routing code exists, but owner credentials, real quota snapshots, and provider-generated media evidence are absent |
-| Official OAuth and platform publishing adapters | **Not started** | Connection slots and CRUD APIs exist; no official OAuth authorization/callback/revocation route or real platform publisher is configured |
+| Official OAuth and platform publishing adapters | **Partially delivered (YouTube lifecycle only)** | Issue #206: owner-scoped YouTube OAuth (state hash-only single-use, official Google endpoints, tokens only via an injected external secret-manager adapter, opaque locator in `sql/028`, honest status/revocation + audit). Operators must still supply the Google OAuth client credentials and wire a real secret-manager adapter at boot — without them the routes degrade with honest 503s. Other platforms and real platform publishers remain **not started** |
 | Durable analytics storage and owner ingestion boundary | **Delivered (offline/code-side)** | `sql/027`, `src/analytics/postgresAnalyticsRepository.js`, `src/api/ownerOperationsRouter.js` (PRs #193, #195; server-sourced collector boundary in PR #201); no official analytics collector or real platform response verified |
 | Hermes learning/optimization from real platform analytics | **Not started** | Requires official analytics collection and durable real observations first |
 | Comments/community management | **Not started** | Depends on live accounts |
@@ -90,10 +90,13 @@ claiming verification without durable evidence (Rule 1).
    packaging executors with owner-approved free capacity; prove a complete
    package and measure the main artifact at 1800–3000 seconds.
 3. **Owner controls** — the dashboard has the core console, honest read
-   surfaces, and per-Director provider-binding management. Official OAuth
-   connect/revoke flows remain unimplemented; binding a locator is not OAuth
-   onboarding or proof of provider connectivity.
-4. **Official publishing path** — implement/configure official platform OAuth
+   surfaces, per-Director provider-binding management, and the official
+   owner-scoped YouTube OAuth lifecycle (Issue #206: connect / status /
+   revoke with tokens confined to the external secret manager). Binding a
+   locator is still not OAuth onboarding for other providers, and the
+   production secret-manager adapter + Google client credentials must be
+   operator-wired before any live YouTube authorization round-trip.
+4. **Official publishing path** — extend the OAuth adapter pattern (Issue #206) to the remaining platforms
    and publisher adapters, then verify private-first uploads and real receipts
    under exact owner approval. No live account is connected today.
 5. **Analytics + Hermes learning** — add official platform collectors behind
