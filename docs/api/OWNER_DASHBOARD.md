@@ -113,6 +113,39 @@ ships no secret-manager adapter, so until an operator wires one (via the
 service runtime registry) and configures the Google OAuth client env vars,
 connect attempts return an explicit 503 instead of pretending to connect.
 
+### Operator secret-manager wiring (Issue #208)
+
+The code-side wiring surface for the token-custody boundary above is now
+implemented. At boot, `configureRuntime()` resolves the operator-declared
+adapter and binds it to the OAuth runtime:
+
+- `STPH_SECRET_MANAGER_ADAPTER=builtin-env` — zero-infrastructure adapter.
+  Locators live in a process-local, NON-DURABLE map (optionally seeded from
+  locator-shaped references in the env vars named by
+  `STPH_SECRET_MANAGER_ENV_SEED`). Honest trade-off, surfaced in `/api/health`
+  (`oauthSecretManager.nonDurable: true`): a process restart drops held token
+  bundles and connected YouTube grants must be re-connected. Durable custody
+  requires the `custom` kind.
+- `STPH_SECRET_MANAGER_ADAPTER=custom` + `STPH_SECRET_MANAGER_ADAPTER_MODULE`
+  — dynamic import of an operator factory module exporting a default async
+  function returning `{ writeSecret, readSecret, deleteSecret }`. The module
+  is the trust boundary; the supplied adapter must return locator-shaped
+  values and may expose stable `code`-carrying errors.
+
+Fail-closed guarantees (verified by tests): an unknown adapter kind wires
+nothing; a declared adapter that fails to load is a LOUD boot error, never
+silent degradation; a labeled in-memory placeholder supplied by an operator is
+rejected (`SECRET_MANAGER_ADAPTER_PLACEHOLDER_REJECTED`, Rule 3); unexpected
+adapter errors are sanitized (locators/secret-shaped strings redacted) and
+normalized to stable codes; `writeSecret` results that are not locator-shaped
+are structurally rejected before reaching the OAuth service.
+
+Remaining operator steps for live YouTube connection (owner-gated, unchanged):
+provide the Google OAuth client credentials (`STPH_YOUTUBE_OAUTH_CLIENT_ID`,
+`STPH_YOUTUBE_OAUTH_CLIENT_SECRET`, `STPH_YOUTUBE_OAUTH_REDIRECT_BASE_URL`)
+and a durable secret-manager adapter. Until both are present, the routes keep
+returning honest 503s.
+
 ## Security posture
 
 - Sessions: the login form posts to `/api/auth/login`; the session is an

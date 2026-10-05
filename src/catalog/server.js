@@ -28,6 +28,8 @@ import { createDemoStorageAdapter } from "../db/demoStorageAdapter.js";
 import { createContentRunsRouter } from "../api/contentRunsRouter.js";
 import { createProviderCatalogRouter, createDirectorConnectionsRouter } from "../api/directorConnectionsRouter.js";
 import { createYouTubeOAuthRouter } from "../api/youtubeOAuthRouter.js";
+import { loadConfiguredSecretManager, isSecretManagerConfigured } from "../credentials/oauthSecretManagerAdapter.js";
+import { setYouTubeOAuthRuntime } from "./youtubeOAuthService.js";
 import { createHermesRouter } from "../api/hermesRouter.js";
 import { createOwnerControlRouter } from "../api/ownerControlRouter.js";
 import { PostgresOwnerControlStore } from "../api/ownerControlStore.js";
@@ -46,6 +48,26 @@ let postgres = null;
 let storageMode = "postgres";
 let ownerControlStore = null;
 let productionWorker = null;
+// Operator-wired external secret manager for the OAuth boundary (Issue #208).
+// null until configureRuntime() resolves the declared adapter — the OAuth
+// routes then degrade honestly (503) instead of ever faking custody.
+let oauthSecretManager = null;
+
+/** Test/diagnostic hook: resets the operator secret-manager wiring. */
+export function __resetOauthSecretManagerForTests() {
+  oauthSecretManager = null;
+  setYouTubeOAuthRuntime({ secretManagerFactory: null });
+}
+
+/** Diagnostic surface: is an operator secret-manager adapter bound? */
+export function getOauthSecretManagerStatus() {
+  return {
+    declared: isSecretManagerConfigured(),
+    bound: oauthSecretManager !== null,
+    nonDurable: oauthSecretManager?.nonDurable === true,
+    label: oauthSecretManager?.label ?? null,
+  };
+}
 
 /** Test/diagnostic hook: exposes the active demo adapter (null in postgres mode). */
 export let __demoAdapterForDiagnostics = null;
@@ -89,7 +111,28 @@ export async function configureRuntime() {
   await runMigrations(postgres);
 
   ownerControlStore = new PostgresOwnerControlStore(postgres, new EvidenceLedgerRepository());
-  return { storageMode };
+
+  // Operator-opt-in external secret-manager wiring for the OAuth boundary
+  // (Issue #208). Declared via STPH_SECRET_MANAGER_ADAPTER (+ optional
+  // STPH_SECRET_MANAGER_ADAPTER_MODULE / STPH_SECRET_MANAGER_ENV_SEED).
+  // Nothing declared → nothing wired: the OAuth routes keep returning their
+  // honest 503s. A DECLARED adapter that fails to load is a loud boot error
+  // (fail closed) — never silent degradation into placeholder custody.
+  if (isSecretManagerConfigured()) {
+    try {
+      const adapter = await loadConfiguredSecretManager();
+      if (adapter) {
+        oauthSecretManager = adapter;
+        setYouTubeOAuthRuntime({ secretManagerFactory: () => oauthSecretManager });
+      }
+    } catch (error) {
+      oauthSecretManager = null;
+      logInternalError("OAUTH_SECRET_MANAGER_WIRING_FAILED", error);
+      throw error;
+    }
+  }
+
+  return { storageMode, oauthSecretManager: oauthSecretManager !== null };
 }
 
 /**
@@ -397,6 +440,13 @@ app.get("/api/health", (req, res) => {
     status: storageMode === "unconfigured" ? "degraded" : "healthy",
     storage: storageMode,
     isDemoStorage: storageMode === "demo",
+    // Issue #208: truthful OAuth secret-manager wiring state (no locator,
+    // no kind secrets — presence and durability class only).
+    oauthSecretManager: {
+      declared: isSecretManagerConfigured(),
+      bound: oauthSecretManager !== null,
+      nonDurable: oauthSecretManager?.nonDurable === true,
+    },
     timestamp: new Date().toISOString(),
   });
 });
