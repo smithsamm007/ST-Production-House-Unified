@@ -146,7 +146,15 @@
     $("login-view").classList.add("hidden");
     $("app-view").classList.remove("hidden");
     $("owner-email").textContent = state.me && state.me.email ? state.me.email : "";
-    refreshCore().then(function () { showView("overview"); });
+    refreshCore().then(function () {
+      if (youtubeOauthBoot) {
+        // Returning from the Google OAuth round-trip (Issue #206).
+        showView("connections");
+        applyOauthBootResult();
+      } else {
+        showView("overview");
+      }
+    });
   }
 
   async function refreshCore() {
@@ -878,9 +886,11 @@
   async function loadConnectionsView() {
     if (state.channels.length === 0) {
       $("connections-list").innerHTML = '<div class="empty">No directors with channels yet.</div>';
+      $("youtube-status").innerHTML = '<div class="empty">No directors with channels yet.</div>';
       return;
     }
     await loadConnections();
+    await loadYouTubeStatus();
   }
 
   async function loadConnections() {
@@ -948,6 +958,190 @@
       }
     } catch (err) {
       host.innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // YouTube OAuth (Issue #206): official lifecycle, honest status only.
+  // Tokens/locators/client secrets are NEVER displayed (Rule 17); every
+  // state comes from /api/youtube/* — missing server config is shown as
+  // the honest limitation it is, never hidden or faked (Rule 1).
+  // ------------------------------------------------------------------
+  const youtubeOauthBoot = (function () {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const result = params.get("oauth");
+      if (result !== "connected" && result !== "failed") return null;
+      // The authorization `code` param is deliberately ignored: it is
+      // single-use, already consumed server-side, and never rendered.
+      return {
+        result: result,
+        agentId: params.get("agent") || "",
+        errorCode: params.get("code") || "",
+      };
+    } catch {
+      return null;
+    }
+  })();
+
+  function clearOauthParams() {
+    try {
+      window.history.replaceState({}, "", window.location.pathname);
+    } catch {
+      // Older browsers keep the params; they carry no secret material.
+    }
+  }
+
+  function applyOauthBootResult() {
+    clearOauthParams();
+    if (!youtubeOauthBoot) return;
+    if (youtubeOauthBoot.agentId) {
+      const select = $("conn-agent");
+      const has = Array.from(select.options).some(function (o) { return o.value === youtubeOauthBoot.agentId; });
+      if (has) select.value = youtubeOauthBoot.agentId;
+    }
+    loadConnections().catch(function () {});
+    loadYouTubeStatus().then(function () {
+      const host = $("youtube-status");
+      if (!host) return;
+      const banner = document.createElement("div");
+      banner.className = "empty";
+      banner.textContent = youtubeOauthBoot.result === "connected"
+        ? "YouTube authorization completed — the account was verified via the official YouTube API."
+        : "⚠ YouTube authorization FAILED" + (youtubeOauthBoot.errorCode ? " · " + youtubeOauthBoot.errorCode : "") +
+          " — no account was connected. Nothing was faked; start a new connection to retry.";
+      host.prepend(banner);
+    }).catch(function () {});
+  }
+
+  async function loadYouTubeStatus() {
+    const host = $("youtube-status");
+    const errorEl = $("youtube-error");
+    const connectBtn = $("youtube-connect");
+    const revokeBtn = $("youtube-revoke");
+    errorEl.textContent = "";
+    const agentId = $("conn-agent").value;
+    if (!agentId) {
+      host.innerHTML = '<div class="empty">Pick a director to see its YouTube account status.</div>';
+      connectBtn.disabled = true;
+      revokeBtn.hidden = true;
+      return;
+    }
+    host.innerHTML = '<div class="loading">Loading YouTube account status…</div>';
+    try {
+      const status = await api("/api/youtube/directors/" + encodeURIComponent(agentId) + "/status");
+      renderYouTubeStatus(status);
+    } catch (err) {
+      host.innerHTML = errorBox(storageErrorMessage(err));
+      connectBtn.disabled = true;
+      revokeBtn.hidden = true;
+    }
+  }
+
+  function renderYouTubeStatus(status) {
+    const host = $("youtube-status");
+    const connectBtn = $("youtube-connect");
+    const revokeBtn = $("youtube-revoke");
+    const account = status.account;
+    const parts = [];
+
+    // Honest prerequisites — the server reports exactly what is missing.
+    if (status.oauthConfigured === false) {
+      parts.push('<div class="empty">Server has no Google OAuth client configured (STPH_YOUTUBE_OAUTH_* env). Connecting will fail honestly until the operator configures it.</div>');
+    }
+    if (status.secretManagerConfigured === false) {
+      parts.push('<div class="empty">No external secret-manager adapter is wired on this server. Tokens are never stored in the database, so connecting is refused rather than faked.</div>');
+    }
+
+    if (!account) {
+      parts.push('<div class="row"><span>status</span>' + pill("unconfigured", "info") + "</div>");
+      parts.push('<div class="empty">No YouTube account is connected for this director.</div>');
+    } else {
+      parts.push(
+        '<div class="row"><span>status</span>' +
+        pill(account.status, account.status === "connected" ? "ok" : account.status === "disconnected" ? "bad" : "warn") +
+        "</div>");
+      if (account.channel && account.channel.id) {
+        parts.push('<div class="row"><span>channel</span><b>' + esc(account.channel.title || account.channel.id) + "</b></div>");
+        if (account.channel.handle) {
+          parts.push('<div class="row"><span>handle</span><b>' + esc(account.channel.handle) + "</b></div>");
+        }
+        parts.push('<div class="row"><span>channel id</span><b>' + esc(account.channel.id) + "</b></div>");
+      }
+      parts.push('<div class="row"><span>verified</span><b>' + esc(fmtDate(account.verifiedAt)) + "</b></div>");
+      if (account.status === "connected" && account.tokenExpiresAt) {
+        parts.push('<div class="row"><span>access token expires</span><b>' + esc(fmtDate(account.tokenExpiresAt)) + "</b></div>");
+      }
+      if (account.revokedAt) {
+        parts.push('<div class="row"><span>revoked</span><b>' + esc(fmtDate(account.revokedAt)) + "</b></div>");
+      }
+      if (account.lastErrorCode) {
+        parts.push('<div class="row"><span>last error</span>' + pill(account.lastErrorCode, "bad") + "</div>");
+      }
+      parts.push('<div class="sub">Tokens live in the external secret manager; the database holds an opaque locator only. No token, secret, or locator value is ever shown here (Rule 17).</div>');
+    }
+    if (status.pendingAuthorization) {
+      parts.push('<div class="sub">An authorization start is pending and expires ' +
+        esc(fmtDate(status.pendingAuthorization.stateExpiresAt)) + ".</div>");
+    }
+
+    host.innerHTML = '<div class="stack">' + parts.join("") + "</div>";
+    connectBtn.disabled = status.oauthConfigured === false || status.secretManagerConfigured === false;
+    revokeBtn.hidden = !account;
+    revokeBtn.disabled = false;
+    revokeBtn.textContent = account && account.status === "disconnected"
+      ? "Re-run secret cleanup"
+      : "Revoke YouTube access";
+  }
+
+  async function startYouTubeOauth() {
+    const errorEl = $("youtube-error");
+    const agentId = $("conn-agent").value;
+    errorEl.textContent = "";
+    if (!agentId) {
+      errorEl.textContent = "Pick a director first.";
+      return;
+    }
+    const button = $("youtube-connect");
+    button.disabled = true;
+    try {
+      const result = await api("/api/youtube/directors/" + encodeURIComponent(agentId) + "/oauth/start", { method: "POST" });
+      if (!result || typeof result.authorizationUrl !== "string" ||
+          !result.authorizationUrl.startsWith("https://accounts.google.com/")) {
+        errorEl.textContent = "Server returned no usable Google authorization URL.";
+        button.disabled = false;
+        return;
+      }
+      // Full-page navigation to Google. The single-use state travels in the
+      // URL; the owner's session completes the flow on return (Rule 6).
+      window.location.assign(result.authorizationUrl);
+    } catch (err) {
+      errorEl.textContent = storageErrorMessage(err);
+      button.disabled = false;
+    }
+  }
+
+  async function revokeYouTube() {
+    const errorEl = $("youtube-error");
+    const agentId = $("conn-agent").value;
+    errorEl.textContent = "";
+    if (!agentId) return;
+    const button = $("youtube-revoke");
+    button.disabled = true;
+    try {
+      const result = await api("/api/youtube/directors/" + encodeURIComponent(agentId) + "/revoke", { method: "POST" });
+      await loadYouTubeStatus();
+      const notice = document.createElement("div");
+      notice.className = "empty";
+      notice.textContent = "Revoke result: status " + (result.status || "unknown") +
+        " · provider revoked: " + (result.providerRevoked === true ? "yes" : "no") +
+        (result.alreadyDisconnected ? " · was already disconnected" : "") +
+        (result.secretCleanupFailed ? " · secret cleanup FAILED" : "") +
+        (result.errorCode ? " · " + result.errorCode : "");
+      $("youtube-status").prepend(notice);
+    } catch (err) {
+      errorEl.textContent = storageErrorMessage(err);
+      button.disabled = false;
     }
   }
 
@@ -1182,9 +1376,11 @@
   function bindForms() {
     $("comm-load").addEventListener("click", loadConversation);
     $("memory-load").addEventListener("click", loadMemory);
-    $("conn-load").addEventListener("click", loadConnections);
-    $("conn-agent").addEventListener("change", loadConnections);
+    $("conn-load").addEventListener("click", function () { loadConnections(); loadYouTubeStatus(); });
+    $("conn-agent").addEventListener("change", function () { loadConnections(); loadYouTubeStatus(); });
     $("conn-provider").addEventListener("change", renderConnectionFields);
+    $("youtube-connect").addEventListener("click", startYouTubeOauth);
+    $("youtube-revoke").addEventListener("click", revokeYouTube);
 
     $("connection-form").addEventListener("submit", async function (event) {
       event.preventDefault();

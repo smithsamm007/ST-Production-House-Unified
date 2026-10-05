@@ -27,6 +27,7 @@ import { createPostgresAdapter, sanitizeError } from "../db/index.js";
 import { createDemoStorageAdapter } from "../db/demoStorageAdapter.js";
 import { createContentRunsRouter } from "../api/contentRunsRouter.js";
 import { createProviderCatalogRouter, createDirectorConnectionsRouter } from "../api/directorConnectionsRouter.js";
+import { createYouTubeOAuthRouter } from "../api/youtubeOAuthRouter.js";
 import { createHermesRouter } from "../api/hermesRouter.js";
 import { createOwnerControlRouter } from "../api/ownerControlRouter.js";
 import { PostgresOwnerControlStore } from "../api/ownerControlStore.js";
@@ -386,6 +387,7 @@ app.get("/", (req, res) => {
       contentRuns: "/api/content-runs",
       control: "/api/control/*",
       metrics: "/api/metrics",
+      youtubeOAuth: "/api/youtube/*",
     },
   });
 });
@@ -437,6 +439,14 @@ const PUBLIC_ERROR_CODES = new Set([
   "PUBLIC_PUBLISHING_IDENTITY_REQUIRED", "RELEASE_NOT_FOUND", "RELEASE_ALREADY_PUBLISHED",
   "PRODUCTION_JOB_NOT_CLAIMABLE", "PRODUCTION_RUN_FAILED",
   "MESSAGE_VALIDATION_FAILED", "ROADMAP_VALIDATION_FAILED", "ROADMAP_ITEM_NOT_FOUND", "MEMORY_VALIDATION_FAILED",
+  // YouTube OAuth lifecycle (Issue #206): honest failure codes only.
+  "OAUTH_NOT_CONFIGURED", "SECRET_MANAGER_NOT_CONFIGURED", "OAUTH_CALLBACK_INVALID",
+  "OAUTH_STATE_INVALID", "OAUTH_STATE_EXPIRED", "OAUTH_STATE_REPLAYED", "OAUTH_STATE_MISMATCH",
+  "OAUTH_OWNER_DENIED", "OAUTH_TOKEN_EXCHANGE_FAILED", "OAUTH_TOKEN_RESPONSE_MALFORMED",
+  "OAUTH_PROVIDER_UNREACHABLE", "OAUTH_YOUTUBE_CHANNEL_NOT_FOUND", "OAUTH_YOUTUBE_VERIFICATION_FAILED",
+  "OAUTH_YOUTUBE_IDENTITY_REQUIRED", "OAUTH_SECRET_WRITE_FAILED", "SECRET_MANAGER_LOCATOR_INVALID",
+  "SECRET_MANAGER_ENTRY_NOT_FOUND", "OAUTH_REVOKE_FAILED", "OAUTH_SECRET_READ_FAILED", "SECRET_CLEANUP_FAILED",
+  "CSRF_TOKEN_INVALID",
 ]);
 
 function safePayloadParse(value) {
@@ -1202,6 +1212,16 @@ app.use("/api/control", authenticateOwner, control);
 // ---------------------------------------------------------------------------
 app.use("/api/providers", authenticateOwner, createProviderCatalogRouter());
 app.use("/api/connections", authenticateOwner, createDirectorConnectionsRouter({
+  db: () => postgres,
+  recordAuditEvent,
+}));
+
+// YouTube OAuth lifecycle (Issue #206): owner-scoped start/callback/status/
+// revoke behind the same session auth, CSRF-on-mutations, audit events, and
+// safe DTOs. Tokens travel ONLY to the injected external secret-manager
+// adapter; PostgreSQL stores an opaque locator (Rule 17). Without a wired
+// secret-manager adapter every connect/revoke degrades HONESTLY (503).
+app.use("/api/youtube", authenticateOwner, createYouTubeOAuthRouter({
   db: () => postgres,
   recordAuditEvent,
 }));
