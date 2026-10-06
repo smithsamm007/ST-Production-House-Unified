@@ -128,6 +128,13 @@
       "requiredSecrets": ["JULES_API_KEY"],
       "critical": false,
       "description": "Watchdog for the Jules tracking issue lifecycle."
+    },
+    {
+      "workflowId": "jules-ready-issue-launcher",
+      "path": ".github/workflows/jules-ready-issue-launcher.yml",
+      "requiredSecrets": [],
+      "critical": false,
+      "description": "Scheduled launcher that queues exactly one eligible ready slice for Jules when no pull request is in flight; uses only the runner-provided github.token."
     }
   ]
 }
