@@ -24,7 +24,7 @@ jobs:
       JULES_API_BASE: https://jules.googleapis.com/v1alpha
       STALL_SECONDS: "1200"
       MAX_ATTEMPTS: "2"
-      MAX_ACTIVE_SESSIONS: "3"
+      MAX_ACTIVE_SESSIONS: "1"
     steps:
       - name: Monitor and recover governed Jules sessions
         shell: bash

@@ -38,7 +38,7 @@ permissions:
   pull-requests: write
 
 # Session creation is serialized only while allocating a slot. Jules sessions
-# continue asynchronously, so up to three can work in parallel after dispatch.
+# continue asynchronously, so Jules sessions are serialized; only one writer may be active at a time.
 concurrency:
   group: st-jules-bridge-dispatcher
   cancel-in-progress: false
@@ -107,7 +107,7 @@ jobs:
             sessions="${RUNNER_TEMP}/jules-sessions.json"
             curl --fail-with-body --silent --show-error "${header[@]}" "${JULES_API_BASE}/sessions?pageSize=100" >"${sessions}"
             active="$(jq '[.sessions[]? | select(.state == "QUEUED" or .state == "PLANNING" or .state == "AWAITING_PLAN_APPROVAL" or .state == "AWAITING_USER_FEEDBACK" or .state == "IN_PROGRESS" or .state == "PAUSED")] | length' "${sessions}")"
-            [[ "${active}" -lt 1 ]] || { echo "::error::Three Jules sessions are already active."; exit 1; }
+            [[ "${active}" -lt 1 ]] || { echo "::error::One Jules session is already active."; exit 1; }
 
             sources="${RUNNER_TEMP}/jules-sources.json"
             curl --fail-with-body --silent --show-error "${header[@]}" "${JULES_API_BASE}/sources?pageSize=100" >"${sources}"
