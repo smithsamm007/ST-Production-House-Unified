@@ -57,10 +57,10 @@ jobs:
               continue
             fi
 
-            if (( active >= 3 )); then
+            if (( active >= 1 )); then
               marker="st-jules-launch result=CAPACITY_WAIT"
               jq -e --arg m "$marker" '.[] | select(.body | contains($m))' <<<"$comments" >/dev/null || gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "<!-- ${marker} -->
-          Jules launch is queued because three sessions are active. The dispatcher will retry automatically; no paid capacity will be used."
+          Jules launch is queued because one Jules session is active. The dispatcher will retry automatically; no paid capacity will be used."
               continue
             fi
 
