@@ -38,7 +38,7 @@ test.after(() => {
 // ---------------------------------------------------------------------------
 
 test("adapter kinds are a bounded allowlist and configuration parses honestly", () => {
-  assert.deepEqual([...SECRET_MANAGER_ADAPTER_KINDS], ["builtin-env", "custom"]);
+  assert.deepEqual([...SECRET_MANAGER_ADAPTER_KINDS], ["builtin-env", "vault-http", "custom"]);
   assert.deepEqual(loadSecretManagerConfig({}), { kind: null, customModule: null, seedVars: [] });
   assert.equal(isSecretManagerConfigured(loadSecretManagerConfig({})), false);
 

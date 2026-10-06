@@ -124,6 +124,17 @@ export async function configureRuntime() {
       if (adapter) {
         oauthSecretManager = adapter;
         setYouTubeOAuthRuntime({ secretManagerFactory: () => oauthSecretManager });
+        // Custody honesty (Issue #210): a NON-durable adapter must never
+        // silently become production custody in postgres mode.
+        if (storageMode === "postgres" && adapter.nonDurable === true) {
+          console.warn(
+            JSON.stringify({
+              level: "warn",
+              code: "NON_DURABLE_SECRET_CUSTODY_IN_PRODUCTION",
+              message: "A non-durable secret-manager adapter is bound in postgres storage mode. OAuth token custody will be lost on restart. Wire a durable adapter (STPH_SECRET_MANAGER_ADAPTER=vault-http or custom).",
+            })
+          );
+        }
       }
     } catch (error) {
       oauthSecretManager = null;

@@ -29,6 +29,10 @@
  */
 
 import { sanitizeErrorMessage } from "./credentialBroker.js";
+import {
+  isVaultAdapterConfigured,
+  createVaultSecretManager,
+} from "./vaultSecretManagerAdapter.js";
 
 /**
  * Operator-selectable adapter kinds. Bounded allowlist: an unknown
@@ -40,11 +44,17 @@ import { sanitizeErrorMessage } from "./credentialBroker.js";
  *   NON-DURABLE and process-local by design: acceptable ONLY as an explicit
  *   operator stopgap (Rule 3 label below); a restart loses held secrets and
  *   connected YouTube grants must be re-connected.
+ * - "vault-http": built-in adapter for the OFFICIAL HashiCorp Vault KV v2
+ *   HTTP API — DURABLE external custody (Issue #210). Requires operator
+ *   provisioning: STPH_SECRET_MANAGER_VAULT_ADDRESS, a mount (default
+ *   "secret"), and a token via STPH_SECRET_MANAGER_VAULT_TOKEN or
+ *   STPH_SECRET_MANAGER_VAULT_TOKEN_FILE. Deployment + tokens are
+ *   owner-gated; this adapter performs no network call until wired.
  * - "custom": the operator supplies a factory module via
  *   STPH_SECRET_MANAGER_ADAPTER_MODULE (default export). The module is the
  *   trust boundary — it must implement the same three-method contract.
  */
-export const SECRET_MANAGER_ADAPTER_KINDS = Object.freeze(["builtin-env", "custom"]);
+export const SECRET_MANAGER_ADAPTER_KINDS = Object.freeze(["builtin-env", "vault-http", "custom"]);
 
 const LOCATOR_PREFIXES = Object.freeze(["vault://", "opaque://"]);
 const MAX_LOCATOR_LENGTH = 512;
@@ -80,9 +90,21 @@ export function loadSecretManagerConfig(env = process.env) {
   return { kind, customModule, seedVars };
 }
 
+function loadVaultAdapterConfig(env = process.env) {
+  return {
+    address: env.STPH_SECRET_MANAGER_VAULT_ADDRESS || null,
+    mount: env.STPH_SECRET_MANAGER_VAULT_MOUNT || "secret",
+    token: env.STPH_SECRET_MANAGER_VAULT_TOKEN || null,
+    tokenFile: env.STPH_SECRET_MANAGER_VAULT_TOKEN_FILE || null,
+  };
+}
+
 /** Honest pre-check used by status surfaces: is an adapter declared at all? */
 export function isSecretManagerConfigured(config = loadSecretManagerConfig()) {
   if (config.kind === "builtin-env") return true;
+  if (config.kind === "vault-http") {
+    return isVaultAdapterConfigured(loadVaultAdapterConfig());
+  }
   if (config.kind === "custom") return Boolean(config.customModule);
   return false;
 }
@@ -209,6 +231,18 @@ export async function loadConfiguredSecretManager(env = process.env) {
 
   if (config.kind === "builtin-env") {
     return guardSecretManagerAdapter(createBuiltinEnvSecretManager({ seedVars: config.seedVars, env }));
+  }
+
+  if (config.kind === "vault-http") {
+    // Fully validated by isSecretManagerConfigured above; create() fails
+    // loudly (stable codes) if the token source vanished in the meantime.
+    const vaultConfig = loadVaultAdapterConfig(env);
+    return guardSecretManagerAdapter(createVaultSecretManager({
+      address: vaultConfig.address,
+      mount: vaultConfig.mount,
+      token: vaultConfig.token,
+      tokenFile: vaultConfig.tokenFile,
+    }));
   }
 
   // kind === "custom": dynamic import of the operator's factory module.
