@@ -678,6 +678,36 @@ export class PublishingRepository {
     );
     return res.rows[0];
   }
+
+  /**
+   * Latest publishing request for one artifact+destination (Issue #217
+   * durable idempotency): a publish retry must find the already-approved,
+   * already-receipted request instead of uploading a duplicate.
+   * Two simple portable SELECTs (no joins — demo-adapter compatible).
+   */
+  async findLatestRequestByArtifact(artifactId, destination) {
+    const res = await query(
+      `SELECT id, artifact_id, destination, caption_snapshot, mode, status, approved_by, approval_expires_at, created_at
+         FROM publishing_requests
+        WHERE artifact_id = $1 AND destination = $2
+        ORDER BY created_at DESC
+        LIMIT 1;`,
+      [artifactId, destination]
+    );
+    return res.rows[0] || null;
+  }
+
+  /** Receipt row for one publishing request, if a real one was persisted. */
+  async findReceiptByRequestId(publishingRequestId) {
+    const res = await query(
+      `SELECT id, publishing_request_id, platform_post_id, platform_url, provider_response_sha256, received_at
+         FROM publishing_receipts
+        WHERE publishing_request_id = $1
+        LIMIT 1;`,
+      [publishingRequestId]
+    );
+    return res.rows[0] || null;
+  }
 }
 
 // ----------------------------------------------------

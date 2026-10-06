@@ -56,6 +56,9 @@ function artifactDto(row) {
     sizeBytes: Number.isFinite(metadata.sizeBytes) ? metadata.sizeBytes : null,
     mimeType: metadata.mimeType ?? null,
     generationMode: metadata.generationMode ?? "unknown",
+    // Durable executor media path (Issue #217); null for deterministic or
+    // unverified artifacts that never reported a real on-disk location.
+    mediaPath: typeof metadata.storagePath === "string" ? metadata.storagePath : null,
     createdAt: toIso(row.created_at),
   };
 }
@@ -340,6 +343,17 @@ export class ProductionRepository {
                 executorVerified: payload.executorVerified === true,
                 quotaState: typeof payload.quotaState === "string" ? payload.quotaState : null,
                 failureCode: typeof payload.failureCode === "string" ? payload.failureCode : null,
+                // Durable media path (Issue #217): the executor's REAL output
+                // path, persisted so the publish route can resolve the exact
+                // verified bytes at upload time. Non-secret filesystem path;
+                // bounded and never fabricated (null when the executor did
+                // not report one).
+                storagePath:
+                  typeof payload.storagePath === "string" &&
+                  payload.storagePath.length > 0 &&
+                  payload.storagePath.length <= 4096
+                    ? payload.storagePath
+                    : null,
               }
             : {}),
         }),

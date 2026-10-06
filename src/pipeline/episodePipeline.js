@@ -437,7 +437,7 @@ export function evaluateExecutorArtifact({ stage, release, executorResult }) {
  * Returns the stored artifact DTO, or null when an identical artifact was
  * already recorded (idempotent resume).
  */
-export async function recordExecutorArtifact({ releaseId, ownerId, production, stage, verdict }) {
+export async function recordExecutorArtifact({ releaseId, ownerId, production, stage, verdict, storagePath = null }) {
   if (!verdict || verdict.ok !== true || verdict.waiting === true) {
     throw executorArtifactError("EXECUTOR_RESULT_MALFORMED");
   }
@@ -456,6 +456,9 @@ export async function recordExecutorArtifact({ releaseId, ownerId, production, s
       executorVerified: verdict.verified === true,
       quotaState: verdict.quotaState ?? null,
       failureCode: verdict.failureCode ?? null,
+      // Real on-disk location of this artifact (Issue #217): persisted so a
+      // later publish invocation can resolve and re-hash the exact bytes.
+      storagePath: typeof storagePath === "string" ? storagePath : null,
     },
   });
   return stored;
@@ -607,6 +610,10 @@ export async function runEpisodePipelineWithExecutors({
         production,
         stage,
         verdict: outcome.verdict,
+        storagePath:
+          typeof outcome.executorResult?.outputPath === "string"
+            ? outcome.executorResult.outputPath
+            : null,
       });
     } catch (error) {
       await recordStageFailure(production, evidenceLedger, {
@@ -806,6 +813,10 @@ export async function runEpisodePipelineWithExecutors({
     production,
     stage: "thumbnail",
     verdict: packaging.thumbnailVerdict,
+    storagePath:
+      typeof packaging.executorResult?.outputPath === "string"
+        ? packaging.executorResult.outputPath
+        : null,
   });
   if (thumbnailStored !== null) artifacts.push(thumbnailStored);
   recordedByStage.set("thumbnail", {

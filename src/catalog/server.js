@@ -29,7 +29,8 @@ import { createContentRunsRouter } from "../api/contentRunsRouter.js";
 import { createProviderCatalogRouter, createDirectorConnectionsRouter } from "../api/directorConnectionsRouter.js";
 import { createYouTubeOAuthRouter } from "../api/youtubeOAuthRouter.js";
 import { loadConfiguredSecretManager, isSecretManagerConfigured } from "../credentials/oauthSecretManagerAdapter.js";
-import { setYouTubeOAuthRuntime } from "./youtubeOAuthService.js";
+import { setYouTubeOAuthRuntime, getYouTubeOAuthRuntime, YouTubeOAuthService } from "./youtubeOAuthService.js";
+import { executeYouTubePublish } from "../publishing/youtubePublishExecution.js";
 import { createHermesRouter } from "../api/hermesRouter.js";
 import { createOwnerControlRouter } from "../api/ownerControlRouter.js";
 import { PostgresOwnerControlStore } from "../api/ownerControlStore.js";
@@ -912,16 +913,83 @@ app.get("/api/productions/:id", authenticateOwner, async (req, res) => {
 });
 
 /**
+ * Stable HTTP status for the wired YouTube upload path (Issue #217). Artifact
+ * and approval gates are conflicts (409); unconfigured custody is 503; rate
+ * limits surface as 429; provider-side failures stay truthful 502s; Rule 15
+ * and private-first denials are 403. Unknown codes never claim success.
+ */
+const PUBLISH_UPLOAD_CONFLICTS = new Set([
+  "ASSEMBLY_ARTIFACT_MISSING",
+  "ARTIFACT_NOT_FFPROBE_VERIFIED",
+  "ARTIFACT_MEDIA_UNAVAILABLE",
+  "DIRECTOR_BINDING_MISSING",
+  "YOUTUBE_MEDIA_SOURCE_INVALID",
+  "YOUTUBE_MEDIA_SOURCE_UNREADABLE",
+  "YOUTUBE_MEDIA_HASH_MISMATCH",
+  "PUBLISHING_SNAPSHOT_INVALID",
+  "OWNER_APPROVAL_REQUIRED",
+  "APPROVAL_EXPIRED",
+  "APPROVAL_ARTIFACT_MISMATCH",
+  "APPROVAL_DESTINATION_MISMATCH",
+  "PUBLISHING_REQUEST_UNAVAILABLE",
+  "PUBLISHING_RECEIPT_UNAVAILABLE",
+]);
+const PUBLISH_UPLOAD_UNAVAILABLE = new Set([
+  "STORAGE_NOT_CONFIGURED",
+  "SECRET_MANAGER_NOT_CONFIGURED",
+  "SECRET_MANAGER_ENTRY_NOT_FOUND",
+  "SECRET_MANAGER_UNREACHABLE",
+  "SECRET_MANAGER_AUTH_FAILED",
+  "OAUTH_NOT_CONFIGURED",
+  "OAUTH_ACCOUNT_NOT_FOUND",
+  "OAUTH_ACCOUNT_NOT_CONNECTED",
+  "OAUTH_SECRET_READ_FAILED",
+  "OAUTH_SERVICE_UNAVAILABLE",
+  "PUBLISHING_REPOSITORY_UNAVAILABLE",
+]);
+function statusForPublishUploadError(code) {
+  if (PUBLISH_UPLOAD_CONFLICTS.has(code)) return 409;
+  if (PUBLISH_UPLOAD_UNAVAILABLE.has(code)) return 503;
+  if (code === "YOUTUBE_UPLOAD_RATE_LIMITED") return 429;
+  if (code === "AGENT_NAME_LEAKAGE_DENIED" || code === "YOUTUBE_PUBLIC_UPLOAD_FORBIDDEN") return 403;
+  if (code === "REQUEST_VALIDATION_FAILED" || code === "CAPTION_SNAPSHOT_INVALID") return 400;
+  if (code.startsWith("YOUTUBE_")) return 502;
+  if (code.startsWith("OAUTH_") || code.startsWith("SECRET_MANAGER_")) return 503;
+  return 500;
+}
+
+/**
  * POST /api/productions/:id/publish (Rule 7 gate):
- * body { destinationId } — marks a ready release published to an owner-scoped
- * destination with non-empty public attribution. This records the publish
- * intent and evidence row; it does NOT contact any platform (live publishing
- * remains pending per Rules 11/16).
+ * body { destinationId, captionSnapshot? } — marks a ready release published
+ * to an owner-scoped destination with non-empty public attribution.
+ *
+ * YOUTUBE destinations execute the REAL private upload through the wired
+ * publisher (Issue #217): Director binding → FFprobe-verified assembly
+ * artifact → durable approval bound to the exact artifact hash →
+ * Director-scoped OAuth token (secret-manager boundary only) → official
+ * resumable upload → durable receipt + `platform_publish` evidence + audit.
+ * The release flips to `published` only AFTER a real receipt exists; every
+ * failure returns a stable code, leaves the release untouched, and never
+ * fabricates a platform ID (Rules 1/2/7/17). Visibility is forced `private`;
+ * the body cannot request public. Unconfigured custody fails closed (503) —
+ * intent is never recorded as a substitute for a real upload.
+ *
+ * Other platforms keep the original intent-recording behavior (their
+ * official integrations are later slices).
  */
 app.post("/api/productions/:id/publish", authenticateOwner, requireCsrf, async (req, res) => {
   try {
-    if (!hasOnlyFields(req.body, ["destinationId"])) {
+    if (!hasOnlyFields(req.body, ["destinationId", "captionSnapshot"])) {
       return res.status(400).json({ error: "REQUEST_VALIDATION_FAILED" });
+    }
+    let captionSnapshot;
+    if (req.body.captionSnapshot !== undefined) {
+      const snapshot = req.body.captionSnapshot;
+      if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot) ||
+          Buffer.byteLength(JSON.stringify(snapshot), "utf8") > 4096) {
+        return res.status(400).json({ error: "CAPTION_SNAPSHOT_INVALID" });
+      }
+      captionSnapshot = snapshot;
     }
     const repo = getProductionRepository();
     const release = await repo.getRelease(req.ownerId, req.params.id);
@@ -931,6 +999,82 @@ app.post("/api/productions/:id/publish", authenticateOwner, requireCsrf, async (
     if (!gate.ok) {
       return res.status(gate.code === "RELEASE_NOT_FOUND" ? 404 : 409).json({ error: gate.code });
     }
+
+    // ---- Wired YouTube path (Issue #217): real private upload, receipt-first.
+    if (destination.platform === "youtube") {
+      let upload;
+      try {
+        const oauthService = new YouTubeOAuthService({ db: postgres });
+        upload = await executeYouTubePublish({
+          ownerId: req.ownerId,
+          release,
+          destination,
+          artifacts: await repo.listArtifactsForRelease(req.ownerId, req.params.id),
+          captionSnapshot,
+          publishingRepo,
+          evidenceLedger: evidenceRepo,
+          oauthService,
+          publishTransport: getYouTubeOAuthRuntime().publishTransport ?? null,
+        });
+      } catch (error) {
+        const code = typeof error?.code === "string" && error.code.length <= 80
+          ? error.code
+          : "PUBLISH_UPLOAD_FAILED";
+        logInternalError("PRODUCTION_PUBLISH_FAILED", error);
+        try {
+          await recordAuditEvent(req.ownerId, "production_publish_recorded", {
+            releaseId: req.params.id,
+            destinationId: destination.id,
+            outcome: "platform_upload_failed",
+            errorCode: code,
+          });
+        } catch (auditError) {
+          logInternalError("PUBLISH_AUDIT_FAILED", auditError);
+        }
+        return res.status(statusForPublishUploadError(code)).json({ error: code });
+      }
+
+      const published = await repo.updateReleaseStatus(req.ownerId, req.params.id, "published");
+      await repo.recordPipelineEvent({
+        releaseId: req.params.id,
+        ownerId: req.ownerId,
+        stage: "complete",
+        status: "succeeded",
+        detail: {
+          publishIntentRecorded: true,
+          platformUpload: {
+            platform: "youtube",
+            destinationId: destination.id,
+            platformPostId: upload.platformPostId,
+            visibility: upload.visibility,
+            duplicate: upload.duplicate === true,
+          },
+        },
+      });
+      await recordAuditEvent(req.ownerId, "production_publish_recorded", {
+        releaseId: req.params.id,
+        destinationId: destination.id,
+        outcome: "platform_upload_succeeded",
+        platformPostId: upload.platformPostId,
+        visibility: upload.visibility,
+        duplicate: upload.duplicate === true,
+      });
+      return res.json({
+        production: published,
+        destination: { id: destination.id, platform: destination.platform, handle: destination.handle },
+        receipt: {
+          platform: "youtube",
+          platformPostId: upload.platformPostId,
+          platformUrl: upload.platformUrl,
+          providerResponseSha256: upload.providerResponseSha256,
+          visibility: upload.visibility,
+          publishingRequestId: upload.publishingRequestId,
+          duplicate: upload.duplicate === true,
+        },
+      });
+    }
+
+    // ---- Other platforms: original intent-recording behavior (unchanged).
     const published = await repo.updateReleaseStatus(req.ownerId, req.params.id, "published");
     await repo.recordPipelineEvent({
       releaseId: req.params.id,
