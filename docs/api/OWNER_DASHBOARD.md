@@ -197,8 +197,11 @@ returning honest 503s.
   with a server-controlled redirect URI; the state token is stored only as a
   hash and is single-use; every start/callback/revoke writes an audit event
   carrying only agentId/providerKey/error-code facts.
-- Publishing: the UI records publish intent only (Rule 7 gate is enforced
-  server-side); live platform calls remain pending.
+- Publishing: the Rule 7 gate is enforced server-side. YouTube destinations
+  execute the wired private-first upload and return a real durable receipt
+  (or an honest stable failure code — never a fabricated platform ID); other
+  platforms record intent only. Live uploads remain unverified until the
+  owner provisions Vault + Google OAuth credentials (Issue #217).
 
 ## Honest gaps (deliberate)
 

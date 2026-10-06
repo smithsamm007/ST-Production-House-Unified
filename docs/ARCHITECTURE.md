@@ -118,8 +118,18 @@ The production layer turns the catalog into an operating multi-channel studio
   transitions, so concurrent runs fail closed instead of double-running.
 - **Publish gate (Rule 7)** — `evaluatePublishGate` blocks publishing unless
   the release is in `review`, the destination exists, and the destination has
-  non-empty public attribution. Publishing records intent and evidence only;
-  live platform calls remain pending (Rules 11/16).
+  non-empty public attribution. For `youtube` destinations the route executes
+  the wired upload (`src/publishing/youtubePublishExecution.js` →
+  `src/publishing/youtubePublisher.js`): FFprobe-verified assembly artifact
+  with a durable media path, owner approval bound to the exact artifact hash
+  and destination, Director-scoped OAuth token via the secret-manager
+  boundary only, forced private-first visibility, durable
+  `publishing_receipts` row + `platform_publish` evidence + audit — and a
+  zero-network replay when a durable receipt already exists, so a retry can
+  never double-publish (Rules 1/2/7/17). Every failure returns a stable
+  code, leaves the release untouched, and never fabricates a platform ID.
+  Other platforms record intent and evidence only; real uploads remain
+  pending owner-provisioned credentials (Rules 11/16).
 
 ## Director Workspace (communication window, roadmap, memory)
 

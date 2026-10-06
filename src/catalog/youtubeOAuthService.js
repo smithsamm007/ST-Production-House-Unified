@@ -73,6 +73,13 @@ const runtime = {
   transport: null,
   /** () => ({ writeSecret, readSecret, deleteSecret }) | null */
   secretManagerFactory: null,
+  /**
+   * Optional upload transport for the publisher route wiring (Issue #217):
+   * same injected-transport contract as `transport`, consumed by
+   * createYouTubePublisher at publish time. Production leaves this null so the
+   * publisher uses its default fetch transport; tests inject a scripted one.
+   */
+  publishTransport: null,
 };
 
 /**
@@ -82,12 +89,14 @@ const runtime = {
 export function setYouTubeOAuthRuntime(next = {}) {
   if (next.transport !== undefined) runtime.transport = next.transport;
   if (next.secretManagerFactory !== undefined) runtime.secretManagerFactory = next.secretManagerFactory;
+  if (next.publishTransport !== undefined) runtime.publishTransport = next.publishTransport;
 }
 
 export function getYouTubeOAuthRuntime() {
   return {
     transport: runtime.transport,
     secretManagerFactory: runtime.secretManagerFactory,
+    publishTransport: runtime.publishTransport,
   };
 }
 
@@ -586,6 +595,44 @@ export class YouTubeOAuthService {
       oauthConfigured: isOAuthConfigured(config),
       secretManagerConfigured: typeof secretManagerFactory === "function",
     };
+  }
+
+  /**
+   * Director-scoped access token for PUBLISHING (Issue #217 route wiring).
+   *
+   * Read-only and fail-closed: the account row must exist, be `connected`,
+   * and carry an opaque locator; the token itself is resolved ONLY through
+   * the injected secret-manager boundary and returned to the caller for the
+   * single publish invocation. It never serializes into errors, logs, DTOs,
+   * or the database (Rule 17). Stable codes only — no provider payloads.
+   */
+  async getPublishingAccessToken({ ownerId, agentId }) {
+    const repo = this.#repo();
+    if (!ownerId || !agentId) throw fail("REQUEST_VALIDATION_FAILED");
+
+    const accountRow = await repo.getAccountRow(ownerId, agentId);
+    if (!accountRow) throw fail("OAUTH_ACCOUNT_NOT_FOUND");
+    if (accountRow.status !== "connected" || !accountRow.token_locator) {
+      throw fail("OAUTH_ACCOUNT_NOT_CONNECTED");
+    }
+    // Throws SECRET_MANAGER_NOT_CONFIGURED when nothing is bound — the
+    // honest "custody not configured" answer, never a fabricated token.
+    const secretManager = requireSecretManager();
+
+    let payload;
+    try {
+      payload = await secretManager.readSecret({ locator: accountRow.token_locator });
+    } catch (err) {
+      const code = err?.code ?? "OAUTH_SECRET_READ_FAILED";
+      const safe = ["SECRET_MANAGER_ENTRY_NOT_FOUND", "SECRET_MANAGER_UNREACHABLE",
+        "SECRET_MANAGER_AUTH_FAILED", "SECRET_MANAGER_FAILED",
+        "SECRET_MANAGER_ADAPTER_FAILED"].includes(code);
+      throw fail(safe ? code : "OAUTH_SECRET_READ_FAILED",
+        safe ? undefined : sanitizeErrorMessage(err?.message ?? "secret read failed").slice(0, 200));
+    }
+    const accessToken = payload && typeof payload.access_token === "string" ? payload.access_token : null;
+    if (!accessToken || accessToken.length === 0) throw fail("OAUTH_SECRET_READ_FAILED");
+    return accessToken;
   }
 
   /**
