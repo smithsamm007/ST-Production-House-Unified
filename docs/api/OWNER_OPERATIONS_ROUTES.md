@@ -51,6 +51,14 @@ the owner can actually operate them. Mounted at `/ops` behind `requireAuth` in
   Only `private` and `draft` modes are permitted (`PRIVATE_FIRST_MODE_REQUIRED`
   otherwise). Genuine platform receipts are mandatory; a publisher response
   missing `platformPostId`/`platformUrl`/`rawResponse` fails honestly.
+  The server-side `publishingPublisher` option is deployment-wired per
+  destination: `src/publishing/metaPublisher.js` (Issue #219) is the official
+  Meta adapter for `instagram`/`facebook` behind the same injected boundary
+  as the YouTube publisher (Issue #215), never client-selectable. The Meta
+  adapter is destination-strict (it refuses non-Meta destinations), resolves
+  Director-scoped credentials per (owner, agent, destination), and an
+  unconfigured credential custody fails closed with a stable code — never a
+  fake receipt (`docs/publishing/META_PUBLISHING_ADAPTER.md`).
 - **Analytics**: the request identifies only `platformPostId`. Platform,
   URL, metrics, and metadata are fetched through the server-configured
   `analyticsTransport.fetchSnapshot({ ownerId, platformPostId })`; caller-

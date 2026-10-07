@@ -130,6 +130,20 @@ The production layer turns the catalog into an operating multi-channel studio
   code, leaves the release untouched, and never fabricates a platform ID.
   Other platforms record intent and evidence only; real uploads remain
   pending owner-provisioned credentials (Rules 11/16).
+- **Meta publisher adapter (Issue #219)** — `src/publishing/metaPublisher.js`
+  implements the official Instagram (Reels: container → `rupload.facebook.com`
+  resumable upload → `status_code` polling → `media_publish`) and Facebook
+  (Resumable Upload API → `/{page-id}/videos`) Graph API boundaries behind the
+  same `publisher.publish()` contract. Graph version pinned to `v25.0`;
+  official-host HTTPS allowlist; artifact SHA-256 re-verified from real file
+  bytes before any credential resolution; Rule 7 approval binding (exact
+  artifact hash + destination) re-checked inside the adapter; Rule 15 catalog-
+  derived name suppression; Rule 17 token containment; bounded retry honoring
+  `Retry-After`; zero-network idempotent replay; receipts only from real
+  platform ids + real permalinks. Credentials resolve per
+  (owner, agent, destination) — production walks the existing secret-manager
+  locator path. Offline, transport-scripted tests only; live Meta publishing
+  stays owner-gated (Issue #118).
 
 ## Director Workspace (communication window, roadmap, memory)
 
