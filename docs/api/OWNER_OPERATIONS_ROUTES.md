@@ -59,6 +59,10 @@ the owner can actually operate them. Mounted at `/ops` behind `requireAuth` in
   Director-scoped credentials per (owner, agent, destination), and an
   unconfigured credential custody fails closed with a stable code — never a
   fake receipt (`docs/publishing/META_PUBLISHING_ADAPTER.md`).
+  `src/publishing/snapchatPublisher.js` (Issue #221) is the official
+  Snapchat adapter for the `snapchat` destination (Spotlight via the Public
+  Profile API), built to the same contract — destination-strict, receipt
+  only from a real `spotlight_id` (`docs/publishing/SNAPCHAT_PUBLISHING_ADAPTER.md`).
 - **Analytics**: the request identifies only `platformPostId`. Platform,
   URL, metrics, and metadata are fetched through the server-configured
   `analyticsTransport.fetchSnapshot({ ownerId, platformPostId })`; caller-

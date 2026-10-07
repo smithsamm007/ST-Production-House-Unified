@@ -91,5 +91,8 @@ receipt.
   tests script the transport (`tests/metaPublisher.test.js`, 20 tests).
 - Live Instagram/Facebook publishing requires the owner to connect real
   accounts and provision credentials (owner-gated, Issue #118).
-- Snapchat and Bilibili remain `CAPABILITY_UNAVAILABLE` here; each needs its
-  own official-API research slice (§24/§26 of the master completion prompt).
+- Snapchat is now covered by its own official-API adapter
+  (`src/publishing/snapchatPublisher.js`, Issue #221 — Spotlight via the
+  Public Profile API; see `SNAPCHAT_PUBLISHING_ADAPTER.md`).
+- Bilibili remains `CAPABILITY_UNAVAILABLE` here; it needs its own
+  official-API research slice (§24 of the master completion prompt).

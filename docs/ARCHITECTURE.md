@@ -145,6 +145,27 @@ The production layer turns the catalog into an operating multi-channel studio
   locator path. Offline, transport-scripted tests only; live Meta publishing
   stays owner-gated (Issue #118).
 
+- **Snapchat publisher adapter (Issue #221)** —
+  `src/publishing/snapchatPublisher.js` implements the official Public
+  Profile API Spotlight boundary behind the same `publisher.publish()`
+  contract: AES-256-CBC client-side media encryption (fresh key/iv per
+  publish, official protocol) → create-media container (base64 key/iv per
+  official call) → encrypted multipart upload (≤32 MB chunks, `part_number`
+  1..35, ≤1 GB, bounded-memory chunking) → `FINALIZE` → Spotlight post
+  (`media_id`, description ≤160, locale). Official-host HTTPS allowlist
+  (`businessapi.snapchat.com`) with platform-provided `add_path`/
+  `finalize_path` validated as bounded relative paths (SSRF defense);
+  artifact SHA-256 re-verified from real file bytes before any credential
+  resolution; Rule 7 approval binding re-checked inside the adapter; Rule 15
+  catalog-derived name suppression (media name derived from the artifact
+  hash, never public metadata); Rule 17 token containment; bounded retry
+  honoring `Retry-After`; `MEDIA_EXPIRED` / `MEDIA_POSTING_ALREADY_IN_PROGRESS`
+  fail closed with no auto re-create; zero-network idempotent replay.
+  Receipts only from the real `spotlight_id`; Story posting is deliberately
+  unwired (the official story-post response carries no story id — no honest
+  receipt possible). Offline, transport-scripted tests only; live Snapchat
+  publishing stays owner-gated (Issue #118 — allowlist-only API).
+
 ## Director Workspace (communication window, roadmap, memory)
 
 Master Blueprint sections 7–12 are implemented on `sql/021` +
