@@ -63,6 +63,13 @@ the owner can actually operate them. Mounted at `/ops` behind `requireAuth` in
   Snapchat adapter for the `snapchat` destination (Spotlight via the Public
   Profile API), built to the same contract — destination-strict, receipt
   only from a real `spotlight_id` (`docs/publishing/SNAPCHAT_PUBLISHING_ADAPTER.md`).
+  Destination-aware selection (Issue #223): when the deployment wires a
+  `publishersByDestination` registry, each destination dispatches through
+  ITS OWN adapter (`src/publishing/destinationPublisherRouter.js`) and a
+  supported-but-unwired destination fails closed with `503
+  PUBLISHING_TRANSPORT_UNAVAILABLE` — never a wrong-platform dispatch. The
+  legacy single `publishingPublisher` mode is preserved unchanged when no
+  registry is wired.
 - **Analytics**: the request identifies only `platformPostId`. Platform,
   URL, metrics, and metadata are fetched through the server-configured
   `analyticsTransport.fetchSnapshot({ ownerId, platformPostId })`; caller-

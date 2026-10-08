@@ -51,6 +51,7 @@ import {
   AnalyticsServiceError,
 } from "../analytics/analyticsService.js";
 import { PostgresAnalyticsRepository } from "../analytics/postgresAnalyticsRepository.js";
+import { createDestinationPublisherRouter } from "../publishing/destinationPublisherRouter.js";
 
 // ---------------------------------------------------------------------------
 // Validation constants
@@ -217,6 +218,14 @@ export function createOwnerOperationsRouter(options = {}) {
   const evidenceLedger = options.evidenceLedger ?? null;
   const smokeTransport = options.providerSmokeTransport ?? null;
   const publishingPublisher = options.publishingPublisher ?? null;
+  // Destination-aware publisher routing (Issue #223): when a per-destination
+  // registry is wired, each destination dispatches through ITS OWN official
+  // adapter; an unwired destination fails closed (503) instead of silently
+  // reaching a wrong platform's publisher. When no registry is provided the
+  // legacy single-publisher behavior is preserved unchanged.
+  const publishingRouter = options.publishersByDestination
+    ? createDestinationPublisherRouter({ publishers: options.publishersByDestination })
+    : null;
   const analyticsTransport = options.analyticsTransport ?? null;
   // Durable analytics (Issue #194): when a database adapter is available,
   // analytics records persist in PostgreSQL (sql/027) through the durable
@@ -460,7 +469,18 @@ export function createOwnerOperationsRouter(options = {}) {
         throw fail("APPROVAL_WINDOW_INVALID");
       }
 
-      if (!publishingPublisher || typeof publishingPublisher.publish !== "function") {
+      let selectedPublisher = null;
+      if (publishingRouter) {
+        // Destination-aware selection: exact per-destination dispatch or an
+        // honest 503 — never a wrong-platform publisher.
+        if (!publishingRouter.hasPublisher(destination)) {
+          throw fail("PUBLISHING_TRANSPORT_UNAVAILABLE", 503);
+        }
+        selectedPublisher = publishingRouter.resolvePublisher(destination);
+      } else if (publishingPublisher && typeof publishingPublisher.publish === "function") {
+        // Legacy single-publisher mode (unchanged behavior).
+        selectedPublisher = publishingPublisher;
+      } else {
         throw fail("PUBLISHING_TRANSPORT_UNAVAILABLE", 503);
       }
 
@@ -494,7 +514,7 @@ export function createOwnerOperationsRouter(options = {}) {
           affiliateLinkIds: Array.isArray(req.body.affiliateLinkIds) ? req.body.affiliateLinkIds : [],
           mode,
           approvalExpiresInMs,
-          publisher: publishingPublisher,
+          publisher: selectedPublisher,
         });
       } catch (error) {
         mapServiceError(error, "PRIVATE_PUBLISHING_TEST_FAILED");

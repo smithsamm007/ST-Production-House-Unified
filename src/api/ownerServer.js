@@ -207,6 +207,7 @@ export function createOwnerApp(options = {}) {
       evidenceLedger: options.evidenceLedger ?? null,
       providerSmokeTransport: options.providerSmokeTransport ?? null,
       publishingPublisher: options.publishingPublisher ?? null,
+      publishersByDestination: options.publishersByDestination ?? null,
       publishingService: options.publishingService ?? null,
       resolvePublishingIdentity: options.resolvePublishingIdentity ?? null,
       analyticsTransport: options.analyticsTransport ?? null,
