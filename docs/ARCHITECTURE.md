@@ -166,6 +166,18 @@ The production layer turns the catalog into an operating multi-channel studio
   receipt possible). Offline, transport-scripted tests only; live Snapchat
   publishing stays owner-gated (Issue #118 — allowlist-only API).
 
+- **Destination-aware publisher routing (Issue #223)** —
+  `src/publishing/destinationPublisherRouter.js` is the explicit selection
+  seam between the owner publishing boundary and the per-platform adapters:
+  `publishersByDestination` maps each destination to ITS OWN official
+  adapter (`youtube` → youtubePublisher, `instagram`/`facebook` →
+  metaPublisher, `snapchat` → snapchatPublisher). Selection is exact — an
+  unknown, unsupported, or wired-but-missing destination fails closed with
+  `PUBLISHER_NOT_WIRED_FOR_DESTINATION` / `PUBLISHING_TRANSPORT_UNAVAILABLE`
+  (503) and can NEVER fall through to another platform's publisher. The
+  legacy single-`publishingPublisher` mode is preserved unchanged when no
+  registry is wired. Pure and offline; no clocks, no network, no secrets.
+
 ## Director Workspace (communication window, roadmap, memory)
 
 Master Blueprint sections 7–12 are implemented on `sql/021` +
