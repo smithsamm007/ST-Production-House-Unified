@@ -178,6 +178,18 @@ The production layer turns the catalog into an operating multi-channel studio
   legacy single-`publishingPublisher` mode is preserved unchanged when no
   registry is wired. Pure and offline; no clocks, no network, no secrets.
 
+- **Bilibili publishing research (Issue #225)** — the canonical long-form
+  secondary destination (S-M23-01) is documented as **research-complete,
+  adapter NOT implemented, publish-blocked on owner-gated platform access**:
+  the official 哔哩哔哩开放平台 flow (OAuth 2.0 on `api.bilibili.com`;
+  服务端视频稿件投递 chunked upload on `member.bilibili.com`), the real
+  permission/whitelist gates (documented error codes 127304/127305), and the
+  honest-receipt boundary (submission ≠ publication; the archive stays
+  non-public during platform review) are recorded in
+  `docs/publishing/BILIBILI_PUBLISHING_ADAPTER.md`. `bilibili` stays
+  excluded from the destination router's supported set until a real adapter
+  and owner-gated live access exist; a test pins that fail-closed exclusion.
+
 ## Director Workspace (communication window, roadmap, memory)
 
 Master Blueprint sections 7–12 are implemented on `sql/021` +
