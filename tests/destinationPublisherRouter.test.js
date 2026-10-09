@@ -93,6 +93,26 @@ test("hasPublisher and destinations are deterministic and honest", () => {
   assert.deepEqual(router.destinations(), ["facebook", "snapchat"]);
 });
 
+test("bilibili is NOT a supported destination until an official adapter exists (Issue #225)", () => {
+  // The canonical long-form secondary destination (S-M23-01) is documented
+  // as research-complete but publish-blocked (owner-gated whitelist access).
+  // It must NOT enter the supported set without a real adapter: the registry
+  // rejects the unknown key at CONSTRUCTION time (fail-closed), and neither
+  // hasPublisher nor resolvePublisher can ever dispatch to bilibili.
+  assert.throws(
+    () => createDestinationPublisherRouter({ publishers: { bilibili: fakePublisher("bili") } }),
+    (e) => expectCode(e, "DESTINATION_PUBLISHER_UNKNOWN_DESTINATION"),
+  );
+  const router = createDestinationPublisherRouter({
+    publishers: { youtube: fakePublisher("yt") },
+  });
+  assert.equal(router.hasPublisher("bilibili"), false);
+  assert.throws(
+    () => router.resolvePublisher("bilibili"),
+    (e) => expectCode(e, "PUBLISHER_NOT_WIRED_FOR_DESTINATION"),
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Owner route wiring (POST /ops/publishing/:agentId/private-test)
 // ---------------------------------------------------------------------------
