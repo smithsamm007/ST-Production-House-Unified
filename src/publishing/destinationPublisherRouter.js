@@ -15,8 +15,10 @@
  *   const publisher = router.resolvePublisher("snapchat");
  *
  * Fail-closed principles:
- * - The destination allowlist is exactly the four supported account-isolation
- *   platforms (AGENTS.md Rule 16): youtube, instagram, facebook, snapchat.
+ * - The destination allowlist is exactly the implemented official adapters
+ *   (AGENTS.md Rule 16): youtube, instagram, facebook, snapchat — and, since
+ *   Issue #227, `bilibili` (official open-platform submission adapter;
+ *   live access stays owner-gated, Issue #118 / S-M24-LIVE).
  * - An unknown destination, an unwired destination, or a registry entry that
  *   is not an object with a `publish` function fails closed with a stable
  *   error code — it NEVER falls through to another platform's publisher.
@@ -30,6 +32,7 @@ const SUPPORTED_DESTINATIONS = Object.freeze([
   "instagram",
   "facebook",
   "snapchat",
+  "bilibili",
 ]);
 
 function routerError(code, detail = undefined) {

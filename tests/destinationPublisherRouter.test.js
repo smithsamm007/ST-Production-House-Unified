@@ -46,7 +46,7 @@ test("constructor: registry entry without a publish function fails closed", () =
 
 test("constructor: unsupported destination key fails closed (never dispatched)", () => {
   assert.throws(
-    () => createDestinationPublisherRouter({ publishers: { bilibili: fakePublisher("bili") } }),
+    () => createDestinationPublisherRouter({ publishers: { myspace: fakePublisher("ms") } }),
     (e) => expectCode(e, "DESTINATION_PUBLISHER_UNKNOWN_DESTINATION"),
   );
 });
@@ -93,15 +93,20 @@ test("hasPublisher and destinations are deterministic and honest", () => {
   assert.deepEqual(router.destinations(), ["facebook", "snapchat"]);
 });
 
-test("bilibili is NOT a supported destination until an official adapter exists (Issue #225)", () => {
-  // The canonical long-form secondary destination (S-M23-01) is documented
-  // as research-complete but publish-blocked (owner-gated whitelist access).
-  // It must NOT enter the supported set without a real adapter: the registry
-  // rejects the unknown key at CONSTRUCTION time (fail-closed), and neither
-  // hasPublisher nor resolvePublisher can ever dispatch to bilibili.
-  assert.throws(
-    () => createDestinationPublisherRouter({ publishers: { bilibili: fakePublisher("bili") } }),
-    (e) => expectCode(e, "DESTINATION_PUBLISHER_UNKNOWN_DESTINATION"),
+test("bilibili is now a SUPPORTED destination (Issue #227) but unwired-by-default", () => {
+  // The canonical long-form secondary destination (S-M23-01) gained an
+  // official adapter (src/publishing/bilibiliPublisher.js, Issue #227) and
+  // is therefore in the supported set — but wiring is per-deployment and
+  // UNWIRED here: hasPublisher is false and resolve fails closed
+  // (PUBLISHER_NOT_WIRED_FOR_DESTINATION). Live access stays owner-gated
+  // (Issue #118 / S-M24-LIVE: platform registration, 资质认证, app
+  // creation, the 投稿 permission whitelist, and an OAuth-connected
+  // account are real prerequisites no adapter substitutes).
+  assert.equal(
+    createDestinationPublisherRouter({
+      publishers: { bilibili: fakePublisher("bili") },
+    }).hasPublisher("bilibili"),
+    true,
   );
   const router = createDestinationPublisherRouter({
     publishers: { youtube: fakePublisher("yt") },
@@ -110,6 +115,18 @@ test("bilibili is NOT a supported destination until an official adapter exists (
   assert.throws(
     () => router.resolvePublisher("bilibili"),
     (e) => expectCode(e, "PUBLISHER_NOT_WIRED_FOR_DESTINATION"),
+  );
+});
+
+test("bilibili dispatches through ITS OWN wired publisher, never another platform's", () => {
+  const bili = fakePublisher("bili");
+  const router = createDestinationPublisherRouter({
+    publishers: { youtube: fakePublisher("yt"), bilibili: bili },
+  });
+  assert.equal(router.resolvePublisher("bilibili"), bili);
+  assert.deepEqual(
+    router.destinations(), // SUPPORTED order, filtered to wired entries
+    ["youtube", "bilibili"],
   );
 });
 

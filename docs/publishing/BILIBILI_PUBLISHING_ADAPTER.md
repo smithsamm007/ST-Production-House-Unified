@@ -1,11 +1,16 @@
 # Bilibili Publishing Adapter — Research and Feasibility Contract
 
-> Status: **RESEARCH COMPLETE / ADAPTER NOT IMPLEMENTED / PUBLISH BLOCKED (owner-gated).**
+> Status: **RESEARCH COMPLETE / OFFICIAL ADAPTER IMPLEMENTED (Issue #227) / LIVE
+> SUBMISSION BLOCKED (owner-gated, Issue #118 / S-M24-LIVE).**
 > This document records the official Bilibili (哔哩哔哩开放平台) API boundary
 > discovered from official documentation, and the honest feasibility analysis
 > for an ST publisher adapter. It is the §-order follow-up to the Meta adapter
-> (Issue #219) and the Snapchat adapter (Issue #221). No adapter code, no
-> account, no app registration, and no platform call exists today.
+> (Issue #219) and the Snapchat adapter (Issue #221). The adapter now exists
+> offline (`src/publishing/bilibiliPublisher.js`, scripted-transport tested)
+> and `bilibili` entered the destination router's supported set — but NO
+> account, app registration, qualification certification, whitelist grant,
+> token, upload, submission, or receipt exists. No request was ever sent to
+> any Bilibili endpoint.
 
 Research date: 2026-10. Sources are the official open-platform documentation,
 fetched live during this research (not invented):
@@ -143,12 +148,41 @@ Implementing the adapter needs, in order:
   no retry storm), `127305` → `BILIBILI_WHITELIST_RESTRICTED` (fail closed),
   documented daily-quota states surfaced truthfully as wait/recover states.
 
+## 4b. Implementation contract (realized on main, Issue #227)
+
+`src/publishing/bilibiliPublisher.js` implements §1.2's four-step flow behind
+the shared `publisher.publish(request)` contract:
+
+- Endpoints pinned as constants on the official host `member.bilibili.com`
+  only: preprocess `POST /arcopen/fn/archive/video/init`, part upload
+  `POST /video/v2/part/upload?part_number&upload_token` (8 MB parts), merge
+  `POST /arcopen/fn/archive/video/complete?upload_token`, submission
+  `POST /arcopen/fn/archive/add-by-utoken`. The OAuth host `api.bilibili.com`
+  is deliberately NOT used by the adapter (token exchange/rotation is the
+  OAuth lifecycle's job).
+- Signing is an INJECTED `signRequest` callback: the official canonical
+  signing string is not fully documented in the public mirror, so per the
+  no-invented-API rule the adapter never fabricates a signature — a
+  deployment with whitelist-approved access supplies its officially-documented
+  signer; without one, calls stay honest and unsigned.
+- Receipt honesty per §2: `platformPostId` ONLY from the real platform-issued
+  archive id in the response `data` (`resource_id` / `aid` / `bvid`);
+  `platformUrl` ONLY from a real `bvid` (pinned canonical base);
+  `submissionState` is `submitted_review_pending` — a submission is in
+  platform review, never "published" at submit time.
+- Official 127304/127305 map to `BILIBILI_PERMISSION_NOT_GRANTED` /
+  `BILIBILI_WHITELIST_RESTRICTED` and fail closed (no retry storm).
+- Offline tests: `tests/bilibiliPublisher.test.js` (20 tests, scripted
+  transport). `bilibili` is supported in `destinationPublisherRouter` and
+  dispatches through its own wired publisher; unwired-by-default.
+
 ## 5. What is NOT claimed
 
 No Bilibili account, app registration, qualification certification, whitelist
 grant, token, upload, submission, or receipt exists. No request was ever sent
-to any Bilibili endpoint. `bilibili` remains **excluded** from
-`destinationPublisherRouter`'s supported destination set (`youtube`,
-`instagram`, `facebook`, `snapchat`) until an adapter is actually implemented
-and owner-gated live access exists (Issue #118 / S-M24-LIVE). This document
-changes documentation only — no behavior, no dependencies, no network.
+to any Bilibili endpoint. Live submission stays owner-gated (Issue #118 /
+S-M24-LIVE): onboarding requires the owner's open-platform registration +
+资质认证, an app with 投稿 whitelist approval, the OAuth connection, and a
+real produced artifact under exact owner approval. This document + adapter
+changes documentation/code offline only — no live behavior, no new runtime
+dependencies, no network.

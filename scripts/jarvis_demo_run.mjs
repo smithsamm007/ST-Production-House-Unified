@@ -8,6 +8,14 @@
  * by the orchestrator itself — mediaStatus stays `not_generated`, no fake
  * media, no fake receipts (AGENTS.md Rules 1–3 are enforced BY the code,
  * not by this script).
+ *
+ * DURATION HONESTY (see also docs/media/REAL_MEDIA_ENABLEMENT.md): the
+ * `targetMinutes` below is the PLANNING-stage target at the planner
+ * contract's upper bound (25–30 per src/jarvis/* validation). This plan is
+ * NOT a rendered video and is never evidence that the canonical 30–50 min
+ * long-form window was satisfied — that window is enforced only by the
+ * FFmpeg assembly QC gate on REAL rendered bytes ([1800, 3000] s,
+ * src/media/ffmpegAssemblyExecutor.js / packagingQc.js).
  */
 import { JarvisContentPackageOrchestrator } from "../src/jarvis/contentPackageOrchestrator.js";
 import { WorkerRuntime } from "../src/workers/workerRuntime.js";
@@ -31,7 +39,8 @@ const input = {
   publicBrand: "The Cursed Mansion",
   suppliedConcept: concept,
   language: "hinglish",
-  targetMinutes: 26
+  // Planner contract bound — plan-stage target only (see docstring above).
+  targetMinutes: 30
 };
 
 console.log("== JARVIS deterministic content package :: REAL offline run ==");
