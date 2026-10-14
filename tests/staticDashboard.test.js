@@ -23,6 +23,10 @@ import path from "node:path";
 
 import app from "../src/catalog/server.js";
 import { CANONICAL_REELS } from "../src/pipeline/reelsStage.js";
+import {
+  EPISODE_DURATION_OPTIONS_SECONDS,
+  EPISODES_PER_DAY_OPTIONS,
+} from "../src/scheduling/directorSchedule.js";
 
 const publicDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "public");
 const indexHtml = await readFile(path.join(publicDir, "index.html"), "utf8");
@@ -174,6 +178,44 @@ test("Channel cards: platform chips derive from real destinations only", () => {
   assert.match(dashboardJs, /entry\.detail\.destinations/);
   assert.ok(dashboardJs.includes("no destinations configured"));
   assert.ok(dashboardJs.includes("destination lookup failed"));
+});
+
+test("Schedule panel: static defaults equal the declared duration/frequency contract", () => {
+  // The panel must work before the limits fetch resolves, so the static markup
+  // carries the documented defaults — and they must be EXACTLY the durations
+  // and frequencies the pure schedule contract accepts (no invented options).
+  assert.ok(indexHtml.includes('id="view-schedule"'));
+  const durationBlock = /<select id="sched-duration">([\s\S]*?)<\/select>/.exec(indexHtml);
+  assert.ok(durationBlock, "sched-duration select must exist");
+  const staticDurations = Array.from(durationBlock[1].matchAll(/value="(\d+)"/g)).map((m) => Number(m[1]));
+  assert.deepEqual(staticDurations, [...EPISODE_DURATION_OPTIONS_SECONDS]);
+  const perDayBlock = /<datalist id="sched-per-day-options">([\s\S]*?)<\/datalist>/.exec(indexHtml);
+  assert.ok(perDayBlock, "sched-per-day-options datalist must exist");
+  const staticPerDay = Array.from(perDayBlock[1].matchAll(/value="(\d+)"/g)).map((m) => Number(m[1]));
+  assert.deepEqual(staticPerDay, [...EPISODES_PER_DAY_OPTIONS]);
+});
+
+test("Schedule panel: runtime hydrates its options from the declared limits route", () => {
+  // Nothing about the allowed durations/frequencies is invented client-side:
+  // GET /api/scheduling/limits declares them and the runtime adopts them.
+  assert.match(dashboardJs, /await api\("\/api\/scheduling\/limits"\)/);
+  assert.match(dashboardJs, /limits\.episodeDurationOptionsSeconds/);
+  assert.match(dashboardJs, /limits\.episodesPerDayOptions/);
+  assert.match(dashboardJs, /limits\.episodesPerDaySafeLimit/);
+  assert.match(dashboardJs, /await hydrateScheduleLimits\(\)/);
+});
+
+test("Schedule panel: routes bind to the scoped per-Director scheduling API only", () => {
+  // Every read/write the panel performs is scoped to one Director; the CSRF
+  // token is attached to the mutation, never skipped.
+  assert.match(dashboardJs, /\/api\/scheduling\/directors/);
+  assert.match(dashboardJs, /\/api\/scheduling\/directors\/" \+ encodeURIComponent\(agentId\)/);
+  assert.match(dashboardJs, /\/run/);
+  assert.ok(dashboardJs.includes("dryRun"));
+  assert.ok(indexHtml.includes('id="sched-enabled"'));
+  assert.ok(indexHtml.includes('id="sched-days"'));
+  assert.ok(indexHtml.includes('id="sched-start-time"'));
+  assert.ok(indexHtml.includes('id="sched-timezone"'));
 });
 
 test("Directors: detail buttons bind through explicit card options, not string surgery", () => {

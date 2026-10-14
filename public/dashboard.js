@@ -23,6 +23,7 @@
     providers: [],
     channels: [],
     productions: [],
+    social: {},
     activeView: "overview",
   };
 
@@ -222,7 +223,7 @@
     const options = Array.from(seen.entries()).map(function (pair) {
       return '<option value="' + esc(pair[0]) + '">Director ' + esc(pair[0]) + " · " + esc(pair[1]) + "</option>";
     });
-    for (const id of ["comm-agent", "memory-agent", "conn-agent"]) {
+    for (const id of ["comm-agent", "memory-agent", "conn-agent", "sched-agent"]) {
       const select = $(id);
       if (select) select.innerHTML = options.length > 0 ? options : '<option value="">no directors with channels yet</option>';
     }
@@ -270,6 +271,7 @@
   const loaders = {
     overview: loadOverview,
     directors: loadDirectors,
+    schedule: loadScheduleView,
     communication: loadCommunicationView,
     memory: loadMemoryView,
     production: loadProductionView,
@@ -304,7 +306,7 @@
       item.addEventListener("click", function () { showView(item.getAttribute("data-view")); });
     }
     const refreshMap = {
-      "overview-refresh": "overview", "directors-refresh": "directors",
+      "overview-refresh": "overview", "directors-refresh": "directors", "sched-refresh": "schedule",
       "production-refresh": "production", "jobs-refresh": "jobs",
       "providers-refresh": "providers", "publishing-refresh": "publishing",
       "approvals-refresh": "approvals", "analytics-refresh": "analytics",
@@ -575,6 +577,200 @@
         "</div>";
     } catch (err) {
       host.innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Episode & production schedule (per director, sql/029)
+  // ------------------------------------------------------------------
+
+  // Every value below comes from the API response. Nothing is defaulted in the
+  // browser: an unconfigured director shows the server's declared defaults and
+  // is labelled `not configured yet`.
+  function scheduleStatusText(schedule) {
+    if (!schedule || schedule.invalid === true) return schedule && schedule.invalidReason ? schedule.invalidReason : "invalid";
+    if (!schedule.configured) return "not configured yet — showing defaults";
+    return schedule.scheduleEnabled ? "enabled" : "paused";
+  }
+
+  function renderScheduleStatus(view) {
+    const host = $("sched-status");
+    if (!view) { host.innerHTML = '<div class="empty">Pick a director to inspect its schedule.</div>'; return; }
+    const s = view.schedule || {};
+    const c = view.counters || {};
+    const slots = c.slots || {};
+    const jobs = c.jobs || {};
+    const releases = c.releases || {};
+    const next = view.planning && view.planning.nextEligibleSlot;
+    const queued = slots.queued || 0;
+    const delayed = slots.delayed || 0;
+    const blocked = slots.blocked || 0;
+    const skipped = slots.skipped || 0;
+    const blockers = [];
+    if ((jobs.queued || 0) + (jobs.leased || 0) + (jobs.running || 0) > 0) {
+      blockers.push(pill("queue in flight: " + ((jobs.queued || 0) + (jobs.leased || 0) + (jobs.running || 0)), "warn"));
+    }
+    if (delayed > 0) blockers.push(pill("capacity/quota delayed: " + delayed, "warn"));
+    if (blocked > 0) blockers.push(pill("blocked: " + blocked, "bad"));
+    if (skipped > 0) blockers.push(pill("skipped (missed window): " + skipped, "info"));
+    if (view.lastSlot && view.lastSlot.reasonCode) {
+      blockers.push(pill("last slot: " + view.lastSlot.reasonCode, "bad"));
+    }
+    const today = (view.planning && view.planning.todayPlannedSlots) || [];
+    host.innerHTML =
+      '<div class="panel" style="margin-top:14px;">' +
+      '<h2>' + esc(view.channelDisplayName || "Director") + " — schedule</h2>" +
+      '<div class="chips">' +
+        pill(scheduleStatusText(s), s.scheduleEnabled === true ? "ok" : "warn") +
+        pill(s.episodeDurationMinutes ? s.episodeDurationMinutes + " min episode" : "duration —", "info") +
+        pill((s.episodesPerDay || "—") + " per day", "info") +
+        pill(s.productionDaysLabel || "days —", "info") +
+        pill(s.productionStartTime ? s.productionStartTime + " " + (s.timezone || "") : "start —", "info") +
+      "</div>" +
+      '<div class="chips" style="margin-top:8px;">' + (blockers.length > 0 ? blockers.join("") : pill("no blocker recorded", "ok")) + "</div>" +
+      '<div class="row"><span>next eligible slot</span><b>' +
+        esc(next ? fmtDate(next.startsAt) + " · slot " + next.slotIndex : "none in the configured window") + "</b></div>" +
+      '<div class="row"><span>today planned slots</span><b>' +
+        esc(today.length === 0 ? "none" : today.map(function (slot) { return (slot.localTime || "?") + " · " + fmtDate(slot.startsAt); }).join("  |  ")) + "</b></div>" +
+      '<div class="row"><span>slots persisted</span><b>' + esc("total " + (slots.total || 0) + " · queued " + queued + " · delayed " + delayed + " · blocked " + blocked + " · skipped " + skipped) + "</b></div>" +
+      '<div class="row"><span>jobs by status</span><b>' + esc(jsonInline(jobs)) + "</b></div>" +
+      '<div class="row"><span>releases by status</span><b>' + esc(jsonInline(releases)) + "</b></div>" +
+      '<div class="row"><span>completed releases (review + published)</span><b>' + esc(String(c.completedReleases || 0)) + "</b></div>" +
+      '<div class="row"><span>awaiting owner approval</span><b>' + esc(String(c.awaitingOwnerApproval || 0)) + "</b></div>" +
+      '<div class="row"><span>last scheduled slot</span><b>' +
+        esc(view.lastSlot ? (view.lastSlot.scheduleDate || "—") + " slot " + view.lastSlot.slotIndex + " · " + (view.lastSlot.state || "—") + (view.lastSlot.reasonCode ? " · " + view.lastSlot.reasonCode : "") : "—") + "</b></div>" +
+      '<p class="muted">Planned slots are NOT completed episodes. Counters above are persisted rows only: an episode counts as completed when its release reaches <code>review</code> (owner approval) or <code>published</code>.</p>' +
+      "</div>";
+  }
+
+  function jsonInline(value) {
+    const keys = Object.keys(value || {});
+    if (keys.length === 0) return "none";
+    return keys.map(function (key) { return key + ":" + value[key]; }).join("  ");
+  }
+
+  function renderSchedulerReport(report) {
+    const host = $("sched-run-output");
+    if (!report) { host.innerHTML = ""; return; }
+    const totals = report.totals || {};
+    const director = (report.directors || [])[0] || null;
+    const slots = (director && director.slots) || [];
+    host.innerHTML =
+      '<div class="panel" style="margin-top:14px;">' +
+      '<h2>Scheduler run ' + esc(report.dryRun === true ? "(preview — nothing written)" : "(durable)") + "</h2>" +
+      '<div class="chips">' +
+        pill("created " + (totals.created || 0), (totals.created || 0) > 0 ? "ok" : "info") +
+        pill("delayed " + (totals.delayed || 0), (totals.delayed || 0) > 0 ? "warn" : "info") +
+        pill("blocked " + (totals.blocked || 0), (totals.blocked || 0) > 0 ? "bad" : "info") +
+        pill("skipped " + (totals.skipped || 0), "info") +
+        pill("duplicates " + (totals.duplicates || 0), "info") +
+        pill("planned, not yet due " + (totals.notYetDue || 0), "info") +
+      "</div>" +
+      (slots.length === 0
+        ? '<div class="empty">No slot was due and no missed date was inside the bounded catch-up window.</div>'
+        : '<div class="list">' + slots.map(function (slot) {
+            return '<div class="row-item"><span class="title">' + esc(slot.scheduleDate + " · slot " + slot.slotIndex) + "</span>" +
+              pill(slot.state, slot.state === "queued" ? "ok" : slot.state === "blocked" ? "bad" : "warn") +
+              '<span class="sub">' + esc(slot.reasonCode || (slot.releaseId ? "release " + shortHash(slot.releaseId) : "no reason recorded")) + "</span>" +
+              '<span class="sub">' + esc(slot.season != null ? "S" + slot.season + "E" + slot.episode : "") + "</span>" +
+              '<span class="sub">starts ' + esc(fmtDate(slot.startsAt)) + "</span></div>";
+          }).join("") + "</div>") +
+      "</div>";
+  }
+
+  // The selectable durations/frequencies are DECLARED by the server. The static
+  // markup carries the documented defaults so the panel works before the fetch
+  // resolves, and this hydration replaces them with whatever the contract
+  // actually allows — the browser never invents an option.
+  async function hydrateScheduleLimits() {
+    if (state.scheduleLimitsApplied === true) return;
+    let limits = null;
+    try {
+      limits = await api("/api/scheduling/limits");
+    } catch (err) {
+      // Keep the documented static defaults; the form still cannot bypass the
+      // server-side validation that rejects anything unsupported.
+      return;
+    }
+    const durations = Array.isArray(limits.episodeDurationOptionsSeconds) ? limits.episodeDurationOptionsSeconds : [];
+    if (durations.length > 0) {
+      $("sched-duration").innerHTML = durations.map(function (seconds) {
+        return '<option value="' + seconds + '">' + (seconds / 60) + " minutes</option>";
+      }).join("");
+    }
+    const quickCounts = Array.isArray(limits.episodesPerDayOptions) ? limits.episodesPerDayOptions : [];
+    if (quickCounts.length > 0) {
+      $("sched-per-day-options").innerHTML = quickCounts.map(function (count) {
+        return '<option value="' + count + '"></option>';
+      }).join("");
+    }
+    const safeLimit = limits.episodesPerDaySafeLimit;
+    if (Number.isInteger(safeLimit) && safeLimit > 0) $("sched-per-day").max = String(safeLimit);
+    state.scheduleLimitsApplied = true;
+  }
+
+  async function loadScheduleView() {
+    const select = $("sched-agent");
+    if (select.options.length === 0) {
+      select.innerHTML = '<option value="">no directors with channels yet</option>';
+    }
+    await hydrateScheduleLimits();
+    await loadDirectorSchedule();
+  }
+
+  function fillScheduleForm(schedule) {
+    $("sched-duration").value = String(schedule.episodeDurationSeconds || 2400);
+    $("sched-per-day").value = String(schedule.episodesPerDay || 1);
+    for (const day of [1, 2, 3, 4, 5, 6, 7]) {
+      $("sched-day-" + day).checked = (schedule.productionDays || []).indexOf(day) !== -1;
+    }
+    $("sched-start-time").value = schedule.productionStartTime || "09:00";
+    $("sched-timezone").value = schedule.timezone || "Asia/Kolkata";
+    $("sched-enabled").checked = schedule.scheduleEnabled === true;
+  }
+
+  function collectProductionDays() {
+    const days = [];
+    for (const day of [1, 2, 3, 4, 5, 6, 7]) {
+      if ($("sched-day-" + day).checked) days.push(day);
+    }
+    return days;
+  }
+
+  async function loadDirectorSchedule() {
+    const agentId = $("sched-agent").value;
+    const errorEl = $("sched-error");
+    errorEl.textContent = "";
+    $("sched-run-output").innerHTML = "";
+    if (!agentId) {
+      $("sched-form").classList.add("hidden");
+      renderScheduleStatus(null);
+      return;
+    }
+    $("sched-form").classList.remove("hidden");
+    try {
+      const view = await api("/api/scheduling/directors/" + encodeURIComponent(agentId));
+      fillScheduleForm(view.schedule || {});
+      renderScheduleStatus(view);
+    } catch (err) {
+      $("sched-status").innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  async function runScheduler(dryRun) {
+    const agentId = $("sched-agent").value;
+    const errorEl = $("sched-error");
+    errorEl.textContent = "";
+    if (!agentId) { errorEl.textContent = "Select a director first."; return; }
+    try {
+      const report = await api("/api/scheduling/directors/" + encodeURIComponent(agentId) + "/run", {
+        method: "POST",
+        body: JSON.stringify({ dryRun: dryRun === true }),
+      });
+      renderSchedulerReport(report);
+      await loadDirectorSchedule();
+    } catch (err) {
+      errorEl.textContent = storageErrorMessage(err);
     }
   }
 
@@ -891,6 +1087,7 @@
     }
     await loadConnections();
     await loadYouTubeStatus();
+    await loadSocialStatus();
   }
 
   async function loadConnections() {
@@ -977,6 +1174,7 @@
       return {
         result: result,
         agentId: params.get("agent") || "",
+        provider: params.get("provider") || "youtube",
         errorCode: params.get("code") || "",
       };
     } catch {
@@ -1001,14 +1199,18 @@
       if (has) select.value = youtubeOauthBoot.agentId;
     }
     loadConnections().catch(function () {});
-    loadYouTubeStatus().then(function () {
-      const host = $("youtube-status");
+    const isSocial = youtubeOauthBoot.provider !== "youtube";
+    const loader = isSocial ? loadSocialStatus : loadYouTubeStatus;
+    const hostId = isSocial ? "social-status" : "youtube-status";
+    const label = isSocial ? "Social authorization" : "YouTube authorization";
+    loader().then(function () {
+      const host = $(hostId);
       if (!host) return;
       const banner = document.createElement("div");
       banner.className = "empty";
       banner.textContent = youtubeOauthBoot.result === "connected"
-        ? "YouTube authorization completed — the account was verified via the official YouTube API."
-        : "⚠ YouTube authorization FAILED" + (youtubeOauthBoot.errorCode ? " · " + youtubeOauthBoot.errorCode : "") +
+        ? label + " completed — the account was verified with the official provider API."
+        : "⚠ " + label + " FAILED" + (youtubeOauthBoot.errorCode ? " · " + youtubeOauthBoot.errorCode : "") +
           " — no account was connected. Nothing was faked; start a new connection to retry.";
       host.prepend(banner);
     }).catch(function () {});
@@ -1141,6 +1343,171 @@
       $("youtube-status").prepend(notice);
     } catch (err) {
       errorEl.textContent = storageErrorMessage(err);
+      button.disabled = false;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Social account connections (Section 6): facebook / instagram /
+  // snapchat / bilibili via /api/social/*. Official OAuth, verified
+  // provider identity, opaque secret custody, honest status only. The
+  // authorization `code` is never rendered; providers whose identity
+  // endpoint is unconfirmed are disclosed and not connectable.
+  // ------------------------------------------------------------------
+  async function loadSocialProviders() {
+    const select = $("social-provider");
+    if (!select || select.options.length > 0) return;
+    try {
+      const data = await api("/api/social/providers");
+      const providers = data.providers || [];
+      select.innerHTML = providers.map(function (provider) {
+        return '<option value="' + esc(provider.providerKey) + '"' +
+          (provider.connectable ? "" : ' data-connectable="false"') + ">" +
+          esc(provider.displayName) + (provider.connectable ? "" : " · not connectable yet") + "</option>";
+      }).join("");
+    } catch {
+      select.innerHTML = '<option value="">unavailable</option>';
+    }
+  }
+
+  function syncSocialButtons() {
+    const select = $("social-provider");
+    if (!select) return;
+    const option = select.options[select.selectedIndex];
+    const connectable = Boolean(option) && option.getAttribute("data-connectable") !== "false";
+    const item = state.social[select.value];
+    const note = $("social-provider-note");
+    const connectBtn = $("social-connect");
+    const revokeBtn = $("social-revoke");
+    note.textContent = connectable
+      ? ""
+      : "Official identity endpoint not yet confirmed — connecting is refused rather than faked.";
+    connectBtn.disabled = !connectable;
+    connectBtn.textContent = item && item.provider.connectable
+      ? (item.account ? "Reconnect this account" : "Connect account")
+      : "Connect account";
+    revokeBtn.hidden = !(item && item.account);
+    revokeBtn.textContent = item && item.account && item.account.status === "disconnected"
+      ? "Re-run secret cleanup"
+      : "Revoke access";
+  }
+
+  async function loadSocialStatus() {
+    await loadSocialProviders();
+    const host = $("social-status");
+    const errorEl = $("social-error");
+    const connectBtn = $("social-connect");
+    const revokeBtn = $("social-revoke");
+    errorEl.textContent = "";
+    const agentId = $("conn-agent").value;
+    if (!agentId) {
+      host.innerHTML = '<div class="empty">Pick a director to see its social accounts.</div>';
+      connectBtn.disabled = true;
+      revokeBtn.hidden = true;
+      return;
+    }
+    host.innerHTML = '<div class="loading">Loading social account status…</div>';
+    try {
+      const data = await api("/api/social/directors/" + encodeURIComponent(agentId) + "/accounts");
+      state.social = {};
+      for (const item of data.items || []) state.social[item.providerKey] = item;
+      renderSocialStatus(data);
+    } catch (err) {
+      host.innerHTML = errorBox(storageErrorMessage(err));
+      connectBtn.disabled = true;
+      revokeBtn.hidden = true;
+    }
+  }
+
+  function renderSocialStatus(data) {
+    const host = $("social-status");
+    const parts = [];
+    if (data.oauthConfigured === false) {
+      parts.push('<div class="empty">Server has no social OAuth app credentials configured (STPH_&lt;PROVIDER&gt;_OAUTH_* env). Connecting will fail honestly until the operator configures them.</div>');
+    }
+    if (data.secretManagerConfigured === false) {
+      parts.push('<div class="empty">No external secret-manager adapter is wired on this server. Tokens are never stored in the database, so connecting is refused rather than faked.</div>');
+    }
+    const rows = (data.items || []).map(function (item) {
+      const account = item.account;
+      const row = ['<div class="row-item">' +
+        pill(item.provider.providerKey, "info") +
+        '<span class="title">' + esc(item.provider.displayName) + "</span>" +
+        pill(item.status, item.status === "connected" ? "ok" : item.status === "disconnected" ? "bad" : "warn")];
+      if (account && account.account && account.account.id) {
+        row.push('<span class="sub">account: ' + esc(account.account.name || account.account.id) + "</span>");
+      }
+      if (account && account.verifiedAt) {
+        row.push('<span class="sub">verified: ' + esc(fmtDate(account.verifiedAt)) + "</span>");
+      }
+      if (account && account.lastErrorCode) row.push(pill(account.lastErrorCode, "bad"));
+      if (!item.provider.connectable) {
+        row.push('<span class="sub">identity endpoint unconfirmed — not connectable</span>');
+      }
+      row.push("</div>");
+      return row.join("");
+    }).join("");
+    parts.push('<div class="list">' + rows + "</div>");
+    parts.push('<div class="sub">Tokens live in the external secret manager; the database holds an opaque locator only. No token, secret, locator, or authorization code is ever shown here (Rule 17).</div>');
+    host.innerHTML = '<div class="stack">' + parts.join("") + "</div>";
+    syncSocialButtons();
+  }
+
+  async function startSocialOauth() {
+    const errorEl = $("social-error");
+    const agentId = $("conn-agent").value;
+    const providerKey = $("social-provider").value;
+    errorEl.textContent = "";
+    if (!agentId || !providerKey) {
+      errorEl.textContent = "Pick a director and a platform first.";
+      return;
+    }
+    const button = $("social-connect");
+    button.disabled = true;
+    try {
+      const result = await api(
+        "/api/social/directors/" + encodeURIComponent(agentId) + "/" + encodeURIComponent(providerKey) + "/oauth/start",
+        { method: "POST" },
+      );
+      if (!result || typeof result.authorizationUrl !== "string" || !result.authorizationUrl.startsWith("https://")) {
+        errorEl.textContent = "Server returned no usable authorization URL.";
+        button.disabled = false;
+        return;
+      }
+      // Full-page navigation to the official provider. The single-use state
+      // travels in the URL; the owner's session completes the flow on return.
+      window.location.assign(result.authorizationUrl);
+    } catch (err) {
+      errorEl.textContent = storageErrorMessage(err);
+      button.disabled = false;
+    }
+  }
+
+  async function revokeSocial() {
+    const errorEl = $("social-error");
+    const agentId = $("conn-agent").value;
+    const providerKey = $("social-provider").value;
+    errorEl.textContent = "";
+    if (!agentId || !providerKey) return;
+    const button = $("social-revoke");
+    button.disabled = true;
+    try {
+      const result = await api(
+        "/api/social/directors/" + encodeURIComponent(agentId) + "/" + encodeURIComponent(providerKey) + "/revoke",
+        { method: "POST" },
+      );
+      await loadSocialStatus();
+      const notice = document.createElement("div");
+      notice.className = "empty";
+      notice.textContent = "Revoke result: status " + (result.status || "unknown") +
+        " · provider revoked: " + (result.providerRevoked === true ? "yes" : "no") +
+        (result.alreadyDisconnected ? " · was already disconnected" : "") +
+        (result.secretCleanupFailed ? " · secret cleanup FAILED" : "") +
+        (result.errorCode ? " · " + result.errorCode : "");
+      $("social-status").prepend(notice);
+    } catch (err) {
+      errorEl.textContent = storageErrorMessage(err);
+    } finally {
       button.disabled = false;
     }
   }
@@ -1375,12 +1742,55 @@
   // ------------------------------------------------------------------
   function bindForms() {
     $("comm-load").addEventListener("click", loadConversation);
+    $("sched-load").addEventListener("click", loadDirectorSchedule);
+    $("sched-agent").addEventListener("change", loadDirectorSchedule);
+    $("sched-preset-every").addEventListener("click", function () {
+      for (const day of [1, 2, 3, 4, 5, 6, 7]) $("sched-day-" + day).checked = true;
+    });
+    $("sched-preset-five").addEventListener("click", function () {
+      for (const day of [1, 2, 3, 4, 5, 6, 7]) $("sched-day-" + day).checked = day <= 5;
+    });
+    $("sched-dry-run").addEventListener("click", function () { runScheduler(true); });
+    $("sched-run").addEventListener("click", function () { runScheduler(false); });
+
+    $("sched-form").addEventListener("submit", async function (event) {
+      event.preventDefault();
+      const agentId = $("sched-agent").value;
+      const errorEl = $("sched-error");
+      errorEl.textContent = "";
+      if (!agentId) { errorEl.textContent = "Select a director first."; return; }
+      const days = collectProductionDays();
+      if (days.length === 0) { errorEl.textContent = "Select at least one production day."; return; }
+      const submit = $("sched-form").querySelector('button[type="submit"]');
+      submit.disabled = true;
+      try {
+        await api("/api/scheduling/directors/" + encodeURIComponent(agentId), {
+          method: "PUT",
+          body: JSON.stringify({
+            episodeDurationSeconds: Number($("sched-duration").value),
+            episodesPerDay: Number($("sched-per-day").value),
+            productionDays: days,
+            productionStartTime: $("sched-start-time").value,
+            timezone: $("sched-timezone").value.trim(),
+            scheduleEnabled: $("sched-enabled").checked,
+          }),
+        });
+        await loadDirectorSchedule();
+      } catch (err) {
+        errorEl.textContent = storageErrorMessage(err);
+      } finally {
+        submit.disabled = false;
+      }
+    });
     $("memory-load").addEventListener("click", loadMemory);
-    $("conn-load").addEventListener("click", function () { loadConnections(); loadYouTubeStatus(); });
-    $("conn-agent").addEventListener("change", function () { loadConnections(); loadYouTubeStatus(); });
+    $("conn-load").addEventListener("click", function () { loadConnections(); loadYouTubeStatus(); loadSocialStatus(); });
+    $("conn-agent").addEventListener("change", function () { loadConnections(); loadYouTubeStatus(); loadSocialStatus(); });
     $("conn-provider").addEventListener("change", renderConnectionFields);
     $("youtube-connect").addEventListener("click", startYouTubeOauth);
     $("youtube-revoke").addEventListener("click", revokeYouTube);
+    $("social-provider").addEventListener("change", syncSocialButtons);
+    $("social-connect").addEventListener("click", startSocialOauth);
+    $("social-revoke").addEventListener("click", revokeSocial);
 
     $("connection-form").addEventListener("submit", async function (event) {
       event.preventDefault();

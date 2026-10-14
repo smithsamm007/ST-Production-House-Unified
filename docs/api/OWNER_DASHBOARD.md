@@ -32,10 +32,11 @@ Loading, error, and empty states are explicit; nothing is simulated
 | Director Communication | `/api/directors/:agentId/conversation` (GET + POST) |
 | Director Memory | `/api/directors/:agentId/memory` |
 | Production | `/api/productions` (GET/POST), `/api/productions/:id` (+`/run`, `/publish`) |
+| Episode & Schedule | `/api/scheduling/limits`, `/api/scheduling/directors`, `/api/scheduling/directors/:agentId` (GET), `PUT /api/scheduling/directors/:agentId`, `POST /api/scheduling/directors/:agentId/run` — per-Director duration, episodes per day, weekdays, start time, timezone, enable/pause, next eligible slot, and truthful slot/job/release counters (see below) |
 | Active Jobs | `/api/metrics` counters + `/api/content-runs` |
 | Provider Status | `/api/providers/catalog` (governed catalog, official credential URLs) |
 | Quotas | honest note: no quota read route exists on this server; real queue counters from `/api/metrics` |
-| Secrets & Connections | `/api/providers/catalog`; `/api/connections/directors/:agentId` (list/upsert/delete/test; secret field KEYS only, Rule 17); YouTube OAuth status/connect/revoke via `/api/youtube/*` (below) |
+| Secrets & Connections | `/api/providers/catalog`; `/api/connections/directors/:agentId` (list/upsert/delete/test; secret field KEYS only, Rule 17); YouTube OAuth status/connect/revoke via `/api/youtube/*` (below); per-Director social accounts via `/api/social/*` (below) |
 | Publishing Accounts | `/api/channels/:id/destinations` (GET + POST) |
 | Approvals | `/api/control/approvals` |
 | Analytics | operational counters from `/api/metrics` (sql/027 records live in the owner-operations service; not exposed here) |
@@ -113,6 +114,35 @@ ships no secret-manager adapter, so until an operator wires one (via the
 service runtime registry) and configures the Google OAuth client env vars,
 connect attempts return an explicit 503 instead of pretending to connect.
 
+### Social accounts (facebook / instagram / snapchat / bilibili, sql/030)
+
+One generic OAuth engine (`src/catalog/socialOAuthService.js` +
+`src/catalog/socialOAuthProviders.js`) gives every other supported platform the
+identical lifecycle under `/api/social/*` (session-authenticated; mutations
+carry the CSRF token):
+
+- `GET /api/social/providers` — safe provider metadata (official endpoints are
+  frozen server-side; the response carries no secret-shaped field).
+- `GET /api/social/directors/:agentId/accounts` and
+  `.../:providerKey/status` — honest per-Director status for every platform.
+- `POST /api/social/directors/:agentId/:providerKey/oauth/start` — mints a
+  hashed, single-use, expiring state (PKCE S256 where the provider documents
+  it, with the verifier derived from the state so nothing extra is stored) and
+  returns the official authorization URL.
+- `GET /api/social/:providerKey/callback` — consumes the state atomically,
+  exchanges the code at the official endpoint, verifies the account through the
+  official identity API, and redirects back with an honest `oauth=connected` or
+  `oauth=failed&code=…` (the code never appears in any URL).
+- `POST /api/social/directors/:agentId/:providerKey/revoke` — owner-authorized
+  revocation reported as separate honest facts.
+
+Honest limits: app credentials are configured centrally via
+`STPH_<PROVIDER>_OAUTH_*` (never per Director); missing config or a missing
+secret-manager adapter is a 503-class refusal; bilibili's official identity
+endpoint is unconfirmed, so it is disclosed as not connectable and refused with
+`OAUTH_PROVIDER_IDENTITY_UNCONFIRMED` rather than inventing an endpoint.
+Details: `docs/publishing/SOCIAL_ACCOUNT_CONNECTIONS.md`.
+
 ### Operator secret-manager wiring (Issue #208)
 
 The code-side wiring surface for the token-custody boundary above is now
@@ -176,6 +206,27 @@ provide the Google OAuth client credentials (`STPH_YOUTUBE_OAUTH_CLIENT_ID`,
 `STPH_YOUTUBE_OAUTH_CLIENT_SECRET`, `STPH_YOUTUBE_OAUTH_REDIRECT_BASE_URL`)
 and a durable secret-manager adapter. Until both are present, the routes keep
 returning honest 503s.
+
+### Episode & Schedule (per-Director duration + production schedule, sql/029)
+
+The panel edits the persisted per-Director schedule and renders only real
+state. Every value shown comes from the API:
+
+- the declared quick limits from `/api/scheduling/limits` (30/40/50 minute
+durations, 1/2/3 episodes per day, the safe custom limit, and the day presets)
+  — the form never hardcodes its own option list;
+- the Director's saved `episodeDurationSeconds`, `episodesPerDay`,
+  `productionDays`, `productionStartTime`, `timezone`, and `scheduleEnabled`,
+  with the documented defaults pre-filled for a Director that has none yet;
+- the next eligible slot, and per-slot counters by real state
+  (`pending | queued | delayed | blocked | skipped`) plus queued/completed job
+  and release counters and the last slot's state + reason code.
+
+Saving stores the configuration only. A scheduler run queues planned episodes
+into the existing production/approval pipeline; the panel never reports a
+planned episode as completed and never publishes. Validation failures surface
+the server's own stable error codes. Details:
+`docs/production/DIRECTOR_EPISODE_SCHEDULE.md`.
 
 ## Security posture
 

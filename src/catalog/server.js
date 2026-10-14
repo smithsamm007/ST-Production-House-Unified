@@ -28,12 +28,24 @@ import { createDemoStorageAdapter } from "../db/demoStorageAdapter.js";
 import { createContentRunsRouter } from "../api/contentRunsRouter.js";
 import { createProviderCatalogRouter, createDirectorConnectionsRouter } from "../api/directorConnectionsRouter.js";
 import { createYouTubeOAuthRouter } from "../api/youtubeOAuthRouter.js";
+import { createSocialOAuthRouter } from "../api/socialOAuthRouter.js";
 import { loadConfiguredSecretManager, isSecretManagerConfigured } from "../credentials/oauthSecretManagerAdapter.js";
 import { setYouTubeOAuthRuntime, getYouTubeOAuthRuntime, YouTubeOAuthService } from "./youtubeOAuthService.js";
+import { setSocialOAuthRuntime } from "./socialOAuthService.js";
 import { executeYouTubePublish } from "../publishing/youtubePublishExecution.js";
 import { createHermesRouter } from "../api/hermesRouter.js";
+import { createDirectorScheduleRouter } from "../api/directorScheduleRouter.js";
+import { DirectorScheduleRepository } from "./scheduleRepository.js";
+import {
+  createBackgroundSchedulerTrigger,
+  runAllDirectorScheduleTicks,
+  parseSchedulerIntervalMinutes,
+  SCHEDULE_TRIGGER_ENABLED_ENV,
+} from "../scheduling/backgroundSchedulerTrigger.js";
 import { createOwnerControlRouter } from "../api/ownerControlRouter.js";
 import { PostgresOwnerControlStore } from "../api/ownerControlStore.js";
+import { createVoiceProfile, declareTtsProviderCapabilities } from "../media/ttsAdapter.js";
+import { createVisualStyleProfile, declareVisualProviderCapabilities } from "../media/visualAdapter.js";
 import { ProductionRepository, isKnownPlatform, isValidChannelSlug } from "../catalog/productionRepository.js";
 import { DirectorWorkspaceRepository } from "../catalog/directorWorkspaceRepository.js";
 import { evaluatePublishGate, runEpisodePipeline } from "../pipeline/episodePipeline.js";
@@ -49,15 +61,96 @@ let postgres = null;
 let storageMode = "postgres";
 let ownerControlStore = null;
 let productionWorker = null;
+// Opt-in background scheduler trigger (sql/029): claims scheduled slots
+// durably without a human in the loop. Default OFF — enabling it is a
+// deployment decision recorded through the explicit env gate.
+let scheduleTrigger = null;
 // Operator-wired external secret manager for the OAuth boundary (Issue #208).
 // null until configureRuntime() resolves the declared adapter — the OAuth
 // routes then degrade honestly (503) instead of ever faking custody.
 let oauthSecretManager = null;
 
+/**
+ * Compose the REAL-media executor-runner factory (Issue #187 wiring).
+ * One binding per Director, carrying the production transports (array-args
+ * spawn, real file bytes), the release-scoped media roots, and the FREE-FIRST
+ * provider registries (Phase 3: "choose and configure a permitted, free-first
+ * provider"). Exported so the wiring itself is verifiable without a live
+ * database: a regression that dropped the transports or the registries would
+ * make every real stage fail closed with `<STAGE>_SPAWN_FAILED` /
+ * `WAITING_FOR_QUOTA` again.
+ *
+ * Free-first capacity wired here (all keyless — no credentials, Rule 17):
+ *   - Voice: the SINGLE local open-source emergency engine `espeak-ng`
+ *     (GPL-3.0 tool, no model weights to license, Hindi + English, reads
+ *     narration from STDIN). Provisioned by the deployment environment like
+ *     ffmpeg; nothing about it is simulated.
+ *   - Visual: the tier-1 free primary `pollinations`, executed through the
+ *     repository-shipped keyless adapter (`scripts/providers/
+ *     visual-pollinations.mjs`) invoked as `node <script>` — array args only,
+ *     no shell, no exec bit required on the deployed filesystem.
+ * Credentialed remote providers remain owner-gated (Rule 16): the worker never
+ * sees a key, and a deployment that adds one does so through Secrets &
+ * Connections, out of band of this factory.
+ */
+export function createRealMediaRunnerFactory({ bindProductionRunner, transports, mediaPaths, providerScripts = {} }) {
+  const visualAdapterScript = typeof providerScripts.visual === "string" && providerScripts.visual.length > 0
+    ? providerScripts.visual
+    : "scripts/providers/visual-pollinations.mjs";
+  const ttsDeclared = declareTtsProviderCapabilities({
+    adapterId: "espeak-ng-cli",
+    languages: ["hi", "en"],
+    voices: [
+      { voiceId: "hi", language: "hi", supportsEmotion: false },
+      { voiceId: "en", language: "en", supportsEmotion: false },
+    ],
+  });
+  const visualDeclared = declareVisualProviderCapabilities({
+    adapterId: "pollinations-http",
+    modalities: ["image", "still_acquisition"],
+    aspectRatios: ["16:9", "9:16", "1:1", "4:5"],
+  });
+  return ({ agentId }) => bindProductionRunner({
+    agentId,
+    spawnImpl: transports.spawnImpl,
+    readFileImpl: transports.readFileImpl,
+    paths: mediaPaths,
+    tts: {
+      profile: createVoiceProfile({
+        agentId,
+        language: "hi",
+        provider: {
+          providerId: "espeak-ng",
+          providerRole: "local_open_source_emergency",
+          modelIdentifier: "espeak-ng-cli",
+          voiceId: "hi",
+        },
+      }),
+      registry: { "espeak-ng": { declared: ttsDeclared } },
+    },
+    visual: {
+      profile: createVisualStyleProfile({
+        agentId,
+        styleSummary: "Cinematic series key art and establishing stills",
+        aspectRatio: "16:9",
+      }),
+      registry: {
+        pollinations: {
+          declared: visualDeclared,
+          command: "node",
+          argvPrefix: [visualAdapterScript],
+          modelIdentifier: "flux",
+        },
+      },
+    },
+  });
+}
+
 /** Test/diagnostic hook: resets the operator secret-manager wiring. */
 export function __resetOauthSecretManagerForTests() {
   oauthSecretManager = null;
   setYouTubeOAuthRuntime({ secretManagerFactory: null });
+  setSocialOAuthRuntime({ secretManagerFactory: null });
 }
 
 /** Diagnostic surface: is an operator secret-manager adapter bound? */
@@ -125,6 +218,10 @@ export async function configureRuntime() {
       if (adapter) {
         oauthSecretManager = adapter;
         setYouTubeOAuthRuntime({ secretManagerFactory: () => oauthSecretManager });
+        // Section 6: the SAME owner-scoped secret-manager custody backs the
+        // generic social account-connection lifecycle (facebook/instagram/
+        // snapchat/bilibili). One adapter, one custody boundary.
+        setSocialOAuthRuntime({ secretManagerFactory: () => oauthSecretManager });
         // Custody honesty (Issue #210): a NON-durable adapter must never
         // silently become production custody in postgres mode.
         if (storageMode === "postgres" && adapter.nonDurable === true) {
@@ -171,7 +268,30 @@ export async function finalizeRuntimeStartup() {
       let executorRunnerFactory = null;
       if (process.env.STPH_ENABLE_REAL_MEDIA === "1") {
         const { bindProductionRunner } = await import("../pipeline/productionExecutorRunner.js");
-        executorRunnerFactory = ({ agentId }) => bindProductionRunner({ agentId });
+        const { createNodeMediaTransports } = await import("../media/nodeMediaTransport.js");
+        // Real transports (array-args spawn, shell:false, bounded capture;
+        // real file bytes for descriptor hashing). Without them every real
+        // media stage fails closed with *_SPAWN_FAILED — a binary is never
+        // simulated, so the media tooling itself is the only source of bytes.
+        const transports = createNodeMediaTransports();
+        const mediaRoot = typeof process.env.STPH_MEDIA_ROOT === "string" && process.env.STPH_MEDIA_ROOT.length > 0
+          ? process.env.STPH_MEDIA_ROOT
+          : path.join(process.cwd(), "artifacts", "media");
+        const mediaPaths = {
+          audio: path.join(mediaRoot, "audio"),
+          visual: path.join(mediaRoot, "visuals"),
+          episode: path.join(mediaRoot, "episodes"),
+          thumbnail: path.join(mediaRoot, "thumbnails"),
+          runPrefix: "episode",
+        };
+        // Executors write with ffmpeg, which never creates missing output
+        // directories: create the real media roots or fail honestly here.
+        const { mkdir } = await import("node:fs/promises");
+        await mkdir(mediaPaths.audio, { recursive: true });
+        await mkdir(mediaPaths.visual, { recursive: true });
+        await mkdir(mediaPaths.episode, { recursive: true });
+        await mkdir(mediaPaths.thumbnail, { recursive: true });
+        executorRunnerFactory = createRealMediaRunnerFactory({ bindProductionRunner, transports, mediaPaths });
       }
       productionWorker = new ProductionWorkerLoop({
         jobsRepository: new JobRepository(),
@@ -179,18 +299,58 @@ export async function finalizeRuntimeStartup() {
         evidenceLedger: new EvidenceLedgerRepository(),
         enabledAgentsProvider: async () => (await agentsRepo.list()).filter((a) => a.enabled !== false),
         executorRunnerFactory,
+        // Per-Director schedule (sql/029): the worker resolves each claimed
+        // job's Director configuration so the configured episode duration
+        // reaches the real render target and QC window.
+        directorScheduleProvider: ({ ownerId, agentId }) => readDirectorSchedule(ownerId, agentId),
       });
       productionWorker.start();
     } catch (error) {
       logInternalError("WORKER_START_FAILED", error);
     }
   }
-  return { storageMode, workerStarted: productionWorker !== null };
+  // Durable background scheduler trigger (sql/029): maps the last documented
+  // offline gap in `docs/production/DIRECTOR_EPISODE_SCHEDULE.md`. It reuses
+  // the EXACT same durable tick as the owner route — scheduled slots are
+  // claimed idempotently across all owners; nothing is published and the
+  // owner approval gate (Rule 7) is never touched. Off unless the operator
+  // opts in; startup failures degrade honestly instead of faking a timer.
+  if (process.env[SCHEDULE_TRIGGER_ENABLED_ENV] === "1" && postgres) {
+    try {
+      const intervalMinutes = parseSchedulerIntervalMinutes(process.env.STPH_SCHEDULER_TICK_MINUTES);
+      scheduleTrigger = createBackgroundSchedulerTrigger({
+        intervalMinutes,
+        tick: () => runAllDirectorScheduleTicks({
+          db: postgres,
+          productionRepository: getProductionRepository(),
+          listJobStatuses: async (ownerId, agentId) => {
+            const result = await postgres.query(
+              "SELECT status FROM jobs WHERE owner_id = $1 AND agent_id = $2 LIMIT 100;",
+              [ownerId, agentId],
+            );
+            return result.rows.map((row) => row.status);
+          },
+          recordAuditEvent,
+          now: () => new Date(),
+        }),
+      });
+      scheduleTrigger.start();
+      console.log(JSON.stringify({ level: "info", code: "SCHEDULE_TRIGGER_STARTED", intervalMinutes }));
+    } catch (error) {
+      logInternalError("SCHEDULE_TRIGGER_START_FAILED", error);
+    }
+  }
+  return { storageMode, workerStarted: productionWorker !== null, scheduleTriggerStarted: scheduleTrigger !== null };
 }
 
 /** Exposed for graceful shutdown and tests. */
 export function getProductionWorker() {
   return productionWorker;
+}
+
+/** Exposed for graceful shutdown and tests. */
+export function getScheduleTrigger() {
+  return scheduleTrigger;
 }/** Demo-mode bootstrap: seed canonical agents + a demo owner + starter channels. */
 export async function seedDemoData() {
   if (storageMode !== "demo") return { seeded: false };
@@ -438,6 +598,7 @@ app.get("/", (req, res) => {
       auth: "/api/auth/*",
       agents: "/api/agents",
       channels: "/api/channels",
+      scheduling: "/api/scheduling/*",
       evidence: "/api/evidence",
       contentRuns: "/api/content-runs",
       control: "/api/control/*",
@@ -721,6 +882,24 @@ function getProductionRepository() {
   return new ProductionRepository(postgres);
 }
 
+/**
+ * Per-Director persisted schedule (sql/029) as a planner input.
+ *
+ * Used by the owner production route and the Hermes execution bridge so a
+ * queued episode always carries the Director's OWN configured duration.
+ * Returns null when the Director has no persisted schedule yet (the caller
+ * then keeps the documented default) — never an invented configuration.
+ */
+async function readDirectorSchedule(ownerId, agentId) {
+  if (!postgres) throw new Error("STORAGE_NOT_CONFIGURED");
+  const repo = new DirectorScheduleRepository(postgres);
+  const records = await repo.listScheduleRecords(ownerId, { agentIds: [agentId] });
+  if (records.length === 0) return null;
+  return records[0].settings;
+}
+
+export { readDirectorSchedule };
+
 app.get("/api/channels", authenticateOwner, async (req, res) => {
   try {
     const channels = await getProductionRepository().listChannels(req.ownerId);
@@ -819,8 +998,19 @@ app.post("/api/productions", authenticateOwner, requireCsrf, async (req, release
       return releaseEpRes.status(409).json({ error: "AGENT_DISABLED" });
     }
 
+    // The Director's configured episode duration is stamped on the queued job
+    // (sql/029) so the pipeline renders and QC-checks the configured length.
+    let directorSchedule = null;
+    try {
+      directorSchedule = await readDirectorSchedule(req.ownerId, channel.agentId);
+    } catch {
+      // Storage/schedule lookup failure must not fake a configuration: the
+      // documented default applies and the run records it honestly.
+      directorSchedule = null;
+    }
     const { release, jobId, conflict } = await repo.createReleaseWithJob(req.ownerId, {
       channelId, agentId: channel.agentId, title: title.trim(), season: seasonNum, episode: episodeNum,
+      episodeDurationSeconds: directorSchedule?.episodeDurationSeconds ?? null,
     });
     if (conflict) return releaseEpRes.status(409).json({ error: "PRODUCTION_ALREADY_EXISTS" });
 
@@ -1431,6 +1621,18 @@ app.use("/api/youtube", authenticateOwner, createYouTubeOAuthRouter({
   recordAuditEvent,
 }));
 
+// Generic per-Director SOCIAL account connections (Section 6): facebook /
+// instagram / snapchat / bilibili behind the identical security contract as
+// YouTube — session auth, CSRF on mutations, single-use expiring hashed
+// state, official endpoints, provider identity verification, opaque
+// secret-manager custody, and honest Director-scoped status/revocation.
+// Without app config or a wired secret-manager adapter every route degrades
+// HONESTLY (503/501) — nothing is faked (Rules 1, 3, 17).
+app.use("/api/social", authenticateOwner, createSocialOAuthRouter({
+  db: () => postgres,
+  recordAuditEvent,
+}));
+
 // Hermes manager command center (Issue #166): auditable decision layer.
 // Decision authority without secret access — the evidence lookup below is
 // the only bridge to the ledger, returning a found/verified boolean only.
@@ -1454,6 +1656,17 @@ app.use("/api/hermes", authenticateOwner, createHermesRouter({
   // the same append-only chain every worker writes to.
   productionRepository: () => getProductionRepository(),
   evidenceLedger: evidenceRepo,
+  // Master prompt §5: Hermes plans against each Director's OWN persisted
+  // schedule — the configured episode duration is stamped on the queued job.
+  directorScheduleProvider: ({ ownerId, agentId }) => readDirectorSchedule(ownerId, agentId),
+}));
+
+// Per-Director episode duration & daily production schedule (sql/029).
+// Owner routes: authenticated session + CSRF on mutations + audit events.
+app.use("/api/scheduling", authenticateOwner, createDirectorScheduleRouter({
+  db: () => postgres,
+  recordAuditEvent,
+  productionRepository: () => getProductionRepository(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -1483,6 +1696,11 @@ app.use((err, req, res, next) => {
 
 /** Graceful shutdown helper for tests and the entrypoint. */
 export async function closeRuntime() {
+  try {
+    if (scheduleTrigger) scheduleTrigger.stop();
+  } catch {
+    // already stopped
+  }
   try {
     if (productionWorker) productionWorker.stop();
   } catch {

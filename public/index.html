@@ -39,6 +39,7 @@
         <div class="side-title">Owner Dashboard</div>
         <button class="nav-item active" data-view="overview"><span class="ico">▦</span>Command Center</button>
         <button class="nav-item" data-view="directors"><span class="ico">◉</span>Directors</button>
+        <button class="nav-item" data-view="schedule"><span class="ico">⏱</span>Episode &amp; Schedule</button>
         <button class="nav-item" data-view="communication"><span class="ico">✉</span>Director Communication</button>
         <button class="nav-item" data-view="memory"><span class="ico">▣</span>Director Memory</button>
         <button class="nav-item" data-view="production"><span class="ico">▶</span>Production</button>
@@ -91,6 +92,77 @@
             <p class="muted">Public channel branding only. Internal director identities stay server-side and never render here. Registered agents: <span id="directors-agent-count">…</span> (registry hard cap 50).</p>
             <div class="cards" id="directors-cards"></div>
             <div id="directors-channel-detail"></div>
+          </div>
+        </section>
+
+        <!-- Episode & Production Schedule (per director, sql/029) -->
+        <section id="view-schedule" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Episode &amp; production schedule</h2><button class="btn-ghost" id="sched-refresh">Refresh</button></div>
+            <p class="muted">Each director owns its settings: episode duration, episodes per day, production days, preferred start time, timezone, and an explicit enable/pause flag. Saving a schedule never publishes and never bypasses owner approval — a scheduler run only queues planned episodes into the existing approval pipeline.</p>
+            <div class="form-row">
+              <label for="sched-agent">Director</label>
+              <select id="sched-agent"></select>
+              <button id="sched-load">Load schedule</button>
+            </div>
+            <form id="sched-form" class="stack">
+              <div class="form-row">
+                <label for="sched-duration">Main episode duration</label>
+                <select id="sched-duration">
+                  <option value="1800">30 minutes</option>
+                  <option value="2400">40 minutes</option>
+                  <option value="3000">50 minutes</option>
+                </select>
+                <label for="sched-per-day">Episodes per day</label>
+                <input id="sched-per-day" type="number" min="1" max="6" step="1" list="sched-per-day-options" />
+                <datalist id="sched-per-day-options">
+                  <option value="1"></option>
+                  <option value="2"></option>
+                  <option value="3"></option>
+                </datalist>
+              </div>
+              <fieldset id="sched-days" class="stack">
+                <legend>Production days</legend>
+                <label class="check"><input type="checkbox" id="sched-day-1" /> Monday</label>
+                <label class="check"><input type="checkbox" id="sched-day-2" /> Tuesday</label>
+                <label class="check"><input type="checkbox" id="sched-day-3" /> Wednesday</label>
+                <label class="check"><input type="checkbox" id="sched-day-4" /> Thursday</label>
+                <label class="check"><input type="checkbox" id="sched-day-5" /> Friday</label>
+                <label class="check"><input type="checkbox" id="sched-day-6" /> Saturday</label>
+                <label class="check"><input type="checkbox" id="sched-day-7" /> Sunday</label>
+                <div class="form-row">
+                  <button type="button" id="sched-preset-every">Every day</button>
+                  <button type="button" id="sched-preset-five">Mon–Fri</button>
+                </div>
+              </fieldset>
+              <div class="form-row">
+                <label for="sched-start-time">Preferred start time</label>
+                <input id="sched-start-time" type="time" required />
+                <label for="sched-timezone">Timezone (IANA)</label>
+                <input id="sched-timezone" list="sched-timezone-options" maxlength="64" placeholder="Asia/Kolkata" required />
+                <datalist id="sched-timezone-options">
+                  <option value="Asia/Kolkata"></option>
+                  <option value="Asia/Dubai"></option>
+                  <option value="Europe/London"></option>
+                  <option value="America/New_York"></option>
+                  <option value="America/Los_Angeles"></option>
+                  <option value="UTC"></option>
+                </datalist>
+              </div>
+              <label class="check"><input type="checkbox" id="sched-enabled" /> Schedule enabled (unchecked = paused)</label>
+              <div class="form-row">
+                <button type="submit">Save schedule</button>
+                <span class="muted">Saving stores the configuration only. Enabling a schedule queues planned episodes; publishing still requires owner approval.</span>
+              </div>
+              <div class="error" id="sched-error" aria-live="polite"></div>
+            </form>
+            <div class="form-row">
+              <button id="sched-dry-run" type="button">Preview plan (no writes)</button>
+              <button id="sched-run" type="button">Run scheduler now</button>
+              <span class="muted">A run creates at most the current period's due slots, respects capacity/quota, and records why any slot is delayed, blocked, or skipped.</span>
+            </div>
+            <div id="sched-status"></div>
+            <div id="sched-run-output"></div>
           </div>
         </section>
 
@@ -223,6 +295,21 @@
                 <button id="youtube-revoke" type="button" hidden>Revoke YouTube access</button>
               </div>
               <div class="error" id="youtube-error" aria-live="polite"></div>
+            </div>
+            <div class="social-oauth stack">
+              <h2>Social accounts (official OAuth)</h2>
+              <p class="muted">Each director connects its OWN social accounts. Official provider authorization → token exchange → provider identity verification → revocation. Tokens go only to the external secret manager; the database stores an opaque locator. Application-wide developer credentials are configured centrally by the operator, never re-entered per director. No token, secret, locator, or authorization code is ever displayed here.</p>
+              <div class="form-row">
+                <label for="social-provider">Platform</label>
+                <select id="social-provider"></select>
+                <span class="sub" id="social-provider-note"></span>
+              </div>
+              <div id="social-status" class="stack"></div>
+              <div class="form-row">
+                <button id="social-connect" type="button">Connect account</button>
+                <button id="social-revoke" type="button" hidden>Revoke access</button>
+              </div>
+              <div class="error" id="social-error" aria-live="polite"></div>
             </div>
             <div id="connections-list"></div>
           </div>
