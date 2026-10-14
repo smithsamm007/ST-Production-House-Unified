@@ -298,6 +298,22 @@
       ]
     },
     {
+      "sliceId": "S-M39-01",
+      "module": 39,
+      "lane": "lane-3",
+      "ownerGated": false,
+      "title": "Official analytics collector contract (offline portion)",
+      "brief": "Module 26 offline portion. Add src/analytics/officialApiCollector.js: strict per-platform normalizers that translate a REAL official platform API response body (collected by an authenticated caller outside this module) into the existing AnalyticsService ingestion record — identity binding where the official shape carries the post id, non-negative-integer metric validation, provenance metadata (parser name + SHA-256 of the raw envelope, body never persisted), explicit metric-name maps for the verified official shapes, and honest OFFICIAL_COLLECTOR_UNAVAILABLE registration for providers whose official analytics response shape is not verified (snapchat, bilibili). No network calls; live collection stays owner-gated per Rule 7.",
+      "acceptance": [
+        "Verified official shapes (YouTube videos.list statistics, Meta Graph insights) normalize to the ingestion record with per-platform metric maps; IDs bound (RESPONSE_IDENTITY_MISMATCH where the response names a different post); negative/fractional/unparsable metrics fail closed with stable codes",
+        "Unverified providers (snapchat, bilibili) and unknown platforms yield stable OFFICIAL_COLLECTOR_UNAVAILABLE — never an invented parser; provenance metadata records the parser and envelope hash and drives the real AnalyticsService path",
+        "Offline unit tests cover all shapes and the fail-closed matrix; docs record the contract and what remains owner-gated; no new dependencies"
+      ],
+      "dependsOn": [
+        "S-M38-01"
+      ]
+    },
+    {
       "sliceId": "S-M20-LIVE",
       "module": 20,
       "lane": "lane-1",
