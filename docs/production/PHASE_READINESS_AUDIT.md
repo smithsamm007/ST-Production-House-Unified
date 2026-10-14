@@ -261,7 +261,16 @@ tests — they simply needed a database to execute.
 
 1. ~~Configure `DATABASE_URL`, migrate, and run the integration suite.~~ Done:
    28/28 migrations `APPLIED`, integration matrix 73/73, `/api/ready` 200.
-   Remaining sub-item: run against PostgreSQL **15+** (this sandbox has 14.24).
+   Remaining sub-item: ~~run against PostgreSQL **15+** (this sandbox has
+   14.24).~~ Done (2026-10-14): a disposable PostgreSQL **15.19** cluster
+   (official PGDG `jammy-pgdg` build, `postgresql-15`, port 5433) was
+   provisioned in this same disposable workspace and the UNMODIFIED
+   integration suite ran against it via
+   `POSTGRES_TEST_URL=postgresql://postgres@127.0.0.1:5433/stph_integration
+   npm run test:integration`: **31 pass / 0 fail** (exit 0), including the
+   YouTube OAuth lifecycle and worker lease-contention tests against the
+   live server. No requirement was lowered; the project-supported version is
+   now execution-verified, not just documented.
 2. ~~Wire a governed provider-capacity source into
    `bindProductionRunner` (from the Secrets & Connections boundary) so the
    worker can reach real TTS/visual stages once binaries exist.~~ Done
