@@ -13,6 +13,12 @@
  *   the REAL executors via a per-Director runner binding; otherwise the
  *   historical deterministic pipeline runs unchanged. Wait outcomes re-queue
  *   the job (durable WAITING_FOR_QUOTA semantics, attempts enforced).
+ * - Per-Director duration (sql/029): when a `directorScheduleProvider` is
+ *   supplied, the Director's OWN persisted schedule is resolved for the
+ *   claimed job and handed to the pipeline, so the render target and QC window
+ *   use the configured episode duration. A provider error is logged with a
+ *   stable code and the job continues with the job-payload/default duration —
+ *   never a fabricated configuration.
  */
 
 import { runEpisodePipeline } from "./episodePipeline.js";
@@ -28,6 +34,7 @@ export class ProductionWorkerLoop {
     evidenceLedger = null,
     enabledAgentsProvider = null,
     executorRunnerFactory = null,
+    directorScheduleProvider = null,
     log = () => {},
     pollMs = DEFAULT_POLL_MS,
     leaseSeconds = DEFAULT_LEASE_SECONDS,
@@ -44,6 +51,10 @@ export class ProductionWorkerLoop {
       throw new Error("WORKER_EXECUTOR_RUNNER_FACTORY_INVALID");
     }
     this.executorRunnerFactory = executorRunnerFactory;
+    if (directorScheduleProvider !== null && typeof directorScheduleProvider !== "function") {
+      throw new Error("WORKER_DIRECTOR_SCHEDULE_PROVIDER_INVALID");
+    }
+    this.directorScheduleProvider = directorScheduleProvider;
     this.log = log;
     this.pollMs = Math.max(500, pollMs);
     this.leaseSeconds = Math.min(900, Math.max(15, leaseSeconds));
@@ -118,9 +129,22 @@ export class ProductionWorkerLoop {
       // Real media (Issue #187): bind the per-Director production runner
       // when a factory is configured; without one the deterministic
       // pipeline runs (pre-existing behavior, unchanged).
+      const agentId = job.agent_id ?? job.agentId ?? null;
       const executorRunner = typeof this.executorRunnerFactory === "function"
-        ? this.executorRunnerFactory({ job, agentId: job.agent_id ?? job.agentId ?? null })
+        ? this.executorRunnerFactory({ job, agentId })
         : null;
+      // The Director's own persisted schedule (sql/029): resolved per job so
+      // the configured episode duration reaches planning, the render target
+      // and the QC window. Lookup failure is logged honestly and the run
+      // falls back to the duration stamped on the job / the default.
+      let directorSchedule = null;
+      if (typeof this.directorScheduleProvider === "function" && agentId) {
+        try {
+          directorSchedule = await this.directorScheduleProvider({ ownerId, agentId });
+        } catch {
+          this.log(JSON.stringify({ code: "WORKER_DIRECTOR_SCHEDULE_LOOKUP_FAILED", jobId: job.id, agentId }));
+        }
+      }
       const result = await runEpisodePipeline({
         ownerId,
         releaseId,
@@ -128,6 +152,7 @@ export class ProductionWorkerLoop {
         jobs: this.jobs,
         evidenceLedger: this.evidenceLedger,
         executorRunner,
+        directorSchedule,
         log: this.log,
       });
       if (result?.waited === true) {

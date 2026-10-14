@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { EPISODE_DURATION_OPTIONS_SECONDS } from "../scheduling/directorSchedule.js";
 
 const RELEASE_STATUSES = Object.freeze([
   "planned", "in_production", "rendering", "review", "published", "cancelled",
@@ -250,8 +251,18 @@ export class ProductionRepository {
    * is inserted through the transaction client so it cannot exist without the
    * release. Returns { release, jobId } or { conflict: true } when the
    * channel/season/episode slot already has a release (Rule 8).
+   *
+   * `episodeDurationSeconds` (optional, sql/029) is the Director's configured
+   * episode duration for this planned episode. It is persisted on the job
+   * payload so the production pipeline resolves the SAME duration the work was
+   * planned with — the scheduler/Hermes decision and the render target can
+   * never disagree. An out-of-set value fails closed.
    */
-  async createReleaseWithJob(ownerId, { channelId, agentId, title, season, episode }) {
+  async createReleaseWithJob(ownerId, { channelId, agentId, title, season, episode, episodeDurationSeconds }) {
+    if (episodeDurationSeconds !== undefined && episodeDurationSeconds !== null &&
+        !EPISODE_DURATION_OPTIONS_SECONDS.includes(episodeDurationSeconds)) {
+      throw new Error("PRODUCTION_VALIDATION_FAILED");
+    }
     return this.db.withTransaction(async (client) => {
       const existing = await client.query(
         "SELECT 1 FROM production_releases WHERE channel_id = $1 AND season = $2 AND episode = $3;",
@@ -269,7 +280,22 @@ export class ProductionRepository {
       await client.query(
         `INSERT INTO jobs (id, agent_id, capability, idempotency_key, status, priority, attempts, max_attempts, payload, owner_id)
          VALUES ($1, $2, 'episode_production', $3, 'queued', 100, 0, 3, $4, $5);`,
-        [jobId, agentId, `production-${releaseId}`, JSON.stringify({ releaseId, channelId, title, season, episode }), ownerId]
+        [
+          jobId,
+          agentId,
+          `production-${releaseId}`,
+          JSON.stringify({
+            releaseId,
+            channelId,
+            title,
+            season,
+            episode,
+            ...(episodeDurationSeconds === undefined || episodeDurationSeconds === null
+              ? {}
+              : { episodeDurationSeconds }),
+          }),
+          ownerId,
+        ]
       );
       return {
         release: {

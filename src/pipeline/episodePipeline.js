@@ -20,8 +20,69 @@
  */
 
 import { createHash } from "node:crypto";
+import {
+  DEFAULT_EPISODE_DURATION_SECONDS,
+  EPISODE_DURATION_OPTIONS_SECONDS,
+} from "../scheduling/directorSchedule.js";
 
 export const PIPELINE_STAGES = Object.freeze(["story", "visual", "audio", "assembly"]);
+
+/**
+ * Where a run's episode duration came from (evidence, never a claim).
+ *   - director_schedule: the Director's persisted sql/029 schedule.
+ *   - job_payload:       the duration the queue recorded when the episode was
+ *                        planned (the scheduler stamps it on the job).
+ *   - default:           no configuration existed; the documented 40-minute
+ *                        default applies.
+ */
+export const EPISODE_DURATION_SOURCES = Object.freeze([
+  "director_schedule",
+  "job_payload",
+  "default",
+]);
+
+/**
+ * Resolve the ONE episode duration a production run must honour.
+ *
+ * Precedence is contract: the Director's persisted schedule wins, then the
+ * duration stamped on the queued job, then the documented default. A value
+ * that is PRESENT but not one of the selectable durations throws
+ * (EPISODE_DURATION_INVALID) — a corrupted configuration must fail closed
+ * rather than silently render a different length (master prompt §6: no hidden
+ * hardcoded default may override a configured duration).
+ */
+export async function resolveEpisodeTargetDuration({
+  release = null,
+  jobs = null,
+  directorSchedule = null,
+  jobPayload = null,
+} = {}) {
+  const fromSchedule = directorSchedule?.episodeDurationSeconds ?? directorSchedule?.seconds ?? null;
+  if (fromSchedule !== null && fromSchedule !== undefined) {
+    if (!EPISODE_DURATION_OPTIONS_SECONDS.includes(fromSchedule)) throw new Error("EPISODE_DURATION_INVALID");
+    return Object.freeze({ seconds: fromSchedule, source: "director_schedule" });
+  }
+
+  let payload = jobPayload;
+  if ((payload === null || payload === undefined) && jobs && typeof jobs.get === "function" && release?.jobId) {
+    const job = await jobs.get(release.jobId);
+    payload = job?.payload ?? null;
+  }
+  if (typeof payload === "string") {
+    try {
+      payload = JSON.parse(payload);
+    } catch {
+      payload = null;
+    }
+  }
+  const fromJob = payload && typeof payload === "object" ? payload.episodeDurationSeconds ?? null : null;
+  if (fromJob !== null && fromJob !== undefined) {
+    if (!EPISODE_DURATION_OPTIONS_SECONDS.includes(fromJob)) throw new Error("EPISODE_DURATION_INVALID");
+    return Object.freeze({ seconds: fromJob, source: "job_payload" });
+  }
+
+  return Object.freeze({ seconds: DEFAULT_EPISODE_DURATION_SECONDS, source: "default" });
+}
 
 const STAGE_KINDS = Object.freeze({
   story: { kind: "metadata", label: "story_plan" },
@@ -44,7 +105,8 @@ const STAGE_KINDS = Object.freeze({
  * so re-running a stage (retry after crash) produces byte-identical content
  * and therefore the identical artifact sha256 — idempotent resume.
  */
-export function renderStageContent(stage, { channelId, title, season, episode }) {
+export function renderStageContent(stage, stageInputsEl = {}) {
+  const { channelId, title, season, episode } = stageInputsEl;
   if (!STAGE_KINDS[stage]) throw new Error("UNKNOWN_PIPELINE_STAGE");
   switch (stage) {
     case "story":
@@ -100,7 +162,14 @@ export function renderStageContent(stage, { channelId, title, season, episode })
         null,
         2
       );
-    case "assembly":
+    case "assembly": {
+      // The planned episode duration the run must honour (Director schedule →
+      // job → documented default). The deterministic manifest reports the
+      // PLANNED duration; it never claims a rendered one.
+      const plannedSeconds =
+        typeof stageInputsEl?.targetDurationSeconds === "number"
+          ? stageInputsEl.targetDurationSeconds
+          : null;
       return JSON.stringify(
         {
           generationMode: "deterministic_local",
@@ -108,12 +177,14 @@ export function renderStageContent(stage, { channelId, title, season, episode })
           title,
           season,
           episode,
-          timelineSeconds: 22,
+          timelineSeconds: plannedSeconds ?? 22,
+          plannedEpisodeDurationSeconds: plannedSeconds,
           inputStages: ["story", "visual", "audio"],
         },
         null,
         2
       );
+    }
     default:
       throw new Error("UNKNOWN_PIPELINE_STAGE");
   }
@@ -123,18 +194,34 @@ export function renderStageContent(stage, { channelId, title, season, episode })
  * Runs the full pipeline for one release using the injected repositories.
  * `production` is a ProductionRepository; `jobs` is the JobRepository.
  */
-export async function runEpisodePipeline({ ownerId, releaseId, production, jobs, evidenceLedger, executorRunner = null, log = () => {} }) {
+export async function runEpisodePipeline({
+  ownerId,
+  releaseId,
+  production,
+  jobs,
+  evidenceLedger,
+  executorRunner = null,
+  directorSchedule = null,
+  log = () => {},
+}) {
   const release = await production.getRelease(ownerId, releaseId);
   if (!release) throw new Error("RELEASE_NOT_FOUND");
   if (release.status === "published") throw new Error("RELEASE_ALREADY_PUBLISHED");
 
   await production.updateReleaseStatus(ownerId, releaseId, "in_production");
 
+  // The Director's configured episode duration reaches EVERY duration-aware
+  // stage of this run: planning (stage inputs), the real executor runner
+  // (assembly render target + QC window), and the deterministic manifest.
+  const targetDuration = await resolveEpisodeTargetDuration({ release, jobs, directorSchedule });
+
   const stageInputs = {
     channelId: release.channelId,
     title: release.title,
     season: release.season,
     episode: release.episode,
+    targetDurationSeconds: targetDuration.seconds,
+    targetDurationSource: targetDuration.source,
   };
 
   const artifacts = [];
@@ -156,6 +243,7 @@ export async function runEpisodePipeline({ ownerId, releaseId, production, jobs,
       evidenceLedger,
       executorRunner,
       stageInputs,
+      targetDuration,
       log,
     });
   }
@@ -511,8 +599,10 @@ export async function runEpisodePipelineWithExecutors({
   evidenceLedger,
   executorRunner,
   stageInputs,
+  targetDuration = null,
   log = () => {},
 }) {
+  const configuredTargetSeconds = targetDuration?.seconds ?? null;
   const { runStageWithExecutor, recordExecutorArtifact } = await import("./executorIntegration.js");
 
   await production.updateReleaseStatus(ownerId, releaseId, "in_production");
@@ -557,6 +647,11 @@ export async function runEpisodePipelineWithExecutors({
         stageInputs,
         runner: (runnerArgs) => executorRunner({
           ...runnerArgs,
+          // The configured episode duration is handed to EVERY stage so the
+          // executor builds the main-longform render against the Director's
+          // own target (reels keep their own short-form window).
+          targetDurationSeconds: configuredTargetSeconds,
+          targetDurationSource: targetDuration?.source ?? null,
           recordedArtifacts: Object.freeze([...recordedByStage.values()]),
           artifactBindings: Object.freeze(artifactBindings()),
           productionRunId,
@@ -599,6 +694,34 @@ export async function runEpisodePipelineWithExecutors({
       await markJobFailed(jobs, release.jobId, outcome.failureCode ?? "EXECUTOR_STAGE_FAILED");
       log(`stage ${stage} failed: ${outcome.failureCode}`);
       return { releaseId, status: "planned", failedStage: stage, failureCode: outcome.failureCode, artifacts };
+    }
+
+    // The configured duration must have really been APPLIED by the render.
+    // When the duration came from an explicit configuration (the Director's
+    // schedule or the queued job), a main-longform result whose QC block does
+    // not report that exact target means the executor ignored the setting (a
+    // hidden default) — the run fails closed instead of silently producing
+    // the wrong length. A result that reports a DIFFERENT target than the one
+    // this run resolved always fails closed, whatever the source.
+    if (stage === "assembly" && configuredTargetSeconds !== null) {
+      const appliedTarget = outcome.executorResult?.qc?.targetSeconds ?? null;
+      const targetWasConfigured = targetDuration?.source === "director_schedule" ||
+        targetDuration?.source === "job_payload";
+      if (outcome.executorResult?.qc?.policy === "main_video_runtime" &&
+          appliedTarget !== configuredTargetSeconds &&
+          (appliedTarget !== null || targetWasConfigured)) {
+        await recordStageFailure(production, evidenceLedger, {
+          ownerId, releaseId, stage,
+          errorCode: "EXECUTOR_TARGET_DURATION_NOT_APPLIED",
+        });
+        await production.updateReleaseStatus(ownerId, releaseId, "planned");
+        await markJobFailed(jobs, release.jobId, "EXECUTOR_TARGET_DURATION_NOT_APPLIED");
+        log(`stage ${stage} did not apply the configured ${configuredTargetSeconds}s target`);
+        return {
+          releaseId, status: "planned", failedStage: stage,
+          failureCode: "EXECUTOR_TARGET_DURATION_NOT_APPLIED", artifacts,
+        };
+      }
     }
 
     // Recorded: persist the real media artifact through the #182 bridge.

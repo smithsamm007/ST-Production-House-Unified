@@ -36,18 +36,22 @@
 import {
   createVoiceProfile,
 } from "../media/ttsAdapter.js";
-import { executeTtsGeneration } from "../media/ttsExecutor.js";
+import { executeTtsGeneration, ttsProviderOutputExtension } from "../media/ttsExecutor.js";
 import {
   createVisualStyleProfile,
   createVisualGenerationRequest,
 } from "../media/visualAdapter.js";
-import { executeVisualGeneration } from "../media/visualExecutor.js";
+import { executeVisualGeneration, visualProviderOutputExtension } from "../media/visualExecutor.js";
 import { executeAssemblyPlan, resolvePlanInputs, buildRenderPlan } from "../media/ffmpegAssemblyExecutor.js";
 import { buildCanonicalReelPackagePlan, buildReelAssemblyPlans } from "./reelsStage.js";
 import {
   createAssemblyPlan,
   verifyAssemblyPlanIntegrity,
 } from "../media/assemblyPlan.js";
+import {
+  DEFAULT_EPISODE_DURATION_SECONDS,
+  EPISODE_DURATION_OPTIONS_SECONDS,
+} from "../scheduling/directorSchedule.js";
 
 export const PRODUCTION_RUNNER_VERSION = "production_executor_runner_v1";
 
@@ -115,11 +119,23 @@ function requireSlot(registry, providerId) {
  *
  * Pure: identical release state yields an identical plan (idempotent resume).
  */
-export function buildLongformAssemblyPlan({ agentId, productionRunId, narrationArtifact, visualArtifact }) {
+export function buildLongformAssemblyPlan({ agentId, productionRunId, narrationArtifact, visualArtifact, durationSeconds }) {
   if (typeof agentId !== "string" || agentId.length === 0) throw runnerError("RUNNER_REQUEST_INVALID");
   if (typeof productionRunId !== "string" || productionRunId.length === 0) throw runnerError("RUNNER_REQUEST_INVALID");
   if (!isPlainObject(narrationArtifact) || typeof narrationArtifact.sha256 !== "string") throw runnerError("RUNNER_REQUEST_INVALID");
   if (!isPlainObject(visualArtifact) || typeof visualArtifact.sha256 !== "string") throw runnerError("RUNNER_REQUEST_INVALID");
+
+  // The Director's OWN configured episode duration drives the render (master
+  // prompt §2A/§6). When the caller supplies none, the default 40-minute
+  // target applies — it is an explicit documented default from the schedule
+  // contract, never a hidden hardcoded value that could override a
+  // configuration.
+  const plannedDuration = durationSeconds === undefined || durationSeconds === null
+    ? DEFAULT_EPISODE_DURATION_SECONDS
+    : durationSeconds;
+  if (!EPISODE_DURATION_OPTIONS_SECONDS.includes(plannedDuration)) {
+    throw runnerError("RUNNER_REQUEST_INVALID");
+  }
 
   const plan = createAssemblyPlan({
     agentId,
@@ -130,7 +146,7 @@ export function buildLongformAssemblyPlan({ agentId, productionRunId, narrationA
       {
         artifactRef: `sha256:${visualArtifact.sha256}`,
         kind: "still_image",
-        durationSeconds: 1890,
+        durationSeconds: plannedDuration,
         transitionIn: "cut",
       },
       {
@@ -228,10 +244,10 @@ export function bindProductionRunner(binding = {}) {
         agentId,
         language: "hi",
         provider: {
-          providerId: "edge-tts",
-          providerRole: "approved_free_primary",
-          modelIdentifier: "edge-tts-cli",
-          voiceId: "hi-IN-MadhurNeural",
+          providerId: "espeak-ng",
+          providerRole: "local_open_source_emergency",
+          modelIdentifier: "espeak-ng-cli",
+          voiceId: "hi",
         },
       });
       const registry = binding.tts?.registry ?? {};
@@ -245,7 +261,9 @@ export function bindProductionRunner(binding = {}) {
       }
       return executeTtsGeneration(voiceProfile, {
         scriptText: `यह कहानी अब शुरू होती है: ${stageInputs?.title ?? release.title ?? "यह एपिसोड"}.`,
-        outputPath: `${paths.audio}/${productionRunId}.mp3`,
+        // File naming honesty: the extension is the SELECTED provider's real
+        // output container (espeak-ng → .wav), never a hardcoded claim.
+        outputPath: `${paths.audio}/${productionRunId}${ttsProviderOutputExtension(voiceProfile.provider.providerId)}`,
         registry,
         spawnImpl: binding.spawnImpl,
         readFileImpl: binding.readFileImpl,
@@ -276,12 +294,15 @@ export function bindProductionRunner(binding = {}) {
         provider: { providerId: "pollinations", providerRole: "approved_free_primary", modelIdentifier: "flux" },
         scenePlanRef,
       });
+      // File naming honesty: the extension is the SELECTED provider's real
+      // still container (pollinations → .jpg), never a hardcoded claim.
+      const visualExtension = visualProviderOutputExtension(request.provider.providerId);
       return executeVisualGeneration(styleProfile, {
         request,
         prompt: isThumbnail
           ? `episode thumbnail key art for ${stageInputs?.title ?? "the episode"}, bold title composition`
           : `cinematic establishing frame for ${stageInputs?.title ?? "the episode"}`,
-        outputPath: `${isThumbnail ? paths.thumbnail : paths.visual}/${productionRunId}${isThumbnail ? "-thumb" : ""}.png`,
+        outputPath: `${isThumbnail ? paths.thumbnail : paths.visual}/${productionRunId}${isThumbnail ? "-thumb" : ""}${visualExtension}`,
         registry,
         spawnImpl: binding.spawnImpl,
         readFileImpl: binding.readFileImpl,
@@ -303,6 +324,26 @@ export function bindProductionRunner(binding = {}) {
       let plan;
       let renderPlan;
       let outputPath;
+      // The configured episode duration the pipeline resolved for this run
+      // (Director schedule → job payload → documented default). It is applied
+      // to the main-longform render only; the short-form reels keep their own
+      // 5–180 s QC window untouched.
+      const configuredDurationSeconds = isPlainObject(request.targetDurationSeconds)
+        ? request.targetDurationSeconds.seconds ?? null
+        : request.targetDurationSeconds ?? null;
+      if (configuredDurationSeconds !== null && !EPISODE_DURATION_OPTIONS_SECONDS.includes(configuredDurationSeconds)) {
+        throw runnerError("RUNNER_REQUEST_INVALID");
+      }
+      // The strict target window is enforced when the duration came from an
+      // EXPLICIT configuration (the Director's persisted schedule or the
+      // queued job). When nothing is configured the run keeps the canonical
+      // S-M33-01 [1800, 3000] window — the documented default plans the
+      // render, but it does not pretend to be an owner-chosen target.
+      const enforceConfiguredTarget =
+        configuredDurationSeconds !== null &&
+        request.targetDurationSource !== undefined &&
+        request.targetDurationSource !== null &&
+        request.targetDurationSource !== "default";
       try {
         if (stage === "assembly") {
           plan = buildLongformAssemblyPlan({
@@ -310,6 +351,7 @@ export function bindProductionRunner(binding = {}) {
             productionRunId,
             narrationArtifact: narration,
             visualArtifact: visual,
+            durationSeconds: configuredDurationSeconds,
           });
           outputPath = `${paths.episode}/${productionRunId}.mp4`;
         } else {
@@ -344,6 +386,9 @@ export function bindProductionRunner(binding = {}) {
         now: binding.now,
         timeoutMs: binding.timeoutMs,
         probeTimeoutMs: binding.probeTimeoutMs,
+        // Main long-form renders are measured against the Director's
+        // configured duration window; reels keep `null`.
+        runtimeTargetSeconds: stage === "assembly" && enforceConfiguredTarget ? configuredDurationSeconds : null,
       });
     }
 

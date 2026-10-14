@@ -26,9 +26,22 @@
  *   - No secrets, no network I/O, no new status states (R5): the job row
  *     uses the existing lifecycle enum ('queued').
  *
- * Payload contract (identical bounds to POST /api/productions):
- *   { channelId, title, season (1..100), episode (1..2000) }
+ * Payload contract (identical bounds to POST /api/productions, plus the
+ * optional per-Director episode duration from sql/029):
+ *   { channelId, title, season (1..100), episode (1..2000),
+ *     episodeDurationSeconds? (1800 | 2400 | 3000) }
+ *
+ * Per-Director scheduling integration (master prompt §5): when Hermes queues
+ * production it plans against THAT DIRECTOR'S OWN persisted schedule settings.
+ * An explicit `episodeDurationSeconds` in the payload wins; otherwise the
+ * injected `directorScheduleProvider` supplies the Director's configured
+ * duration, which is stamped onto the queued job so the render target and the
+ * plan can never disagree. A schedule that cannot be read is a HONEST failure
+ * (DIRECTOR_SCHEDULE_LOOKUP_FAILED) — Hermes never silently plans against
+ * unknown settings, and it never borrows another Director's configuration.
  */
+
+import { EPISODE_DURATION_OPTIONS_SECONDS } from "../scheduling/directorSchedule.js";
 
 function fail(code) {
   const error = new Error(code);
@@ -48,7 +61,7 @@ function isPlainObject(value) {
  */
 export function validateProductionStartPayload(payload) {
   if (!isPlainObject(payload)) throw fail("PRODUCTION_PAYLOAD_INVALID");
-  const allowed = ["channelId", "title", "season", "episode"];
+  const allowed = ["channelId", "title", "season", "episode", "episodeDurationSeconds"];
   if (!Object.keys(payload).every((key) => allowed.includes(key))) {
     throw fail("PRODUCTION_PAYLOAD_INVALID");
   }
@@ -65,7 +78,13 @@ export function validateProductionStartPayload(payload) {
       !Number.isSafeInteger(episodeNum) || episodeNum < 1 || episodeNum > 2000) {
     throw fail("PRODUCTION_VALIDATION_FAILED");
   }
-  return { channelId, title: title.trim(), season: seasonNum, episode: episodeNum };
+  let episodeDurationSeconds = null;
+  if (payload.episodeDurationSeconds !== undefined && payload.episodeDurationSeconds !== null) {
+    const duration = Number(payload.episodeDurationSeconds);
+    if (!EPISODE_DURATION_OPTIONS_SECONDS.includes(duration)) throw fail("PRODUCTION_VALIDATION_FAILED");
+    episodeDurationSeconds = duration;
+  }
+  return { channelId, title: title.trim(), season: seasonNum, episode: episodeNum, episodeDurationSeconds };
 }
 
 /**
@@ -74,8 +93,12 @@ export function validateProductionStartPayload(payload) {
  *   production  ProductionRepository (getChannel, createReleaseWithJob)
  *   evidence    evidence ledger ({ append } or EvidenceLedgerRepository)
  *   audit       optional async (ownerId, event, detail) audit sink
+ *   directorScheduleProvider — optional async ({ ownerId, agentId }) =>
+ *               { episodeDurationSeconds } | null — reads THAT Director's own
+ *               persisted schedule (sql/029). Injected so this layer performs
+ *               no I/O of its own; a thrown error fails the decision closed.
  */
-export function createHermesJobBridge({ production, evidence, audit } = {}) {
+export function createHermesJobBridge({ production, evidence, audit, directorScheduleProvider = null } = {}) {
   if (!production || typeof production.createReleaseWithJob !== "function" ||
       typeof production.getChannel !== "function") {
     throw fail("HERMES_BRIDGE_PRODUCTION_REPO_REQUIRED");
@@ -146,6 +169,31 @@ export function createHermesJobBridge({ production, evidence, audit } = {}) {
       return recordFailure("DIRECTOR_CHANNEL_MISMATCH");
     }
 
+    // Per-Director duration resolution (master prompt §5): the Director's OWN
+    // persisted setting is read when the decision does not carry one, so the
+    // queued job is planned with the settings the owner configured.
+    let episodeDurationSeconds = request.episodeDurationSeconds;
+    if (episodeDurationSeconds === null && typeof directorScheduleProvider === "function") {
+      let schedule;
+      try {
+        schedule = await directorScheduleProvider({ ownerId, agentId: channel.agentId });
+      } catch {
+        return recordFailure("DIRECTOR_SCHEDULE_LOOKUP_FAILED");
+      }
+      if (schedule) {
+        // Isolation: a provider that returns another Director's schedule is
+        // refused, exactly like a cross-Director production payload.
+        if (schedule.agentId !== undefined && schedule.agentId !== channel.agentId) {
+          return recordFailure("DIRECTOR_CHANNEL_MISMATCH");
+        }
+        const configured = schedule.episodeDurationSeconds ?? null;
+        if (configured !== null && !EPISODE_DURATION_OPTIONS_SECONDS.includes(configured)) {
+          return recordFailure("DIRECTOR_SCHEDULE_INVALID");
+        }
+        episodeDurationSeconds = configured;
+      }
+    }
+
     let queued;
     try {
       queued = await production.createReleaseWithJob(ownerId, {
@@ -154,6 +202,7 @@ export function createHermesJobBridge({ production, evidence, audit } = {}) {
         title: request.title,
         season: request.season,
         episode: request.episode,
+        episodeDurationSeconds,
       });
     } catch (err) {
       return recordFailure("PRODUCTION_QUEUE_FAILED");
@@ -173,6 +222,9 @@ export function createHermesJobBridge({ production, evidence, audit } = {}) {
         channelId: request.channelId,
         season: request.season,
         episode: request.episode,
+        // The duration the queued job was planned with — evidence, and the
+        // value the production pipeline resolves for the render target.
+        episodeDurationSeconds: episodeDurationSeconds ?? null,
         jobId: queued.jobId,
       },
     });
@@ -184,6 +236,7 @@ export function createHermesJobBridge({ production, evidence, audit } = {}) {
         releaseId: queued.release.id,
         jobId: queued.jobId,
         channelId: request.channelId,
+        episodeDurationSeconds: episodeDurationSeconds ?? null,
       }).catch(() => {});
     }
 
@@ -193,6 +246,7 @@ export function createHermesJobBridge({ production, evidence, audit } = {}) {
       release: queued.release,
       jobId: queued.jobId,
       receiptId,
+      episodeDurationSeconds: episodeDurationSeconds ?? null,
     };
   };
 }

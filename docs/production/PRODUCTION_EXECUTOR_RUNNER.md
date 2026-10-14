@@ -45,12 +45,23 @@ Per stage:
 | `assembly` | `executeAssemblyPlan` (#175) via `buildLongformAssemblyPlan` | honest failure on unresolvable bindings |
 | `qc` | returns the binding's policy checks | optional; gate stays authoritative |
 
-## 30–50 minute long-form policy
+## 30–50 minute long-form policy (Director-configured target)
 
-`buildLongformAssemblyPlan` plans `main_longform` at 1890 s (inside the
-1800–3000 s window). The #175 executor measures the REAL rendered duration
-via ffprobe and fails the QC duration gate on out-of-range output — a
-17m42s render can never pass as a 40-minute episode.
+`buildLongformAssemblyPlan` renders `main_longform` at the episode duration the
+run RESOLVED — the Director's persisted schedule (sql/029) → the duration
+stamped on the queued job → the documented 2400 s default. An explicit
+duration that is not one of the selectable targets (1800/2400/3000) is refused
+with `RUNNER_REQUEST_INVALID`; a run whose assembly QC block does not report the
+configured target fails closed (`EXECUTOR_TARGET_DURATION_NOT_APPLIED`) rather
+than silently rendering a different length.
+
+The #175 executor measures the REAL rendered duration via ffprobe and fails the
+QC duration gate against that target (and, for an unconfigured run, the
+canonical [1800, 3000] s window) — a 17m42s render can never pass as a
+40-minute episode.
+
+See `docs/production/DIRECTOR_EPISODE_SCHEDULE.md` §8 for the full resolution
+order and its consumers.
 
 ## Durable waits in the worker loop
 

@@ -54,7 +54,11 @@ function makeSpawn() {
           ? { format: { filename: "r", format_name: "mp4", size: "6000", duration: "30" }, streams: [{ codec_type: "video", codec_name: "h264" }] }
           : target.endsWith(".mp4")
             ? { format: { filename: "e", format_name: "mp4", size: String(EPISODE_BYTES.length), duration: "1890" }, streams: [{ codec_type: "video", codec_name: "h264" }] }
-            : { format: { filename: "f", format_name: "png", size: String(THUMB_BYTES.length) }, streams: [{ codec_type: "video", codec_name: "png", width: 1920, height: 1080 }] };
+            : target.endsWith(".jpg")
+              // The free primary (pollinations) really returns JPEG; the
+              // runner names the file to match the SELECTED provider.
+              ? { format: { filename: "f", format_name: "jpeg", size: String(THUMB_BYTES.length) }, streams: [{ codec_type: "video", codec_name: "mjpeg", width: 1920, height: 1080 }] }
+              : { format: { filename: "f", format_name: "png", size: String(THUMB_BYTES.length) }, streams: [{ codec_type: "video", codec_name: "png", width: 1920, height: 1080 }] };
       return { exitCode: 0, stdout: JSON.stringify(payload), stderr: "", timedOut: false };
     }
     return { exitCode: 0, stdout: "", stderr: "written", timedOut: false };
@@ -73,7 +77,7 @@ function makeFiles() {
       if (reel) return REEL_BYTES[reel[1]];
       return EPISODE_BYTES;
     }
-    if (typeof path === "string" && path.endsWith(".png")) {
+    if (typeof path === "string" && (path.endsWith(".png") || path.endsWith(".jpg"))) {
       return path.includes("thumb") ? THUMB_BYTES : FRAME_BYTES;
     }
     throw new Error("ENOENT");
@@ -130,12 +134,12 @@ test("bound runner executes the REAL visual executor for scene and thumbnail sta
   const scene = await runner({ release: { id: "r-1", agentId: "agent-01" }, stage: "visual", stageInputs: { title: "T" } });
   assert.equal(scene.success, true);
   assert.equal(scene.descriptor.contentSha256, sha256(FRAME_BYTES));
-  assert.equal(scene.outputPath, "/stph/media/visuals/prodrun-r-1.png");
+  assert.equal(scene.outputPath, "/stph/media/visuals/prodrun-r-1.jpg");
 
   const thumb = await runner({ release: { id: "r-1", agentId: "agent-01" }, stage: "packaging", stageInputs: { title: "T" } });
   assert.equal(thumb.success, true);
   assert.equal(thumb.descriptor.contentSha256, sha256(THUMB_BYTES));
-  assert.equal(thumb.outputPath, "/stph/media/thumbnails/prodrun-r-1-thumb.png");
+  assert.equal(thumb.outputPath, "/stph/media/thumbnails/prodrun-r-1-thumb.jpg");
 });
 
 test("bound runner returns the truthful WAITING result without provider capacity", async () => {
@@ -186,9 +190,31 @@ test("buildLongformAssemblyPlan declares the 30–50 minute main-video QC target
     visualArtifact: { sha256: "b".repeat(64) },
   });
   assert.equal(plan.outputTarget, "main_longform");
-  assert.equal(plan.segments[0].durationSeconds, 1890, "planned duration inside the 1800–3000s window");
+  // With no configured Director duration the documented 40-minute default
+  // (2400 s, inside the canonical 1800–3000 s window) plans the render.
+  assert.equal(plan.segments[0].durationSeconds, 2400, "documented default planned duration");
   assert.equal(plan.segments[0].artifactRef, `sha256:${"b".repeat(64)}`);
   assert.equal(plan.segments[1].kind, "voice");
+});
+
+test("buildLongformAssemblyPlan honours the Director's configured duration and rejects others", () => {
+  for (const seconds of [1800, 2400, 3000]) {
+    const plan = buildLongformAssemblyPlan({
+      agentId: "agent-01",
+      productionRunId: "prodrun-configured",
+      narrationArtifact: { sha256: "a".repeat(64) },
+      visualArtifact: { sha256: "b".repeat(64) },
+      durationSeconds: seconds,
+    });
+    assert.equal(plan.segments[0].durationSeconds, seconds);
+  }
+  assert.throws(() => buildLongformAssemblyPlan({
+    agentId: "agent-01",
+    productionRunId: "prodrun-invalid",
+    narrationArtifact: { sha256: "a".repeat(64) },
+    visualArtifact: { sha256: "b".repeat(64) },
+    durationSeconds: 1890,
+  }), /RUNNER_REQUEST_INVALID/);
 });
 
 // ---------------------------------------------------------------------------

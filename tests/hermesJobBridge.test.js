@@ -77,7 +77,16 @@ async function queueStartDecision(manager, { directorId = "agent-01", channelId,
 
 test("payload validator accepts the owner-API bounds and rejects hostile shapes", () => {
   const ok = validateProductionStartPayload({ channelId: "ch-1", title: " Nightfall Ward 7 ", season: 1, episode: 2 });
-  assert.deepEqual(ok, { channelId: "ch-1", title: "Nightfall Ward 7", season: 1, episode: 2 });
+  assert.deepEqual(ok, { channelId: "ch-1", title: "Nightfall Ward 7", season: 1, episode: 2, episodeDurationSeconds: null });
+  // Per-Director episode duration (sql/029) is an optional, validated field.
+  assert.equal(
+    validateProductionStartPayload({ channelId: "ch-1", title: "t", season: 1, episode: 2, episodeDurationSeconds: 3000 }).episodeDurationSeconds,
+    3000,
+  );
+  assert.throws(
+    () => validateProductionStartPayload({ channelId: "c", title: "t", season: 1, episode: 1, episodeDurationSeconds: 1890 }),
+    /PRODUCTION_VALIDATION_FAILED/,
+  );
   assert.throws(() => validateProductionStartPayload(null), /PRODUCTION_PAYLOAD_INVALID/);
   assert.throws(() => validateProductionStartPayload({ channelId: "c", title: "t", season: 1, episode: 1, extra: true }), /PRODUCTION_PAYLOAD_INVALID/);
   assert.throws(() => validateProductionStartPayload({ channelId: "c", title: "", season: 1, episode: 1 }), /PRODUCTION_VALIDATION_FAILED/);

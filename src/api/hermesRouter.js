@@ -67,7 +67,17 @@ function sendStorageError(res, err) {
   return null;
 }
 
-export function createHermesRouter({ recordAuditEvent, fetchEvidence, productionRepository, evidenceLedger, db } = {}) {
+export function createHermesRouter({
+  recordAuditEvent,
+  fetchEvidence,
+  productionRepository,
+  evidenceLedger,
+  db,
+  // Per-Director planning input (master prompt §5): reads THAT Director's own
+  // persisted schedule (sql/029) before production is queued, so Hermes plans
+  // against the owner's configured episode duration and daily target.
+  directorScheduleProvider = null,
+} = {}) {
   // Durable store (Issue #172): PostgresHermesDecisionStore over sql/023 when
   // a db adapter is injected. WITHOUT a db the router degrades HONESTLY — it
   // constructs no fake persistence and refuses decision writes with 503
@@ -230,6 +240,7 @@ export function createHermesRouter({ recordAuditEvent, fetchEvidence, production
       const bridge = createHermesJobBridge({
         production: typeof productionRepository === "function" ? productionRepository() : productionRepository,
         evidence: evidenceLedger,
+        directorScheduleProvider,
       });
       const result = await bridge(manager, req.ownerId, Number.parseInt(req.params.decisionNumber, 10));
       if (typeof recordAuditEvent === "function" && result.status === "QUEUED") {
