@@ -7,17 +7,25 @@ Deliver the secure production control plane through small, isolated, evidence-ba
 The repository contains the Phase 1 policy foundation, PostgreSQL migrations through 016, authenticated API foundations, durable worker/checkpoint contracts, provider routing, and bounded Jules recovery workflows. Phase 2 is complete: adversarial fuzzing, the SQL-injection matrix, and the production runbook (`docs/RUNBOOK.md`) close the milestone. Live providers, accounts, publishing, and production credentials remain intentionally unavailable.
 
 ## Tasks
+
+Status mapping (updated 2026-10-14): items PLAN-2..MEDIA-1 are delivered and
+superseded by the Phase 1/2 completion matrix below and the shipped
+implementation (`src/orchestration/**`, `src/api/**`, leased workers in
+`src/workers/**` + `docs/task3/SLICE_31..38`, verified media chain in
+`src/media/**` + `npm run media:smoke`). PUBLISH-1's offline contracts are
+complete (adapters, approval binding, destination router); live receipt
+reconciliation is owner-gated (issue #118) so the item stays open.
 - [x] PLAN-1: Define a machine-validated Markdown task contract
-- [ ] PLAN-2: Validate task issues before implementation starts (depends on: PLAN-1)
-- [ ] EXEC-1: Add a governed implementation trigger for approved task issues (depends on: PLAN-2)
-- [ ] EXEC-2: Run unit, verification, integration, and policy checks on every pull request (depends on: EXEC-1)
-- [ ] REC-1: Add bounded CI failure diagnosis and retry handoff (depends on: EXEC-2)
-- [ ] MERGE-1: Enable auto-merge only for exact-head pull requests with required checks (depends on: EXEC-2, REC-1)
-- [ ] API-1: Complete authenticated API and PostgreSQL repository wiring (depends on: MERGE-1)
-- [ ] WORK-1: Add leased production workers with dead-letter recovery (depends on: API-1)
-- [ ] MEDIA-1: Integrate verified media adapters and artifact validation (depends on: WORK-1)
-- [ ] PUBLISH-1: Add owner-approved campaign publishing and receipt reconciliation (depends on: MEDIA-1)
-- [ ] HARDEN-1: Complete staging, backup, restore, security, and rights verification (depends on: PUBLISH-1)
+- [x] PLAN-2: Validate task issues before implementation starts (delivered: `src/orchestration/taskEnvelope.js`, `npm run plan:check`)
+- [x] EXEC-1: Add a governed implementation trigger for approved task issues (delivered: `src/orchestration/pipelineController.js` + `.github` dispatch workflows)
+- [x] EXEC-2: Run unit, verification, integration, and policy checks on every pull request (delivered: Continuous Development Pipeline workflow)
+- [x] REC-1: Add bounded CI failure diagnosis and retry handoff (delivered: `src/orchestration/testFixLoop.js`, max-3 attempts per R9)
+- [x] MERGE-1: Enable auto-merge only for exact-head pull requests with required checks (delivered: exact-head merge gates)
+- [x] API-1: Complete authenticated API and PostgreSQL repository wiring (delivered: TASK-2.4 "Completed")
+- [x] WORK-1: Add leased production workers with dead-letter recovery (delivered: docs/task3 SLICE_31..38; lease contention integration test)
+- [x] MEDIA-1: Integrate verified media adapters and artifact validation (delivered: `src/media/nodeMediaTransport.js` + executors + `npm run media:smoke` real-render evidence)
+- [ ] PUBLISH-1: Add owner-approved campaign publishing and receipt reconciliation (offline contracts complete; live reconciliation owner-gated — issue #118)
+- [ ] HARDEN-1: Complete staging, backup, restore, security, and rights verification (partially delivered: adversarial fuzzing + runbook; backup/restore drill outstanding)
 
 ## Operating Rules
 
