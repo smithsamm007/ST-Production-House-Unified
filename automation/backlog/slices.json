@@ -282,6 +282,22 @@
       ]
     },
     {
+      "sliceId": "S-M38-01",
+      "module": 38,
+      "lane": "lane-3",
+      "ownerGated": false,
+      "title": "Cross-platform publishing dry-run end-to-end validation",
+      "brief": "Publishing boundary, offline portion. Prove the complete owner publish boundary across platforms with scripted transports: the destination-aware router drives the real private-first route (POST /ops/publishing/:agentId/private-test) for youtube, instagram, facebook, and snapchat, dispatching ONLY to each destination's own wired publisher with honest receipts, per-destination audit and evidence, allowlisted DTOs, and the full fail-closed matrix (unwired destination 503, failing publisher never fabricates a receipt, client-supplied transport rejected). No network call, no live upload, no real account; live publishing stays owner-gated per Rule 7.",
+      "acceptance": [
+        "Each wired destination dispatches to its own publisher only: receipt fields come from the scripted response, one audit row and one private-first platform_publish evidence entry per destination, mode recorded honestly (private and draft)",
+        "Fail-closed matrix: a supported-but-unwired destination yields honest 503 with zero publisher calls and no evidence; a failing destination publisher yields a truthful non-2xx with NO platform id/url and no platform_publish evidence; a request-supplied publisher is structurally rejected",
+        "Unit tests cover the full matrix offline; docs record the dry-run matrix and what remains owner-gated; no new dependencies"
+      ],
+      "dependsOn": [
+        "S-M37-01"
+      ]
+    },
+    {
       "sliceId": "S-M20-LIVE",
       "module": 20,
       "lane": "lane-1",
