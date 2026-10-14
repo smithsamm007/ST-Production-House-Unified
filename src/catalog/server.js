@@ -93,7 +93,70 @@ let oauthSecretManager = null;
  * sees a key, and a deployment that adds one does so through Secrets &
  * Connections, out of band of this factory.
  */
-export function createRealMediaRunnerFactory({ bindProductionRunner, transports, mediaPaths, providerScripts = {} }) {
+/** Runner-capacity validation failure (stable, fail-closed code). */
+function capacityError() {
+  const error = new Error("RUNNER_CAPACITY_INVALID");
+  error.code = "RUNNER_CAPACITY_INVALID";
+  return error;
+}
+
+/**
+ * The ONLY provider ids a governed capacity source may touch: the frozen
+ * keyless free-first chain entries. A credentialed remote provider can never
+ * be introduced through this seam (Rules 16/35: the automatic production
+ * chain stays keyless and free, and credentials stay in Secrets &
+ * Connections, resolved out of band).
+ */
+export const FREE_FIRST_CAPACITY_PROVIDER_IDS = Object.freeze([
+  "edge-tts",
+  "espeak-ng",
+  "pollinations",
+  "local-sd",
+]);
+
+/**
+ * Validate an operator capacity snapshot. Accepts ONLY:
+ *   { tts?: { [keylessProviderId]: { quotaExhausted?: boolean } },
+ *     visual?: { ... } }
+ * Unknown provider ids are IGNORED (never invented); unknown fields and
+ * non-boolean quota flags fail closed with RUNNER_CAPACITY_INVALID; null is
+ * not a valid snapshot (a declared-but-unresolvable source must throw, never
+ * silently disable itself).
+ */
+export function sanitizeProviderCapacity(raw) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw capacityError();
+  const capacity = { tts: {}, visual: {} };
+  for (const kind of ["tts", "visual"]) {
+    const source = raw[kind];
+    if (source === undefined) continue;
+    if (source === null || typeof source !== "object" || Array.isArray(source)) throw capacityError();
+    for (const [providerId, entry] of Object.entries(source)) {
+      if (!FREE_FIRST_CAPACITY_PROVIDER_IDS.includes(providerId)) continue;
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) throw capacityError();
+      for (const key of Object.keys(entry)) {
+        if (key !== "quotaExhausted") throw capacityError();
+      }
+      const slot = {};
+      if (entry.quotaExhausted !== undefined) {
+        if (typeof entry.quotaExhausted !== "boolean") throw capacityError();
+        slot.quotaExhausted = entry.quotaExhausted;
+      }
+      capacity[kind][providerId] = Object.freeze(slot);
+    }
+  }
+  return Object.freeze({ tts: Object.freeze(capacity.tts), visual: Object.freeze(capacity.visual) });
+}
+
+/** Merge validated capacity onto one registry copy; built-in slots keep every field. */
+export function mergeProviderCapacity(registry, capacityByProvider = {}) {
+  const merged = { ...registry };
+  for (const [providerId, capacity] of Object.entries(capacityByProvider)) {
+    merged[providerId] = Object.freeze({ ...registry[providerId], ...capacity });
+  }
+  return Object.freeze(merged);
+}
+
+export async function createRealMediaRunnerFactory({ bindProductionRunner, transports, mediaPaths, providerScripts = {}, capacitySource = null }) {
   const visualAdapterScript = typeof providerScripts.visual === "string" && providerScripts.visual.length > 0
     ? providerScripts.visual
     : "scripts/providers/visual-pollinations.mjs";
@@ -110,12 +173,21 @@ export function createRealMediaRunnerFactory({ bindProductionRunner, transports,
     modalities: ["image", "still_acquisition"],
     aspectRatios: ["16:9", "9:16", "1:1", "4:5"],
   });
-  return ({ agentId }) => bindProductionRunner({
+  // Binding is async now: the capacity source is awaited once per Director so
+  // quota metadata from Secrets & Connections reaches provider selection at
+  // binding time, never mid-run.
+  return async ({ agentId }) => {
+    let capacity = { tts: {}, visual: {} };
+    if (capacitySource !== null) {
+      if (typeof capacitySource !== "function") throw capacityError();
+      capacity = sanitizeProviderCapacity(await capacitySource({ agentId }));
+    }
+    return bindProductionRunner({
     agentId,
     spawnImpl: transports.spawnImpl,
     readFileImpl: transports.readFileImpl,
     paths: mediaPaths,
-    tts: {
+      tts: {
       profile: createVoiceProfile({
         agentId,
         language: "hi",
@@ -126,7 +198,7 @@ export function createRealMediaRunnerFactory({ bindProductionRunner, transports,
           voiceId: "hi",
         },
       }),
-      registry: { "espeak-ng": { declared: ttsDeclared } },
+      registry: mergeProviderCapacity({ "espeak-ng": { declared: ttsDeclared } }, capacity.tts),
     },
     visual: {
       profile: createVisualStyleProfile({
@@ -134,16 +206,17 @@ export function createRealMediaRunnerFactory({ bindProductionRunner, transports,
         styleSummary: "Cinematic series key art and establishing stills",
         aspectRatio: "16:9",
       }),
-      registry: {
+      registry: mergeProviderCapacity({
         pollinations: {
           declared: visualDeclared,
           command: "node",
           argvPrefix: [visualAdapterScript],
           modelIdentifier: "flux",
         },
-      },
+      }, capacity.visual),
     },
-  });
+    });
+  };
 }
 
 /** Test/diagnostic hook: resets the operator secret-manager wiring. */

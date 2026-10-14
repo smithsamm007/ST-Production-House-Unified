@@ -256,9 +256,17 @@ tests — they simply needed a database to execute.
 1. ~~Configure `DATABASE_URL`, migrate, and run the integration suite.~~ Done:
    28/28 migrations `APPLIED`, integration matrix 73/73, `/api/ready` 200.
    Remaining sub-item: run against PostgreSQL **15+** (this sandbox has 14.24).
-2. Wire a governed provider-capacity source into
+2. ~~Wire a governed provider-capacity source into
    `bindProductionRunner` (from the Secrets & Connections boundary) so the
-   worker can reach real TTS/visual stages once binaries exist.
+   worker can reach real TTS/visual stages once binaries exist.~~ Done
+   (2026-10-14): `createRealMediaRunnerFactory` now accepts an injected
+   async `capacitySource({ agentId })` that pushes validated quota state to
+   the keyless free-first chain at binding time; the seam is keyless-only,
+   `quotaExhausted`-boolean-only, fail-closed on malformed input
+   (`RUNNER_CAPACITY_INVALID`), and covered by the capacity tests in
+   `tests/realMediaRunnerWiring.test.js`. Connecting a concrete deployment
+   source (quota metadata from Secrets & Connections) remains the operator's
+   wiring choice; owner-gated credentials are unchanged.
 3. Install a real TTS provider adapter (`edge-tts`) and a documented visual
    adapter, then re-run `npm run media:smoke` to convert Phase 2's
    contract-only rows into executed ones.

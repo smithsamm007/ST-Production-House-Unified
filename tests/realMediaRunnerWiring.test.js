@@ -19,6 +19,12 @@ import assert from "node:assert/strict";
 import path from "node:path";
 
 import { createRealMediaRunnerFactory } from "../src/catalog/server.js";
+import {
+  sanitizeProviderCapacity,
+  mergeProviderCapacity,
+  FREE_FIRST_CAPACITY_PROVIDER_IDS,
+} from "../src/catalog/server.js";
+import { selectTtsProvider, TTS_PROVIDER_CHAIN } from "../src/media/ttsExecutor.js";
 import { bindProductionRunner } from "../src/pipeline/productionExecutorRunner.js";
 import { createNodeMediaTransports } from "../src/media/nodeMediaTransport.js";
 
@@ -50,15 +56,15 @@ const STUB_TRANSPORTS = Object.freeze({
   readFileImpl: async () => { throw new Error("ENOENT"); },
 });
 
-test("real-media factory composes the production transports into one runner per Director", () => {
-  const factory = makeFactory();
+test("real-media factory composes the production transports into one runner per Director", async () => {
+  const factory = await makeFactory();
   assert.equal(typeof factory, "function");
-  const runner = factory({ agentId: "agent-01" });
+  const runner = await factory({ agentId: "agent-01" });
   assert.equal(typeof runner, "function");
 });
 
 test("real-media factory enforces per-Director isolation", async () => {
-  const runner = makeFactory()({ agentId: "agent-01" });
+  const runner = await (await makeFactory())({ agentId: "agent-01" });
   await assert.rejects(
     () => runner({ release: { id: "r-1", agentId: "agent-02", title: "T" }, stage: "audio" }),
     (error) => error.code === "RUNNER_AGENT_MISMATCH"
@@ -66,7 +72,7 @@ test("real-media factory enforces per-Director isolation", async () => {
 });
 
 test("real-media factory returns the QC stage policy list without touching a provider", async () => {
-  const runner = makeFactory()({ agentId: "agent-01" });
+  const runner = await (await makeFactory())({ agentId: "agent-01" });
   const qc = await runner({ release: { id: "r-1", agentId: "agent-01", title: "T" }, stage: "qc" });
   assert.equal(Array.isArray(qc), true);
 });
@@ -102,7 +108,7 @@ test("a runner bound without declared capacity still reports the durable wait, n
 });
 
 test("the factory declares the free-first provider capacity for a Director", async () => {
-  const runner = makeFactory(STUB_TRANSPORTS)({ agentId: "agent-01" });
+  const runner = await (await makeFactory(STUB_TRANSPORTS))({ agentId: "agent-01" });
 
   // Voice: the espeak-ng slot is DECLARED, so selection passes and the stage
   // reaches the (stubbed) spawn — the failure is a binary failure, not the
@@ -130,3 +136,125 @@ test("the factory declares the free-first provider capacity for a Director", asy
   assert.equal(visual.providerCall.providerId, "pollinations");
   assert.ok(visual.attempts.some((a) => a.providerId === "pollinations" && a.skipped === null));
 });
+
+// ---------------------------------------------------------------------------
+// Governed provider-capacity source (P1): quota state from Secrets &
+// Connections reaches provider selection at binding time. The seam is
+// strictly bounded: keyless chain ids only, quotaExhausted boolean only,
+// unknown fields fail closed, no credential material ever crosses.
+// ---------------------------------------------------------------------------
+
+test("sanitizeProviderCapacity: keyless ids only, boolean quota only, fail-closed on malformed input", () => {
+  assert.equal(FREE_FIRST_CAPACITY_PROVIDER_IDS.includes("espeak-ng"), true);
+  assert.equal(FREE_FIRST_CAPACITY_PROVIDER_IDS.includes("pollinations"), true);
+
+  const capacity = sanitizeProviderCapacity({
+    tts: { "espeak-ng": { quotaExhausted: true } },
+    visual: { pollinations: {} },
+  });
+  assert.deepEqual(capacity.tts["espeak-ng"], { quotaExhausted: true });
+  assert.deepEqual(capacity.visual.pollinations, {});
+
+  // A provider outside the frozen keyless chain is IGNORED, never invented.
+  const withUnknown = sanitizeProviderCapacity({ tts: { "eleven-labs": { quotaExhausted: true } } });
+  assert.deepEqual(withUnknown.tts, {});
+
+  // Non-boolean quota flag, unknown fields, malformed shapes, and null all
+  // fail closed with the stable code.
+  assert.throws(
+    () => sanitizeProviderCapacity({ tts: { "espeak-ng": { quotaExhausted: "yes" } } }),
+    (error) => error.code === "RUNNER_CAPACITY_INVALID",
+  );
+  assert.throws(
+    () => sanitizeProviderCapacity({ tts: { "espeak-ng": { credentialLocator: "vault://secret/x" } } }),
+    (error) => error.code === "RUNNER_CAPACITY_INVALID",
+  );
+  assert.throws(
+    () => sanitizeProviderCapacity({ tts: { "espeak-ng": null } }),
+    (error) => error.code === "RUNNER_CAPACITY_INVALID",
+  );
+  assert.throws(
+    () => sanitizeProviderCapacity({ tts: "fully-broken" }),
+    (error) => error.code === "RUNNER_CAPACITY_INVALID",
+  );
+  assert.throws(
+    () => sanitizeProviderCapacity(null),
+    (error) => error.code === "RUNNER_CAPACITY_INVALID",
+  );
+});
+
+test("mergeProviderCapacity keeps built-in declared capability and merges only quota state", () => {
+  const registry = {
+    "espeak-ng": Object.freeze({ declared: { languages: ["hi", "en"], voices: [{ voiceId: "hi", language: "hi" }] } }),
+  };
+  const merged = mergeProviderCapacity(registry, { "espeak-ng": { quotaExhausted: true } });
+  assert.equal(merged["espeak-ng"].quotaExhausted, true);
+  assert.deepEqual(merged["espeak-ng"].declared, registry["espeak-ng"].declared, "declared capability is untouched");
+  assert.ok(Object.isFrozen(merged));
+
+  // Quota state feeds the REAL frozen-chain selector: an exhausted emergency
+  // engine is skipped with QUOTA_EXHAUSTED and the chain falls through.
+  const selection = selectTtsProvider({ language: "hi", voiceId: "hi", registry: merged });
+  assert.equal(selection.selected, false);
+  assert.ok(selection.attempts.some((a) => a.providerId === "espeak-ng" && a.skipped === "QUOTA_EXHAUSTED"));
+
+  // The chain contract itself is pinned: keyless, free-first, frozen.
+  assert.ok(Object.isFrozen(TTS_PROVIDER_CHAIN));
+  assert.ok(TTS_PROVIDER_CHAIN.every((entry) => entry.authType === "none"));
+});
+
+test("factory resolves the governed capacity source per Director and applies it at binding time", async () => {
+  const seenAgentIds = [];
+  const runner = await (
+    await createRealMediaRunnerFactory({
+      bindProductionRunner,
+      transports: STUB_TRANSPORTS,
+      mediaPaths: MEDIA_PATHS,
+      capacitySource: async ({ agentId }) => {
+        seenAgentIds.push(agentId);
+        return { tts: { "espeak-ng": { quotaExhausted: true } } };
+      },
+    })
+  )({ agentId: "agent-07" });
+
+  // The source resolved for THIS Director only.
+  assert.deepEqual(seenAgentIds, ["agent-07"]);
+
+  const audio = await runner({
+    release: { id: "r-1", agentId: "agent-07", title: "T" },
+    stage: "audio",
+    stageInputs: { title: "Capacity seam probe" },
+  });
+  // The exhausted emergency engine is skipped honestly; with edge-tts not
+  // bound in this deployment the chain ends without a provider: the truthful
+  // durable wait, never a fabricated provider call and never media.
+  assert.equal(audio.success, false);
+  assert.equal(audio.quotaState, "WAITING_FOR_QUOTA");
+  assert.equal(audio.mediaStatus, "unverified");
+  assert.ok((audio.attempts ?? []).some((a) => a.providerId === "espeak-ng" && a.skipped === "QUOTA_EXHAUSTED"));
+});
+
+test("a capacity source that cannot resolve fails closed at binding time, never silently disabled", async () => {
+  const brokenFactory = await createRealMediaRunnerFactory({
+    bindProductionRunner,
+    transports: STUB_TRANSPORTS,
+    mediaPaths: MEDIA_PATHS,
+    capacitySource: async () => null,
+  });
+  await assert.rejects(
+    () => brokenFactory({ agentId: "agent-01" }),
+    (error) => error.code === "RUNNER_CAPACITY_INVALID",
+    "null is not a snapshot: a declared-but-unresolvable source must fail loudly",
+  );
+
+  const garbageFactory = await createRealMediaRunnerFactory({
+    bindProductionRunner,
+    transports: STUB_TRANSPORTS,
+    mediaPaths: MEDIA_PATHS,
+    capacitySource: "not-a-function",
+  });
+  await assert.rejects(
+    () => garbageFactory({ agentId: "agent-01" }),
+    (error) => error.code === "RUNNER_CAPACITY_INVALID",
+  );
+}, { timeout: 30000 });

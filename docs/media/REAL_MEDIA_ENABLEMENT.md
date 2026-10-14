@@ -71,5 +71,25 @@ Real-media evidence from an executed smoke run — including the ffmpeg argv
 defect it exposed and the honest TTS/visual gaps — is recorded in
 `docs/media/REAL_MEDIA_SMOKE.md`.
 
+### Governed provider-capacity seam
+
+`createRealMediaRunnerFactory` accepts an optional async
+`capacitySource({ agentId })` so a deployment can push VALIDATED quota state
+from Secrets & Connections into provider selection at binding time:
+
+- Only the frozen keyless free-first chain ids may be touched
+  (`edge-tts`, `espeak-ng`, `pollinations`, `local-sd`); unknown ids are
+  ignored, never invented.
+- The ONLY honored field is `quotaExhausted: boolean` — the selector skips an
+  exhausted free provider honestly and falls through the frozen chain; no
+  declared capability can be forged and no credential material can cross the
+  seam (unknown fields fail closed with `RUNNER_CAPACITY_INVALID`).
+- A source that cannot resolve must throw/return a malformed snapshot: the
+  binding fails loudly at startup, never silently without capacity.
+- `STPH_ENABLE_REAL_MEDIA` bindings without a `capacitySource` behave exactly
+  as before (keyless defaults, truthful durable waits).
+- Worker wiring (`src/pipeline/workerLoop.js`) awaits both sync and async
+  factories, so this is backward-compatible.
+
 Artifacts land in the canonical `artifacts` table with real SHA-256 hashes;
 evidence rows append to the ledger. Nothing is ever fabricated on any path.

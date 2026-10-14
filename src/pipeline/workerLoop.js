@@ -130,8 +130,11 @@ export class ProductionWorkerLoop {
       // when a factory is configured; without one the deterministic
       // pipeline runs (pre-existing behavior, unchanged).
       const agentId = job.agent_id ?? job.agentId ?? null;
+      // The factory may be async (it resolves the per-Director governed
+      // provider-capacity source at binding time); awaiting covers both
+      // sync and async factories unchanged.
       const executorRunner = typeof this.executorRunnerFactory === "function"
-        ? this.executorRunnerFactory({ job, agentId })
+        ? await this.executorRunnerFactory({ job, agentId })
         : null;
       // The Director's own persisted schedule (sql/029): resolved per job so
       // the configured episode duration reaches planning, the render target
