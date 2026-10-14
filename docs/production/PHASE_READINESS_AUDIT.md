@@ -204,7 +204,13 @@ tests — they simply needed a database to execute.
   stills. A production host needs the throughput, not new code.
 - **`edge-tts` free primary** is unreachable from this environment (`403`); the
   local emergency engine carried narration honestly. A host that can reach it
-  uses it automatically via the existing chain order.
+  uses it automatically via the existing chain order. Re-probed 2026-10-14:
+  the `edge-tts` binary is now INSTALLED here (uv tools), but the official
+  endpoint still refuses the workspace egress
+  (`WSServerHandshakeError: 403`, `speech.platform.bing.com`), producing
+  0-byte outputs — binary presence is not provider reachability, and the
+  honest-unavailable behavior of the frozen chain is confirmed by a live
+  attempt.
 - `STPH_ENABLE_WORKERS=1` was deliberately **not** left enabled in the running
   dev server, so no worker has yet claimed a job in this workspace; the lease
   semantics above are verified directly against the same repository code.
