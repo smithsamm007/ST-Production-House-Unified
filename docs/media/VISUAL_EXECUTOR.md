@@ -64,9 +64,16 @@ reason in `attempts[]`.
 
 - Spawn uses array arguments ONLY (CONVENTIONS Rule 2 — never a shell
   string). The visual prompt travels via STDIN, never argv, mirroring the
-  TTS executor's piper discipline. Output paths are validated (no NUL, no
+  TTS executor's espeak-ng discipline. Output paths are validated (no NUL, no
   leading dash, no `..` traversal segments, bounded length) before any argv
   is derived. Model paths are validated as artifact paths.
+- A registry slot may bind the executor to a repository-shipped adapter via
+  `command` + `argvPrefix` (the production factory wires `command: "node"`,
+  `argvPrefix: ["scripts/providers/visual-pollinations.mjs"]`). Both are
+  ARRAY args, and the deployed file needs no executable bit.
+- Descriptor honesty: the recorded `mimeType`/extension is the SELECTED
+  provider's real still container (`pollinations` → `image/jpeg`/`.jpg`), never
+  a default claim — the file on disk really is that container.
 - Transports are injectable so tests prove the contract offline; production
   binds node:child_process spawn (array args, shell:false) and
   node:fs/promises. The module adds no new dependencies.

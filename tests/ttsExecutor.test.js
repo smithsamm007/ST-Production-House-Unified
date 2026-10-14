@@ -4,7 +4,7 @@
  * Honest-evidence scope (Rule 1): transports (spawn, file reads) are
  * injected, so the suite proves the executor's CONTRACT offline — the
  * free-first chain routing, quota/credential honesty, the full failure
- * matrix, and the end-to-end verified-success path. No edge-tts/piper/
+ * matrix, and the end-to-end verified-success path. No edge-tts/espeak-ng/
  * ffprobe binaries, no real media, no network. Production binds the same
  * contract to node:child_process + node:fs.
  */
@@ -21,7 +21,7 @@ import {
   TTS_EXECUTOR_ERROR_CODES,
   TTS_PROVIDER_CHAIN,
   buildEdgeTtsArgs,
-  buildPiperArgs,
+  buildEspeakArgs,
   buildTtsSpawnRequest,
   executeTtsGeneration,
   runTtsProvider,
@@ -53,14 +53,16 @@ const EDGE_PROFILE = createVoiceProfile({
   },
 });
 
-const PIPER_PROFILE = createVoiceProfile({
+// Local open-source emergency engine fixture (espeak-ng: free tool, no model
+// weights to license, reads narration from STDIN).
+const ESPEAK_PROFILE = createVoiceProfile({
   agentId: "agent-01",
   language: "en",
   provider: {
-    providerId: "piper",
+    providerId: "espeak-ng",
     providerRole: "local_open_source_emergency",
-    modelIdentifier: "en_US-amy-medium",
-    voiceId: "en_US-amy-medium",
+    modelIdentifier: "espeak-ng-cli",
+    voiceId: "en",
   },
 });
 
@@ -73,15 +75,15 @@ const EDGE_DECLARED = declareTtsProviderCapabilities({
   ],
 });
 
-const PIPER_DECLARED = declareTtsProviderCapabilities({
-  adapterId: "piper",
+const ESPEAK_DECLARED = declareTtsProviderCapabilities({
+  adapterId: "espeak-ng-cli",
   languages: ["en"],
-  voices: [{ voiceId: "en_US-amy-medium", language: "en" }],
+  voices: [{ voiceId: "en", language: "en" }],
 });
 
 const SCRIPT = "सुनिए कहानी का अगला अध्याय, जहाँ रात कुछ कहना चाहती है।";
 
-function makeRegistry({ edge = true, piper = true, edgeQuota = false, edgeCredential } = {}) {
+function makeRegistry({ edge = true, espeak = true, edgeQuota = false, edgeCredential } = {}) {
   const registry = {};
   if (edge) {
     registry["edge-tts"] = {
@@ -90,8 +92,8 @@ function makeRegistry({ edge = true, piper = true, edgeQuota = false, edgeCreden
       ...(edgeCredential !== undefined ? { credentialLocator: edgeCredential } : {}),
     };
   }
-  if (piper) {
-    registry.piper = { declared: PIPER_DECLARED, modelPath: "/models/piper-voice.onnx" };
+  if (espeak) {
+    registry["espeak-ng"] = { declared: ESPEAK_DECLARED };
   }
   return registry;
 }
@@ -191,16 +193,17 @@ test("validateNarrationText applies R15/R17 rules and bounds", () => {
   assert.throws(() => validateNarrationText("a story about JARVIS"), /TTS_SCRIPT_INVALID/);
 });
 
-test("args are frozen arrays; piper carries text via stdin, never argv", () => {
+test("args are frozen arrays; espeak-ng carries text via stdin, never argv", () => {
   const edge = buildEdgeTtsArgs({ voiceId: "hi-IN-MadhurNeural", text: SCRIPT, outputPath: "/media/audio/n.mp3" });
   assert.ok(Object.isFrozen(edge));
   assert.deepEqual(edge, ["--voice", "hi-IN-MadhurNeural", "--text", SCRIPT, "--write-media", "/media/audio/n.mp3"]);
-  const piper = buildPiperArgs({ outputPath: "/media/audio/p.mp3", modelPath: "/models/voice.onnx" });
-  assert.ok(Object.isFrozen(piper));
-  assert.deepEqual(piper, ["--model", "/models/voice.onnx", "--output_file", "/media/audio/p.mp3"]);
-  const request = buildTtsSpawnRequest({ providerId: "piper", voiceId: "en_US-amy-medium", text: SCRIPT, outputPath: "/media/audio/p.mp3", registry: makeRegistry() });
+  const espeak = buildEspeakArgs({ voiceId: "en", outputPath: "/media/audio/p.wav" });
+  assert.ok(Object.isFrozen(espeak));
+  assert.deepEqual(espeak, ["-v", "en", "-w", "/media/audio/p.wav"]);
+  assert.throws(() => buildEspeakArgs({ voiceId: "en; rm -rf /", outputPath: "/media/audio/p.wav" }), /VOICE_UNSUPPORTED/);
+  const request = buildTtsSpawnRequest({ providerId: "espeak-ng", voiceId: "en", text: SCRIPT, outputPath: "/media/audio/p.wav", registry: makeRegistry() });
   assert.equal(request.stdin, SCRIPT);
-  assert.ok(!request.args.some((arg) => arg.includes(SCRIPT.slice(0, 12))), "narration text never appears in piper argv");
+  assert.ok(!request.args.some((arg) => arg.includes(SCRIPT.slice(0, 12))), "narration text never appears in espeak-ng argv");
 });
 
 // ---------------------------------------------------------------------------
@@ -208,7 +211,7 @@ test("args are frozen arrays; piper carries text via stdin, never argv", () => {
 // ---------------------------------------------------------------------------
 
 test("chain is free-first and never contains a paid provider", () => {
-  assert.deepEqual(TTS_PROVIDER_CHAIN.map((entry) => entry.providerId), ["edge-tts", "piper"]);
+  assert.deepEqual(TTS_PROVIDER_CHAIN.map((entry) => entry.providerId), ["edge-tts", "espeak-ng"]);
   assert.deepEqual(TTS_PROVIDER_CHAIN.map((entry) => entry.tier), [1, 4]);
   assert.ok(!TTS_PROVIDER_CHAIN.some((entry) => entry.providerId === "elevenlabs"), "Rule 35: no paid provider in the automatic chain");
 });
@@ -223,9 +226,9 @@ test("primary is selected when it declares the language+voice; skips recorded ho
 });
 
 test("quota-exhausted primary falls through to the local emergency provider", () => {
-  const selection = selectTtsProvider({ language: "en", voiceId: "en_US-amy-medium", registry: makeRegistry({ edgeQuota: true }) });
+  const selection = selectTtsProvider({ language: "en", voiceId: "en", registry: makeRegistry({ edgeQuota: true }) });
   assert.equal(selection.selected, true);
-  assert.equal(selection.providerId, "piper");
+  assert.equal(selection.providerId, "espeak-ng");
   assert.equal(selection.tier, 4);
   assert.deepEqual(selection.attempts.map((a) => a.skipped), ["QUOTA_EXHAUSTED", null]);
 });
@@ -238,10 +241,10 @@ test("unusable entries are skipped in contract order with honest reasons", () =>
   assert.equal(selection.selected, true, "edge-tts still usable");
 
   const noEdge = selectTtsProvider({ language: "hi", voiceId: "hi-IN-MadhurNeural", registry: makeRegistry({ edge: false }) });
-  assert.equal(noEdge.selected, false, "piper declares only English");
+  assert.equal(noEdge.selected, false, "espeak-ng fixture declares only English");
   assert.deepEqual(noEdge.attempts.map((a) => [a.providerId, a.skipped]), [
     ["edge-tts", "PROVIDER_UNAVAILABLE"],
-    ["piper", "LANGUAGE_UNSUPPORTED"],
+    ["espeak-ng", "LANGUAGE_UNSUPPORTED"],
   ]);
 });
 

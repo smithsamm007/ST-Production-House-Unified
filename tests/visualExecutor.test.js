@@ -29,6 +29,8 @@ import {
   selectVisualProvider,
   validateVisualOutputPath,
   validateVisualPrompt,
+  visualProviderMimeType,
+  visualProviderOutputExtension,
 } from "../src/media/visualExecutor.js";
 
 const NOW = () => new Date("2026-09-25T10:00:00.000Z");
@@ -220,6 +222,51 @@ test("args are frozen arrays; prompt travels via stdin, never argv", () => {
   });
   assert.equal(request.stdin, PROMPT);
   assert.ok(!request.args.some((arg) => arg.includes(PROMPT.slice(0, 12))), "prompt never appears in argv");
+});
+
+test("deployment adapter invocation: slot command + argvPrefix are array-prefixed, never a shell string", () => {
+  const registry = {
+    pollinations: {
+      declared: makeRegistry().pollinations.declared,
+      command: "node",
+      argvPrefix: ["scripts/providers/visual-pollinations.mjs"],
+      modelIdentifier: "flux",
+    },
+  };
+  const request = buildVisualSpawnRequest({
+    providerId: "pollinations",
+    modality: "image",
+    aspectRatio: "16:9",
+    outputPath: "/media/visuals/s.jpg",
+    prompt: PROMPT,
+    registry,
+  });
+  assert.equal(request.command, "node");
+  assert.ok(Object.isFrozen(request.args));
+  assert.deepEqual(
+    [...request.args].slice(0, 3),
+    ["scripts/providers/visual-pollinations.mjs", "--modality", "image"],
+  );
+  // Without the slot override the chain default command is used unchanged.
+  const plain = buildVisualSpawnRequest({
+    providerId: "pollinations",
+    modality: "image",
+    aspectRatio: "16:9",
+    outputPath: "/media/visuals/s.png",
+    prompt: PROMPT,
+    registry: makeRegistry(),
+  });
+  assert.equal(plain.command, "visual-pollinations");
+});
+
+test("descriptor container and file extension reflect the provider's real output", () => {
+  assert.equal(visualProviderMimeType("pollinations", "image"), "image/jpeg");
+  assert.equal(visualProviderMimeType("pollinations", "still_acquisition"), "image/jpeg");
+  assert.equal(visualProviderMimeType("local-sd", "image"), "image/png");
+  assert.equal(visualProviderMimeType("unknown-provider", "image"), "image/png");
+  assert.equal(visualProviderOutputExtension("pollinations"), ".jpg");
+  assert.equal(visualProviderOutputExtension("local-sd"), ".png");
+  assert.equal(visualProviderOutputExtension("unknown-provider"), ".png");
 });
 
 // ---------------------------------------------------------------------------

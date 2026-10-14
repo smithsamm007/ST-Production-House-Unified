@@ -12,7 +12,7 @@
  *     └── executeTtsGeneration()
  *           ├── verifyVoiceProfile()          — tamper gate (S-M32-01)
  *           ├── selectTtsProvider()           — contract tier chain, quota-aware
- *           ├── buildEdgeTtsArgs/buildPiperArgs — ARRAY ARGS ONLY (Rule 2)
+ *           ├── buildEdgeTtsArgs/buildEspeakArgs — ARRAY ARGS ONLY (Rule 2)
  *           ├── runTtsProvider()              — injectable spawn, no shell
  *           ├── inspectMediaFile()            — real bytes → hash + ffprobe (#170)
  *           ├── verifyArtifactDescriptor()    — S-M30-01 promotion
@@ -21,7 +21,7 @@
  * Honesty contract (AGENTS.md Rules 1–3, 35):
  *   - Provider routing follows the FIXED free-first chain from the frozen
  *     S-M32-01 tier order. Only DECLARED capabilities from an injected
- *     registry (the governed provider catalog: edge-tts, piper) are
+ *     registry (the governed provider catalog: edge-tts, espeak-ng) are
  *     selectable; a language/voice the declaration does not claim is never
  *     chosen. A registry slot marked quota-exhausted is skipped; when no
  *     provider remains, the durable WAITING_FOR_QUOTA state is returned —
@@ -55,7 +55,7 @@ import {
   recordTtsGenerationOutcome,
 } from "./ttsAdapter.js";
 import { createArtifactDescriptor, verifyArtifactDescriptor } from "./artifactDescriptor.js";
-import { inspectMediaFile, validateArtifactPath } from "./mediaInspectionRunner.js";
+import { inspectMediaFile } from "./mediaInspectionRunner.js";
 
 export const TTS_EXECUTOR_VERSION = "tts_executor_v1";
 
@@ -79,9 +79,19 @@ export const TTS_EXECUTOR_ERROR_CODES = Object.freeze([
 /**
  * The contract free-first chain (S-M32-01 order) bound to the governed
  * provider catalog. Tier 1–3 are approved free network providers; tier 4 is
- * the local open-source emergency provider. ElevenLabs is an owner-side
- * catalog entry for LIVE usage and is deliberately NOT here: the automatic
- * production chain never routes to a paid provider (Rule 35).
+ * the SINGLE local open-source emergency provider (Rule 5). ElevenLabs is an
+ * owner-side catalog entry for LIVE usage and is deliberately NOT here: the
+ * automatic production chain never routes to a paid provider (Rule 35).
+ *
+ * Emergency engine choice (documented in docs/media/TTS_EXECUTOR.md): the
+ * local slot is `espeak-ng` — a GPL-3.0 command-line tool that needs NO model
+ * weights (Rule 12: nothing to license or bundle), speaks Hindi (`hi`) and
+ * English (`en`), reads narration from STDIN, and is provisioned by the
+ * deployment environment exactly like `ffmpeg`. Piper was NOT adopted: it
+ * requires ONNX voice weights whose commercial-use licensing is undocumented
+ * (Rule 12) and a Python/pip provisioning path the Node-only production host
+ * forbids. `mimeType`/`outputExtension` are the ACTUAL container the provider
+ * writes (espeak-ng `-w` writes WAV bytes regardless of file name).
  */
 export const TTS_PROVIDER_CHAIN = Object.freeze([
   Object.freeze({
@@ -90,15 +100,31 @@ export const TTS_PROVIDER_CHAIN = Object.freeze([
     tier: 1,
     command: "edge-tts",
     authType: "none",
+    mimeType: "audio/mpeg",
+    outputExtension: ".mp3",
   }),
   Object.freeze({
-    providerId: "piper",
+    providerId: "espeak-ng",
     providerRole: "local_open_source_emergency",
     tier: 4,
-    command: "piper",
+    command: "espeak-ng",
     authType: "none",
+    mimeType: "audio/wav",
+    outputExtension: ".wav",
   }),
 ]);
+
+/** The provider's declared container MIME (descriptor honesty, S-M30-01). */
+export function ttsProviderMimeType(providerId) {
+  const entry = TTS_PROVIDER_CHAIN.find((candidate) => candidate.providerId === providerId);
+  return entry?.mimeType ?? "audio/mpeg";
+}
+
+/** The provider's real output container extension (file naming honesty). */
+export function ttsProviderOutputExtension(providerId) {
+  const entry = TTS_PROVIDER_CHAIN.find((candidate) => candidate.providerId === providerId);
+  return entry?.outputExtension ?? ".mp3";
+}
 
 const DEFAULT_TTS_TIMEOUT_MS = 120_000;
 const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
@@ -241,13 +267,18 @@ export function buildEdgeTtsArgs({ voiceId, text, outputPath }) {
 }
 
 /**
- * Piper reads narration from STDIN (spawn contract carries `stdin`) and
- * writes audio to --output_file. Frozen array; text never on argv.
- *   piper --model <modelPath> --output_file <outputPath>
+ * espeak-ng reads narration from STDIN (spawn contract carries `stdin`; text
+ * never on argv) and writes WAV audio to `-w <path>` with the voice selected
+ * by `-v <voice>`. Frozen array.
+ *   espeak-ng -v <voiceId> -w <outputPath></outputPath>
  */
-export function buildPiperArgs({ outputPath, modelPath = "piper-voice" }) {
-  validateArtifactPath(modelPath);
-  return Object.freeze(["--model", modelPath, "--output_file", outputPath]);
+export function buildEspeakArgs({ voiceId, outputPath }) {
+  if (typeof voiceId !== "string" || voiceId.length === 0 || voiceId.length > 64) {
+    throw fail("VOICE_UNSUPPORTED");
+  }
+  if (!/^[A-Za-z0-9_+-]+$/.test(voiceId)) throw fail("VOICE_UNSUPPORTED");
+  validateTtsOutputPath(outputPath);
+  return Object.freeze(["-v", voiceId, "-w", outputPath]);
 }
 
 /**
@@ -258,18 +289,22 @@ export function buildTtsSpawnRequest({ providerId, voiceId, text, outputPath, re
   validateTtsOutputPath(outputPath);
   const narration = validateNarrationText(text);
   if (providerId === "edge-tts") {
+    const slot = registry && typeof registry === "object" ? registry["edge-tts"] : undefined;
+    const argvPrefix = Array.isArray(slot?.argvPrefix) ? slot.argvPrefix.filter((arg) => typeof arg === "string" && arg.length > 0) : [];
+    const command = typeof slot?.command === "string" && slot.command.length > 0 ? slot.command : "edge-tts";
     return Object.freeze({
-      command: "edge-tts",
-      args: buildEdgeTtsArgs({ voiceId, text: narration, outputPath }),
+      command,
+      args: Object.freeze([...argvPrefix, ...buildEdgeTtsArgs({ voiceId, text: narration, outputPath })]),
       stdin: null,
     });
   }
-  if (providerId === "piper") {
-    const slot = registry && typeof registry === "object" ? registry.piper : undefined;
-    const modelPath = slot && typeof slot.modelPath === "string" && slot.modelPath.length > 0 ? slot.modelPath : "piper-voice";
+  if (providerId === "espeak-ng") {
+    const slot = registry && typeof registry === "object" ? registry["espeak-ng"] : undefined;
+    const argvPrefix = Array.isArray(slot?.argvPrefix) ? slot.argvPrefix.filter((arg) => typeof arg === "string" && arg.length > 0) : [];
+    const command = typeof slot?.command === "string" && slot.command.length > 0 ? slot.command : "espeak-ng";
     return Object.freeze({
-      command: "piper",
-      args: buildPiperArgs({ outputPath, modelPath }),
+      command,
+      args: Object.freeze([...argvPrefix, ...buildEspeakArgs({ voiceId, outputPath })]),
       stdin: narration,
     });
   }
@@ -432,6 +467,10 @@ export async function executeTtsGeneration(voiceProfile, options = {}) {
     }),
   });
 
+  // Descriptor container honesty: the MIME is the SELECTED provider's real
+  // output container (edge-tts → mpeg, espeak-ng → wav), never a claim.
+  const selectedMimeType = ttsProviderMimeType(selection.providerId);
+
   // 4. Build argv + execute the real provider call.
   let request;
   let execution;
@@ -484,7 +523,7 @@ export async function executeTtsGeneration(voiceProfile, options = {}) {
   if (inspection.success === true) {
     descriptor = createArtifactDescriptor({
       artifactType: "audio",
-      mimeType: "audio/mpeg",
+      mimeType: selectedMimeType,
       contentSha256: inspection.contentSha256,
       producer: {
         agentId: voiceProfile.agentId,
@@ -517,7 +556,7 @@ export async function executeTtsGeneration(voiceProfile, options = {}) {
   try {
     descriptor = createArtifactDescriptor({
       artifactType: "audio",
-      mimeType: "audio/mpeg",
+      mimeType: selectedMimeType,
       contentSha256: "0".repeat(64),
       producer: {
         agentId: voiceProfile.agentId,

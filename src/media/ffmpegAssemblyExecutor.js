@@ -45,7 +45,7 @@ import {
   ASSEMBLY_PLAN_TYPE,
   MAIN_VIDEO_MAX_SECONDS,
   MAIN_VIDEO_MIN_SECONDS,
-  evaluateMainVideoRuntimeGate,
+  evaluateMainVideoDurationTarget,
   verifyAssemblyPlanIntegrity,
 } from "./assemblyPlan.js";
 import { createArtifactDescriptor, verifyArtifactDescriptor } from "./artifactDescriptor.js";
@@ -71,6 +71,11 @@ export const FFMPEG_EXECUTOR_ERROR_CODES = Object.freeze([
   "QC_INSPECTION_DURATION_MISSING",
   "QC_DURATION_CONFLICT",
   "QC_DURATION_OUT_OF_RANGE",
+  // Per-Director configured episode duration (sql/029 schedule): the main
+  // video must land inside the configured target's tolerance window, in
+  // ADDITION to the canonical [1800, 3000] window.
+  "QC_DURATION_TARGET_MISSED",
+  "MAIN_VIDEO_TARGET_INVALID",
 ]);
 
 /**
@@ -299,7 +304,16 @@ export function buildRenderPlan(plan, resolvedInputs, outputPath) {
       filters.push(`[${inputIndex}:v]${chain.join(",")}[v${visualLabels.length}]`);
       visualLabels.push(`[v${visualLabels.length}]`);
     } else if (AUDIO_KINDS.has(segment.kind)) {
-      audioSegmentLabels.push(`[${inputIndex}:a]`);
+      // A segment-sourced audio stream must become a REAL filtergraph label.
+      // Mapping the raw input specifier as `[N:a]` makes ffmpeg look for a
+      // filtergraph output literally named "N:a" and abort with
+      // "Output with label 'N:a' does not exist in any defined filter graph"
+      // (FFMPEG_EXIT_NONZERO on a real render). This identity filter defines
+      // the label the mixer/`-map` actually consumes, for both the single- and
+      // multi-segment paths, and is defined before any reference to it.
+      const audioSegmentLabel = `[aseg${audioSegmentLabels.length}]`;
+      filters.push(`[${inputIndex}:a]anull${audioSegmentLabel}`);
+      audioSegmentLabels.push(audioSegmentLabel);
     } else {
       // SEGMENT_KINDS is a closed enum; anything else is a contract break.
       throw fail("ASSEMBLY_PLAN_INVALID");
@@ -523,6 +537,11 @@ export function evaluateShortFormDurationGate(descriptor, inspection) {
  *   spawnImpl        — REQUIRED for real execution ({ command, args, timeoutMs })
  *   readFileImpl     — REQUIRED for post-render inspection (real bytes)
  *   timeoutMs / probeTimeoutMs / now — injectable bounds + clock
+ *   runtimeTargetSeconds — the Director's configured episode duration for a
+ *                      main_longform render (sql/029). When present, the QC
+ *                      gate additionally requires the REAL measured duration
+ *                      to lie inside target ± tolerance; absence keeps the
+ *                      canonical S-M33-01 window only.
  *   skipPreflight    — internal/testing escape hatch; default pre-flights
  *
  * Returns a frozen, honest record. success === true ONLY when the command
@@ -577,6 +596,15 @@ export async function executeAssemblyPlan(plan, options = {}) {
     opts = requirePlainObject(options, "EXEC_REF_UNBOUND");
     if (opts.artifactBindings === undefined || opts.outputPath === undefined) throw fail("EXEC_REF_UNBOUND");
     validateOutputPath(opts.outputPath);
+    // A configured target duration may only be a positive, finite number of
+    // seconds. A malformed target fails closed BEFORE any render: the pipeline
+    // must never fall back to a different (hidden) duration.
+    if (opts.runtimeTargetSeconds !== undefined && opts.runtimeTargetSeconds !== null) {
+      if (typeof opts.runtimeTargetSeconds !== "number" || !Number.isFinite(opts.runtimeTargetSeconds) ||
+          opts.runtimeTargetSeconds <= 0) {
+        throw fail("MAIN_VIDEO_TARGET_INVALID");
+      }
+    }
   } catch (err) {
     return deepFreeze({ ...withPlan, failureCode: err.code });
   }
@@ -667,7 +695,11 @@ export async function executeAssemblyPlan(plan, options = {}) {
     });
     const gate =
       targetKind === "main"
-        ? evaluateMainVideoRuntimeGate(renderedDescriptor, inspection)
+        ? evaluateMainVideoDurationTarget(renderedDescriptor, inspection, {
+            // Director-configured duration (sql/029). `null` keeps the legacy
+            // S-M33-01 behaviour exactly as before.
+            targetSeconds: opts.runtimeTargetSeconds ?? null,
+          })
         : evaluateShortFormDurationGate(renderedDescriptor, inspection);
     qc = deepFreeze({
       policy: targetKind === "main" ? "main_video_runtime" : "short_form_runtime",
@@ -675,6 +707,11 @@ export async function executeAssemblyPlan(plan, options = {}) {
       reasonCode: gate.reasonCode,
       inspectionReasonCode: gate.inspectionReasonCode,
       measuredDurationSeconds: gate.measuredDurationSeconds,
+      // Applied configured target (null when the caller supplied none) and the
+      // effective window it was measured against — evidence, not a claim.
+      targetSeconds: targetKind === "main" ? (gate.targetSeconds ?? null) : null,
+      targetWindowSeconds:
+        targetKind === "main" && gate.window ? Object.freeze({ min: gate.window.min, max: gate.window.max }) : null,
     });
     if (gate.passed) verifiedDescriptor = verifyArtifactDescriptor(renderedDescriptor, inspection);
   }

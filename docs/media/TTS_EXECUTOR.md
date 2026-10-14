@@ -11,7 +11,7 @@ voice profile (tts_voice_profile_v1) + script
   └── executeTtsGeneration()
         ├── verifyVoiceProfile()            — tamper gate (S-M32-01)
         ├── selectTtsProvider()             — contract tier chain, quota-aware
-        ├── buildEdgeTtsArgs/buildPiperArgs — ARRAY ARGS ONLY (Rule 2)
+        ├── buildEdgeTtsArgs/buildEspeakArgs — ARRAY ARGS ONLY (Rule 2)
         ├── runTtsProvider()                — injectable spawn, no shell
         ├── inspectMediaFile()              — real bytes → hash + ffprobe (#170)
         ├── verifyArtifactDescriptor()      — S-M30-01 promotion
@@ -26,7 +26,20 @@ provider catalog:
 | Tier | Provider | Role | authType |
 |---|---|---|---|
 | 1 | `edge-tts` | approved_free_primary | none |
-| 4 | `piper` | local_open_source_emergency | none |
+| 4 | `espeak-ng` | local_open_source_emergency | none |
+
+### Why the local emergency engine is `espeak-ng` (Rule 12)
+
+The single local open-source emergency slot (Rule 5) is filled by `espeak-ng`
+for a documented reason: it is a GPL-3.0 command-line tool that requires **no
+model weights**, so there is nothing to license or bundle (Rule 12), it is
+provisioned by the deployment environment exactly like `ffmpeg`, and it speaks
+Hindi (`hi`) and English (`en`). Piper was evaluated and **not** adopted: it
+needs ONNX voice weights whose commercial-use licensing is undocumented
+(Rule 12) and a Python/pip provisioning path the Node-only production host
+forbids. Measured provider availability on the build host (edge-tts `403`,
+Pollinations audio `402`, espeak-ng works) is recorded in `BUILD_VERIFICATION.md`
+under the dated `2026-10-12 Phase 3` section.
 
 - **ElevenLabs is deliberately absent**: it remains an owner-configured
   catalog entry for live use; the automatic production chain never routes to
@@ -51,8 +64,12 @@ production transport resolves locator → credential outside this boundary.
 ## Array-args safety (CONVENTIONS Rule 2)
 
 - `buildEdgeTtsArgs` → `--voice <id> --text <text> --write-media <path>`
-- `buildPiperArgs` → `--model <path> --output_file <path>`; narration text
-  travels via spawn `stdin`, never argv.
+- `buildEspeakArgs` → `-v <voice> -w <path>`; narration text travels via spawn
+  `stdin`, never argv. The voice id is shape-validated (no shell characters).
+- A registry slot may bind the executor to a repository-shipped adapter via
+  `command` + `argvPrefix` (e.g. `command: "node"`, `argvPrefix: ["scripts/
+  providers/<adapter>.mjs"]`). Both are ARRAY args; nothing becomes a shell
+  string.
 - Output path and narration text are validated BEFORE any argv is derived:
   bounded, no NUL, no leading dash (option injection), no `..` traversal;
   text is scanned against secret-shaped content and internal agent names
@@ -87,7 +104,7 @@ S-M32-01 outcome then honestly reports `mediaStatus: "verified"` and
 `spawnImpl` (`{ command, args, timeoutMs, stdin }` → `{ exitCode, stdout,
 stderr, timedOut }`), `readFileImpl`, and the clock are injectable, so the
 suite proves routing, quota/credential honesty, every failure code, and the
-verified-success path offline — no edge-tts/piper/ffprobe binaries, no
+verified-success path offline — no edge-tts/espeak-ng/ffprobe binaries, no
 network. Production binds `node:child_process.spawn` (array args,
 `shell: false`, stdin write, timeout kill) and `node:fs/promises`.
 

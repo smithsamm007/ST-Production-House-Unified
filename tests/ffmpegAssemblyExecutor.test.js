@@ -278,8 +278,56 @@ test("subtitle burning uses the subtitles filter only with video present", () =>
   const audioOnlyResolved = resolvePlanInputs(audioOnlyPlan, makeBindings());
   const audioOnly = buildRenderPlan(audioOnlyPlan, audioOnlyResolved, "/media/out/main.mp4");
   assert.ok(audioOnly.degradations.includes("subtitle_without_video_dropped"));
-  assert.equal(audioOnly.filtergraph, null);
-  assert.deepEqual(audioOnly.args.slice(audioOnly.args.indexOf("-vn"), audioOnly.args.indexOf("-vn") + 4), ["-vn", "-map", "[0:a]", "-c:a"]);
+  // A segment-sourced audio stream became a REAL filtergraph label: real
+  // ffmpeg aborts on `-map [N:a]` with "Output with label 'N:a' does not
+  // exist in any defined filter graph" (verified against ffmpeg 4.4.2 — see
+  // docs/media/REAL_MEDIA_SMOKE.md). The identity `anull` filter defines the
+  // label the mixer and `-map` consume, so this argv is one ffmpeg runs.
+  assert.equal(audioOnly.filtergraph, "[0:a]anull[aseg0]");
+  assert.deepEqual(
+    audioOnly.args.slice(audioOnly.args.indexOf("-vn"), audioOnly.args.indexOf("-vn") + 6),
+    ["-vn", "-filter_complex", "[0:a]anull[aseg0]", "-map", "[aseg0]", "-c:a"]
+  );
+});
+
+test("every mapped label is defined by the filtergraph (real-ffmpeg validity invariant)", () => {
+  const plans = [
+    makePlan(),
+    makePlan({
+      audioMix: [
+        { artifactRef: REF_SEG1, role: "voice", gainDb: 0 },
+        { artifactRef: REF_BGM, role: "bgm", gainDb: -6, ducking: true },
+      ],
+    }),
+    makePlan({
+      segments: [{ artifactRef: REF_SEG1, kind: "voice", durationSeconds: 1800 }],
+      audioMix: [],
+    }),
+    makePlan({
+      segments: [
+        { artifactRef: REF_SEG1, kind: "voice", durationSeconds: 900 },
+        { artifactRef: REF_BGM, kind: "bgm", durationSeconds: 900 },
+      ],
+      audioMix: [{ artifactRef: REF_BGM, role: "bgm", gainDb: -6 }],
+    }),
+  ];
+
+  for (const plan of plans) {
+    const resolved = resolvePlanInputs(plan, makeBindings());
+    const { args, filtergraph } = buildRenderPlan(plan, resolved, "/media/out/main.mp4");
+    const defined = new Set(
+      [...String(filtergraph ?? "").matchAll(/\[([A-Za-z0-9_]+)\]/g)].map((match) => match[1])
+    );
+    for (let index = 0; index < args.length; index += 1) {
+      if (args[index] !== "-map") continue;
+      const spec = args[index + 1];
+      if (typeof spec !== "string" || !spec.startsWith("[")) continue;
+      assert.ok(
+        defined.has(spec.slice(1, -1)),
+        `mapped label ${spec} must be defined in the filtergraph (ffmpeg rejects undefined labels)`
+      );
+    }
+  }
 });
 
 test("unknown output target fails closed even though the plan object predated the check", () => {
@@ -416,9 +464,13 @@ test("error codes are exported and closed", () => {
     "FFPROBE_VERSION_EXIT_NONZERO",
     "FFPROBE_VERSION_SPAWN_FAILED",
     "FFPROBE_VERSION_TIMEOUT",
+    // Per-Director configured episode duration (sql/029): the main video must
+    // land inside the configured target's tolerance window as well.
+    "MAIN_VIDEO_TARGET_INVALID",
     "QC_DESCRIPTOR_NOT_VERIFIED",
     "QC_DURATION_CONFLICT",
     "QC_DURATION_OUT_OF_RANGE",
+    "QC_DURATION_TARGET_MISSED",
     "QC_INSPECTION_DURATION_MISSING",
   ]);
 });

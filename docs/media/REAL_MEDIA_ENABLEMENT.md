@@ -23,9 +23,10 @@ fails closed with `RUNNER_AGENT_MISMATCH`.
    inspection failure codes, never fabricated success.
 2. **A TTS provider** from the free-first chain (`src/media/ttsExecutor.js`):
    - Tier 1 `edge-tts` (free network provider, authType `none`), or
-   - Tier 4 `piper` (local open-source emergency provider, authType `none`,
-     narration text via stdin, model path via `--model`, output via
-     `--output_file`).
+   - Tier 4 `espeak-ng` (local open-source emergency provider, authType
+     `none`, narration text via stdin, voice via `-v`, WAV output via `-w`).
+     Chosen over piper because it needs no model weights to license (Rule 12)
+     and no Python/pip provisioning (see `docs/media/TTS_EXECUTOR.md`).
    - No paid provider is ever auto-selected (Rule 35).
 3. **Visual provider capacity** (owner-gated): without a declared provider
    registry entry the visual stage returns the truthful wait state and the
@@ -36,7 +37,8 @@ fails closed with `RUNNER_AGENT_MISMATCH`.
 | Outcome in logs/artifacts | Meaning | Operator action |
 |---|---|---|
 | `WAITING_FOR_QUOTA` (re-queued) | No provider remained for a needed stage | Install/provision the missing provider; job resumes automatically |
-| `PROVIDER_UNAVAILABLE` | Binary absent or spawn failed | Install the binary (ffmpeg/piper/edge-tts), verify `which <binary>` |
+| `PROVIDER_UNAVAILABLE` | No provider slot could serve the request (selection layer: unregistered slot, undeclared capabilities, or no binary at all) | Install/provision the provider, verify `which <binary>` |
+| `TTS_SPAWN_FAILED` / `VISUAL_SPAWN_FAILED` / `FFMPEG_SPAWN_FAILED` / `FFPROBE_VERSION_SPAWN_FAILED` | The executor reached a real spawn and the binary could not start (typically `ENOENT`), or the transport refused the request shape | Install the binary (`which ffmpeg ffprobe edge-tts espeak-ng`); these are the executor-layer spellings of "provider unavailable" — verified in `artifacts/real-media-smoke/provider-capacity.json` |
 | `CREDENTIAL_MISSING` | A non-`none` authType provider lacks a locator | Owner adds the credential via Secrets & Connections (stored only as `vault://`/`opaque://` locator) |
 | `QC_DURATION_*` fail | Rendered duration outside policy window (short-form [3,90] s / longform [1800,3000] s) | The render is real but fails the gate; adjust plan durations |
 | `RUNNER_AGENT_MISMATCH` | Job routed to the wrong Director's runner | Tenancy bug — stop and investigate; never shared state |
@@ -45,13 +47,29 @@ fails closed with `RUNNER_AGENT_MISMATCH`.
 An exit-0 provider call alone is NOT success. `mediaStatus` derives only from
 a matching-hash inspection of the actual file bytes (S-M30-01 / #170).
 
+## Production transports and media root
+
+The executors never spawn or read files themselves: they require injected
+`spawnImpl` / `readFileImpl`. Production now binds
+`src/media/nodeMediaTransport.js` (array args, `shell:false`, bounded capture,
+real timeout kill, real bytes for hashing) in the `STPH_ENABLE_REAL_MEDIA=1`
+factory inside `src/catalog/server.js`. Output roots default to
+`<cwd>/artifacts/media` and are created at boot; set `STPH_MEDIA_ROOT` to
+place them elsewhere (e.g. a mounted volume).
+
 ## Verification commands
 
 ```bash
-which ffmpeg ffprobe piper edge-tts   # capacity check
+which ffmpeg ffprobe espeak-ng edge-tts   # capacity check
+node scripts/real_provider_episode.mjs --stage=providers   # real provider evidence
 npm test                              # includes productionExecutorRunner tests
+npm run media:smoke                   # REAL render + QC evidence (see docs/media/REAL_MEDIA_SMOKE.md)
 curl -s localhost:3000/api/health     # storage !== "demo"
 ```
+
+Real-media evidence from an executed smoke run — including the ffmpeg argv
+defect it exposed and the honest TTS/visual gaps — is recorded in
+`docs/media/REAL_MEDIA_SMOKE.md`.
 
 Artifacts land in the canonical `artifacts` table with real SHA-256 hashes;
 evidence rows append to the ledger. Nothing is ever fabricated on any path.

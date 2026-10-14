@@ -99,6 +99,11 @@ export const VISUAL_PROVIDER_CHAIN = Object.freeze([
     command: "visual-pollinations",
     authType: "none",
     modalities: ["image", "still_acquisition"],
+    // The REAL container the free endpoint returns for stills (measured, not
+    // assumed): the descriptor must never claim a container the provider did
+    // not produce (Rule 1/3).
+    stillMimeType: "image/jpeg",
+    outputExtension: ".jpg",
   }),
   Object.freeze({
     providerId: "local-sd",
@@ -107,8 +112,24 @@ export const VISUAL_PROVIDER_CHAIN = Object.freeze([
     command: "visual-local",
     authType: "none",
     modalities: ["image", "still_acquisition", "video_clip", "animation"],
+    stillMimeType: "image/png",
+    outputExtension: ".png",
   }),
 ]);
+
+/** The provider's real still output extension (file-naming honesty). */
+export function visualProviderOutputExtension(providerId) {
+  const entry = VISUAL_PROVIDER_CHAIN.find((candidate) => candidate.providerId === providerId);
+  return typeof entry?.outputExtension === "string" ? entry.outputExtension : ".png";
+}
+
+/** The provider's declared still-image container, falling back per modality. */
+export function visualProviderMimeType(providerId, modality) {
+  const entry = VISUAL_PROVIDER_CHAIN.find((candidate) => candidate.providerId === providerId);
+  const isStill = modality === "image" || modality === "still_acquisition";
+  if (isStill && typeof entry?.stillMimeType === "string") return entry.stillMimeType;
+  return MODALITY_MIME[modality] ?? "image/png";
+}
 
 const DEFAULT_VISUAL_TIMEOUT_MS = 300_000;
 const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
@@ -294,9 +315,15 @@ export function buildVisualSpawnRequest({ providerId, modality, aspectRatio, out
   if (providerId === "pollinations") {
     const slot = registry && typeof registry === "object" ? registry.pollinations : undefined;
     const modelIdentifier = slot && typeof slot.modelIdentifier === "string" && slot.modelIdentifier.length > 0 ? slot.modelIdentifier : undefined;
+    // Deployment adapter invocation: a slot may bind the executor to a real
+    // adapter it ships (e.g. command "node" + argvPrefix ["scripts/providers/
+    // visual-pollinations.mjs"]) instead of requiring a bare binary on PATH.
+    // Array args only; nothing is ever a shell string (CONVENTIONS Rule 2).
+    const argvPrefix = Array.isArray(slot?.argvPrefix) ? slot.argvPrefix.filter((arg) => typeof arg === "string" && arg.length > 0) : [];
+    const command = typeof slot?.command === "string" && slot.command.length > 0 ? slot.command : "visual-pollinations";
     return Object.freeze({
-      command: "visual-pollinations",
-      args: buildPollinationsArgs({ modality, aspectRatio, outputPath, modelIdentifier }),
+      command,
+      args: Object.freeze([...argvPrefix, ...buildPollinationsArgs({ modality, aspectRatio, outputPath, modelIdentifier })]),
       stdin: cleanPrompt,
     });
   }
@@ -304,9 +331,11 @@ export function buildVisualSpawnRequest({ providerId, modality, aspectRatio, out
     const slot = registry && typeof registry === "object" ? registry["local-sd"] : undefined;
     const modelPath = slot && typeof slot.modelPath === "string" && slot.modelPath.length > 0 ? slot.modelPath : undefined;
     const clipSeconds = slot && typeof slot.clipSeconds === "number" ? slot.clipSeconds : undefined;
+    const argvPrefix = Array.isArray(slot?.argvPrefix) ? slot.argvPrefix.filter((arg) => typeof arg === "string" && arg.length > 0) : [];
+    const command = typeof slot?.command === "string" && slot.command.length > 0 ? slot.command : "visual-local";
     return Object.freeze({
-      command: "visual-local",
-      args: buildLocalVisualArgs({ modality, aspectRatio, outputPath, modelPath, clipSeconds }),
+      command,
+      args: Object.freeze([...argvPrefix, ...buildLocalVisualArgs({ modality, aspectRatio, outputPath, modelPath, clipSeconds })]),
       stdin: cleanPrompt,
     });
   }
@@ -547,7 +576,9 @@ export async function executeVisualGeneration(styleProfile, options = {}) {
   //    command ran; mediaStatus/generationMode derive from verification
   //    alone.
   const artifactType = MODALITY_ARTIFACT_TYPE[request.modality] ?? "image";
-  const mimeType = MODALITY_MIME[request.modality] ?? "image/png";
+  // Descriptor container honesty: the SELECTED provider's real still container
+  // (pollinations → image/jpeg), never a default claim.
+  const mimeType = visualProviderMimeType(selection.providerId, request.modality);
   let descriptor = null;
   let outcome = null;
   if (inspection.success === true) {

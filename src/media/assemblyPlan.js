@@ -33,6 +33,15 @@ export const ASSEMBLY_PLAN_TYPE = "media_assembly_plan_v1";
 export const MAIN_VIDEO_MIN_SECONDS = 1800;
 export const MAIN_VIDEO_MAX_SECONDS = 3000;
 
+/**
+ * Allowed tolerance around a Director's CONFIGURED episode duration. The owner
+ * selects 30 / 40 / 50 minutes; a completed main video must land inside
+ * target ± tolerance AND inside the canonical [1800, 3000] window — the two
+ * checks are intersected, never substituted, so a configured target can never
+ * weaken the existing gate.
+ */
+export const MAIN_VIDEO_TARGET_TOLERANCE_SECONDS = 180;
+
 export const SEGMENT_KINDS = Object.freeze([
   "video_clip",
   "still_image",
@@ -378,6 +387,90 @@ export function evaluateMainVideoRuntimeGate(descriptor, inspection) {
     };
   }
   return { passed: true, reasonCode: null, inspectionReasonCode: null, measuredDurationSeconds: measured };
+}
+
+// ---------------------------------------------------------------------------
+// Configured-duration (Director schedule) target gate
+// ---------------------------------------------------------------------------
+
+/**
+ * The effective runtime window for a configured target: target ± tolerance,
+ * intersected with the canonical [1800, 3000] window. An invalid target (not
+ * one of the selectable durations, or outside the canonical window) fails
+ * closed — the pipeline never silently falls back to a different duration.
+ */
+export function mainVideoDurationTargetWindow(
+  targetSeconds,
+  toleranceSeconds = MAIN_VIDEO_TARGET_TOLERANCE_SECONDS,
+) {
+  if (typeof targetSeconds !== "number" || !Number.isFinite(targetSeconds) || targetSeconds <= 0) {
+    throw planError("MAIN_VIDEO_TARGET_INVALID");
+  }
+  if (typeof toleranceSeconds !== "number" || !Number.isFinite(toleranceSeconds) || toleranceSeconds < 0) {
+    throw planError("MAIN_VIDEO_TARGET_INVALID");
+  }
+  const min = Math.max(MAIN_VIDEO_MIN_SECONDS, targetSeconds - toleranceSeconds);
+  const max = Math.min(MAIN_VIDEO_MAX_SECONDS, targetSeconds + toleranceSeconds);
+  if (min > max) throw planError("MAIN_VIDEO_TARGET_INVALID");
+  return Object.freeze({ targetSeconds, toleranceSeconds, min, max });
+}
+
+/**
+ * Target-aware main-video gate.
+ *
+ * Order is contract: the S-M33-01 runtime gate runs FIRST and is never
+ * weakened (descriptor VERIFIED by a real matching inspection, measured
+ * duration present, no claimed-vs-measured conflict, inside [1800, 3000]).
+ * Only then is the Director's configured duration applied — the measured
+ * duration must also lie in the target's tolerance window, else the verdict is
+ * QC_DURATION_TARGET_MISSED and the episode cannot be represented as complete
+ * (it stays queued/delayed/rework, exactly as the master prompt requires).
+ *
+ * With no configured target (`targetSeconds` null/undefined) this is the
+ * existing S-M33-01 verdict, unchanged.
+ */
+export function evaluateMainVideoDurationTarget(
+  descriptor,
+  inspection,
+  { targetSeconds = null, toleranceSeconds = MAIN_VIDEO_TARGET_TOLERANCE_SECONDS } = {},
+) {
+  const base = evaluateMainVideoRuntimeGate(descriptor, inspection);
+  if (!base.passed) {
+    return Object.freeze({ ...base, targetSeconds: null, window: null });
+  }
+  if (targetSeconds === null || targetSeconds === undefined) {
+    return Object.freeze({ ...base, targetSeconds: null, window: null });
+  }
+  if (targetSeconds < MAIN_VIDEO_MIN_SECONDS || targetSeconds > MAIN_VIDEO_MAX_SECONDS) {
+    return Object.freeze({
+      passed: false,
+      reasonCode: "MAIN_VIDEO_TARGET_INVALID",
+      inspectionReasonCode: null,
+      measuredDurationSeconds: base.measuredDurationSeconds,
+      targetSeconds,
+      window: null,
+    });
+  }
+  const window = mainVideoDurationTargetWindow(targetSeconds, toleranceSeconds);
+  const measured = base.measuredDurationSeconds;
+  if (measured < window.min || measured > window.max) {
+    return Object.freeze({
+      passed: false,
+      reasonCode: "QC_DURATION_TARGET_MISSED",
+      inspectionReasonCode: null,
+      measuredDurationSeconds: measured,
+      targetSeconds,
+      window,
+    });
+  }
+  return Object.freeze({
+    passed: true,
+    reasonCode: null,
+    inspectionReasonCode: null,
+    measuredDurationSeconds: measured,
+    targetSeconds,
+    window,
+  });
 }
 
 // ---------------------------------------------------------------------------
