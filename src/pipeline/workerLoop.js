@@ -68,7 +68,7 @@ export class ProductionWorkerLoop {
   start() {
     if (!this.stopped) return;
     this.stopped = false;
-    this.timer = setTimeout(() => this.#tick(), 0);
+    this.timer = this.#unref(setTimeout(() => this.#tick(), 0));
     this.log(JSON.stringify({ code: "PRODUCTION_WORKER_STARTED", workerId: this.workerId, pollMs: this.pollMs }));
   }
 
@@ -98,8 +98,17 @@ export class ProductionWorkerLoop {
       this.log(JSON.stringify({ code: "WORKER_TICK_ERROR", errorName: error?.name ?? "Error" }));
     }
     if (!this.stopped) {
-      this.timer = setTimeout(() => this.#tick(), this.pollMs);
+      // Unref: an idle polling loop must not keep the Node event loop alive on
+      // its own. A real deployment stays up through its HTTP server; a test
+      // process that finished its work can now exit honestly at EOF.
+      this.timer = this.#unref(setTimeout(() => this.#tick(), this.pollMs));
     }
+  }
+
+  /** Marks a timer handle non-keeping (no-op for injected test fakes). */
+  #unref(handle) {
+    if (handle && typeof handle.unref === "function") handle.unref();
+    return handle;
   }
 
   /** Claims one queued episode_production job via the jobs lease mechanism. */

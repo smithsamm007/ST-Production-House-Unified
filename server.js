@@ -50,8 +50,8 @@ function logProductionGuards() {
   if (process.env.STPH_DEMO_STORAGE === "1") {
     warnings.push({ code: "DEMO_STORAGE_IN_PRODUCTION", detail: "STPH_DEMO_STORAGE=1 with NODE_ENV=production is a misconfiguration; data will NOT be durable." });
   }
-  if (!process.env.DATABASE_URL && !process.env.POSTGRES_URL && !process.env.PGHOST && process.env.STPH_STRICT_POSTGRES !== "1") {
-    warnings.push({ code: "NO_DATABASE_CONFIGURED", detail: "No DATABASE_URL/PG* found; set STPH_STRICT_POSTGRES=1 to refuse demo fallback in production." });
+  if (!process.env.DATABASE_URL && !process.env.POSTGRES_URL && !process.env.PGHOST) {
+    warnings.push({ code: "NO_DATABASE_CONFIGURED", detail: "No DATABASE_URL/PG* found; production boots honestly DEGRADED (no storage custody, health stays truthful) — configure DATABASE_URL for full capability." });
   }
   for (const warning of warnings) {
     console.warn(JSON.stringify({ level: "warn", ...warning }));

@@ -62,13 +62,14 @@ async function writeEvidence(name, payload) {
   await writeFile(path.join(ROOT, `${name}.json`), `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 }
 
-function freshRunner() {
-  const factory = createRealMediaRunnerFactory({
+async function freshRunner() {
+  // The production factory binds per-Director capacity asynchronously, so it
+  // must be awaited BEFORE the bound runner is derivable.
+  return createRealMediaRunnerFactory({
     bindProductionRunner,
     transports: createNodeMediaTransports(),
     mediaPaths: MEDIA,
-  });
-  return factory({ agentId: AGENT_ID });
+  }).then((factory) => factory({ agentId: AGENT_ID }));
 }
 
 function summarise(result) {
@@ -101,7 +102,7 @@ async function stageProviders() {
     mkdir(MEDIA.visual, { recursive: true }),
     mkdir(MEDIA.thumbnail, { recursive: true }),
   ]);
-  const runner = freshRunner();
+  const runner = await freshRunner();
 
   const audio = await runner({ release: RELEASE, stage: "audio", stageInputs: { title: PUBLIC_TITLE }, productionRunId: RUN_ID });
   const visual = await runner({ release: RELEASE, stage: "visual", stageInputs: { title: PUBLIC_TITLE }, productionRunId: RUN_ID });
@@ -168,7 +169,7 @@ async function stageAssembly() {
   await mkdir(MEDIA.episode, { recursive: true });
   const { narration, visual } = await loadProviders();
   if (!narration || !visual) throw new Error("PROVIDER_STAGE_EVIDENCE_MISSING");
-  const runner = freshRunner();
+  const runner = await freshRunner();
   const recordedArtifacts = [narration, visual];
   const artifactBindings = bindingsFor({ narration, visual });
 
@@ -201,7 +202,7 @@ async function stageReels() {
   await mkdir(MEDIA.episode, { recursive: true });
   const { narration, visual } = await loadProviders();
   if (!narration || !visual) throw new Error("PROVIDER_STAGE_EVIDENCE_MISSING");
-  const runner = freshRunner();
+  const runner = await freshRunner();
   const recordedArtifacts = [narration, visual];
   const artifactBindings = bindingsFor({ narration, visual });
 

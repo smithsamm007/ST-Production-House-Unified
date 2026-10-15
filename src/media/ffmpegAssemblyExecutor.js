@@ -281,6 +281,13 @@ export function buildRenderPlan(plan, resolvedInputs, outputPath) {
   for (const { segment, entry } of segmentEntries) {
     const duration = segmentDurationSeconds(segment, entry);
     if (entry.descriptor.artifactType === "image") {
+      // Real render geometry for still segments (S-M33-02 render economics):
+      // encode the still at 1 fps so a duration-second still is duration
+      // frames, not ffmpeg's default 25×duration duplicated frames. Same
+      // visual content, same measured duration (the QC gate reads seconds
+      // via ffprobe, unchanged), /25 encode cost — a full-length main render
+      // completes inside a bounded CPU budget instead of stalling.
+      args.push("-framerate", "1");
       args.push("-loop", "1");
       if (duration !== null) args.push("-t", String(duration));
     }
