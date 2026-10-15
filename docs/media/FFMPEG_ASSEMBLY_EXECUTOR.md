@@ -40,8 +40,11 @@ validated plan (media_assembly_plan_v1)
 
 - Visual segments (`video_clip`/`still_image`/`title_card`) form the video
   program: per-segment aspect normalization (`scale`+`pad`+`setsar` per the
-  plan's aspectRatio), `concat` across segments; stills enter via `-loop 1`
-  with an optional `-t` duration.
+  plan's aspectRatio), `concat` across segments; stills enter via `-framerate 1
+  -loop 1` with an optional `-t` duration — real time mapping, so a
+  duration-second still is exactly that many frames at 1 fps instead of
+  ffmpeg's default 25×duration duplicated frames (same content and measured
+  duration; bounded CPU budget for full-length renders).
 - Program audio = concatenated audio-kind segments (`voice`/`bgm`/`sfx`)
   `amix`ed with `audioMix` tracks (`volume=<gainDb>dB`, `normalize=0`).
   Embedded audio of visual segments is intentionally not used.

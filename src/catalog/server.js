@@ -242,9 +242,27 @@ export let __demoAdapterForDiagnostics = null;
 export async function configureRuntime() {
   const wantsDemo = process.env.STPH_DEMO_STORAGE === "1";
   const strictPostgres = process.env.STPH_STRICT_POSTGRES === "1";
+  const isProduction = process.env.NODE_ENV === "production";
   const hasDbConfig = Boolean(process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.PGHOST || process.env.POSTGRES_HOST);
 
-  if (wantsDemo || (!hasDbConfig && !strictPostgres)) {
+  // Production custody guard (Rule 3/17): a non-durable adapter must never be
+  // SILENTLY chosen as production custody. In production this fails closed:
+  // with STPH_DEMO_STORAGE=1 the boot is refused outright; without a database
+  // configuration the runtime boots honestly DEGRADED ("unconfigured") —
+  // /api/health stays truthful, no custody is faked, and the never-fake-nondurable
+  // demo fallback does not exist in production at all.
+  if (wantsDemo && isProduction) {
+    console.warn(
+      JSON.stringify({
+        level: "error",
+        code: "PRODUCTION_DEMO_STORAGE_REFUSED",
+        message: "STPH_DEMO_STORAGE=1 with NODE_ENV=production refuses to boot: non-durable custody can never serve production. Configure DATABASE_URL instead.",
+      })
+    );
+    throw new Error("PRODUCTION_DEMO_STORAGE_REFUSED");
+  }
+
+  if (wantsDemo || (!hasDbConfig && !strictPostgres && !isProduction)) {
     // Labeled demo storage: NON-DURABLE, process-local, and always surfaced
     // truthfully by /api/health (storage:"demo"). Production sets DATABASE_URL
     // (or STPH_STRICT_POSTGRES=1 to refuse fallback).
@@ -261,10 +279,12 @@ export async function configureRuntime() {
     postgres = createDemoStorageAdapter();
     __demoAdapterForDiagnostics = postgres;
   } else if (!hasDbConfig) {
-    // Honest degraded boot: strict mode, no DB configured.
+    // Honest degraded boot: strict mode or production, no DB configured.
+    // Same result shape as the other branches so health/status surfaces never
+    // have to special-case the degraded boot.
     storageMode = "unconfigured";
     postgres = null;
-    return { storageMode };
+    return { storageMode, oauthSecretManager: false };
   } else {
     storageMode = "postgres";
     postgres = createPostgresAdapter();

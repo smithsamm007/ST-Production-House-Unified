@@ -45,6 +45,94 @@ Supporting infrastructure shared by all tasks:
 
 ---
 
+## 1a. Production Readiness Checklist (pre-deploy)
+
+Work through this list before pointing a real production deployment at the
+service. Every item is an environment/configuration act — no code forks.
+
+**Storage custody (fail-closed guarantees):**
+
+- [ ] `NODE_ENV=production` is set on the host (this flips on the production
+      guards in `server.js`: Secure cookies, production warnings, strict
+      custody selection).
+- [ ] `DATABASE_URL` points at a **durable, dedicated PostgreSQL** (NOT the
+      dev/disposable cluster). With `NODE_ENV=production` the silent demo
+      fallback is impossible by construction (`PRODUCTION_DEMO_STORAGE_REFUSED`
+      or honest `unconfigured` degraded boot); migrations run once on boot.
+- [ ] Optional hard-refusal: `STPH_STRICT_POSTGRES=1` (still recommended: a
+      production boot with a missing DB then degrades honestly instead of ever
+      touching non-durable data).
+- [ ] **Never** set `STPH_DEMO_STORAGE=1` in production — the runtime refuses
+      that boot outright (Rule 3: non-durable custody can never serve
+      production).
+
+**Runtime capability (all optional, off unless explicitly enabled):**
+
+- [ ] `STPH_ENABLE_WORKERS=1` only if a durable DB is configured (durable
+      leases + bounded concurrency + restart recovery). Without it the API
+      serves-owner-triggered runs only.
+- [ ] `STPH_ENABLE_REAL_MEDIA=1` requires `ffmpeg`/`ffprobe` AND `espeak-ng`
+      installed on the host; without them every real-media stage fails closed
+      with `*_SPAWN_FAILED` (honest — never a simulated media file).
+- [ ] `STPH_SCHEDULER_TRIGGER_ENABLED=1` only after a DB is configured; the
+      tick interval defaults via `STPH_SCHEDULER_TICK_MINUTES`.
+
+**Network / operations:**
+
+- [ ] The host terminates HTTPS and proxies to the app: set
+      `TRUST_PROXY_HOPS` to the true proxy hop count (default `0` — wrong
+      values affect client-IP-based rate limiting only, never auth).
+- [ ] Secret material lives in an external secret manager, NOT env or DB:
+      `STPH_SECRET_MANAGER_ADAPTER=vault-http` +
+      `STPH_SECRET_MANAGER_VAULT_ADDRESS` / `_MOUNT` / `_TOKEN` (or
+      `_TOKEN_FILE`). Durable (`nonDurable:false`) custody is REQUIRED for
+      postgres mode OAuth lifecycle.
+- [ ] Live platform integrations stay OFF (`STPH_*_OAUTH_CLIENT_ID` and
+      per-account connections unset) until the owner explicitly authorizes
+      each (Rule 7/16 — everything remains disabled-by-default).
+
+**Verification before go-live:**
+
+- [ ] `npm test && npm run verify && npm run lint` all pass.
+- [ ] `curl /api/health` reports `storage:"postgres"`,
+      `isDemoStorage:false`; `curl /api/ready` reports `ready` and
+      `database:healthy`.
+- [ ] Worker boots with `PRODUCTION_WORKER_ENABLED` in the log.
+- [ ] A restart re-attaches to the same durable DB (check logs:
+      migrations idempotent, worker re-enabled; no fake state).
+
+### 1a-bis. Freebuff hosting: first deploy + production env ordering
+
+On Freebuff-managed hosting the production env store is unavailable until the
+project has been deployed once (`freebuff-deploy env set` fails with
+"This project has no hosting project yet"). The honest ordering is:
+
+1. **First deploy (owner Deploy button).** The first deploy boots with no
+   `DATABASE_URL`: `server.js` logs `NO_DATABASE_CONFIGURED`, skips
+   migrations/bootstrap, still serves HTTP, and `/api/health` reports
+   not-ready truthfully. This is the documented degraded boot — expected, not
+   a bug.
+2. **Set production env (`freebuff-deploy env set`), then redeploy.**
+   - `NODE_ENV=production` (activates the production guards above).
+   - `DATABASE_URL` — a durable cluster (Neon/managed PG ≥15); the sandbox
+     `.env.local` dev URL is disposable and git-ignored. Migrations apply on
+     boot; `POSTGRES_TEST_URL` and other test/workspace keys must NOT be
+     promoted to production.
+   - `STPH_STRICT_POSTGRES=1` (hard-refuses demo fallback per checklist).
+   - Do NOT set `STPH_DEMO_STORAGE`, `STPH_ENABLE_WORKERS`,
+     `STPH_ENABLE_REAL_MEDIA`, or `STPH_SCHEDULER_TRIGGER_ENABLED` on the
+     managed Node-only image: it has no `ffmpeg`/`ffprobe`/`espeak-ng`, so
+     real-media workers would only churn honest `*_SPAWN_FAILED` waits.
+     Move those to a media-capable worker host later, per §1a.
+3. **Verify:** `freebuff-deploy status` (deployed), then against the deployed
+   URL: `GET /api/health` → `storage:"postgres"`, `isDemoStorage:false`; and
+   `GET /api/ready` → 200 `ready`.
+4. **Owner bootstrap (owner action, §2 step 5):** `POST /api/auth/register`
+   on the deployed URL creates the first owner — done when ready, never
+   pre-provisioned.
+
+---
+
 ## 2. Startup Order
 
 Perform these steps in order. Each step gates the next.
