@@ -351,7 +351,12 @@ the next sequential number.
   restore the database from the most recent backup to a point before the bad
   migration, then re-run `npm run migrate` to apply the clean sequence. This
   requires the regular database backup schedule to be active — verify it
-  during every rotation drill.
+  during every rotation drill. The executable verification of that schedule
+  is the backup/restore drill: `npm run drill:backup-restore` (real logical
+  backup → fresh-schema restore through canonical migrations → fail-closed
+  digest verification; `verdict: PASS` + exit 0 only when every gate holds).
+  Contract, evidence, and honest limitations:
+  `docs/production/BACKUP_RESTORE_DRILL.md`.
 - **Verification after any rollback**: `npm run migrate:status` must show a
   contiguous, fully-applied sequence with no checksum warnings, and
   `GET /api/ready` must be green.
