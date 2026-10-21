@@ -403,7 +403,7 @@ Operator rules of thumb:
 | Command | Purpose |
 |---|---|
 | `npm test` | Full offline unit suite (single-threaded; keep it that way) |
-| `npm run test:integration` | PostgreSQL-backed integration suite (needs a live DB) |
+| `npm run test:integration` | Full PostgreSQL-backed integration matrix — all 19 suites, 77 tests (needs a live DB) |
 | `npm run verify` | Syntax gate on entry points |
 | `npm run lint` | Repository linter (secrets, HTTPS, migration immutability) |
 | `npm run plan:check` | Validates `ROADMAP.md` as a machine-parseable plan |
