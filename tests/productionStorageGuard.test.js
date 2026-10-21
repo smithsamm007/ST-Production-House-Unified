@@ -8,13 +8,15 @@
  *   - non-production behavior is unchanged (demo fallback still available).
  *
  * All environment deltas are explicit, saved, and restored, and the database
- * variables are cleared so the tests cannot drift with the workspace .env.
+ * and secret-manager variables are cleared so the tests cannot drift with
+ * the workspace .env (a workspace-exported STPH_SECRET_MANAGER_ADAPTER is a
+ * legitimate operator configuration — the guard must isolate it).
  */
 
 import test from "node:test";
 import assert from "node:assert/strict";
 
-const DB_ENV_KEYS = ["DATABASE_URL", "POSTGRES_URL", "PGHOST", "POSTGRES_HOST", "STPH_STRICT_POSTGRES", "STPH_DEMO_STORAGE", "NODE_ENV"];
+const DB_ENV_KEYS = ["DATABASE_URL", "POSTGRES_URL", "PGHOST", "POSTGRES_HOST", "STPH_STRICT_POSTGRES", "STPH_DEMO_STORAGE", "NODE_ENV", "STPH_SECRET_MANAGER_ADAPTER", "STPH_SECRET_MANAGER_ADAPTER_MODULE", "STPH_SECRET_MANAGER_ENV_SEED"];
 const savedEnv = new Map(DB_ENV_KEYS.map((key) => [key, process.env[key]]));
 
 function clearProductionEnv() {
