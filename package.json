@@ -15,7 +15,7 @@
     "ci": "npm run lint && npm run verify",
     "test": "node --test --test-concurrency=1",
     "plan:check": "node automation/validate-plan.mjs",
-    "test:integration": "node --test --test-concurrency=1 tests/postgresIntegration.integration.js tests/postgresAuthIntegration.integration.js tests/credentialBrokerPostgres.integration.js tests/analyticsPostgres.integration.js tests/youtubeOAuthPostgres.integration.js tests/workerLeaseContention.integration.js tests/backupRestoreDrill.integration.js",
+    "test:integration": "node --test --test-concurrency=1 tests/postgresIntegration.integration.js tests/postgresAuthIntegration.integration.js tests/postgresCheckpointAdapter.integration.js tests/credentialBrokerPostgres.integration.js tests/analyticsPostgres.integration.js tests/youtubeOAuthPostgres.integration.js tests/workerLeaseContention.integration.js tests/backupRestoreDrill.integration.js tests/durableRetryPostgres.integration.js tests/dispatchAdmissionLifecycle.integration.js tests/dispatchExecutionPermit.integration.js tests/providerDispatchAdmission.integration.js tests/providerQuotaPostgres.integration.js tests/recoveryIntegration.integration.js tests/resiliencePostgres.integration.js tests/jarvisDeterministicWorkflow.integration.js tests/jarvisDurableAudioDispatchCheckpoint.integration.js tests/jarvisDurableScriptDispatchCheckpoint.integration.js tests/jarvisDurableVisualDispatchCheckpoint.integration.js",
     "media:smoke": "node scripts/real_media_smoke.mjs --stage=all",
     "drill:backup-restore": "node scripts/backup_restore_drill.mjs",
     "release:certify": "node scripts/release_certify.mjs",
