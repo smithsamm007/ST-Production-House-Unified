@@ -361,6 +361,24 @@
         "Official analytics API credentials configured by the owner; ingestion verified against real platform responses"
       ],
       "dependsOn": []
+    },
+    {
+      "sliceId": "S-M40-01",
+      "module": 40,
+      "lane": "lane-1",
+      "ownerGated": false,
+      "title": "Offline motion adapter contract and FFmpeg minterpolate fallback",
+      "brief": "Owner-approved offline-only motion stage. Add a deterministic motion adapter contract and a local FFmpeg minterpolate worker boundary behind existing media transport. No remote provider API, provider calls, model downloads, bundled binaries/weights, deployment, or publishing. The local path requires explicit FFmpeg availability and real input/output artifacts; missing prerequisites fail closed. Verification is UNVERIFIED unless a real matching SHA-256/FFprobe inspection is supplied. Keep live ViMax/provider work owner-gated and out of this slice.",
+      "acceptance": [
+        "Unique slice ID; existing S-M21-01 AI News slice and lifecycle completion list are unchanged",
+        "Pure motion adapter contract has deterministic identity, bounded fields, stable fail-closed errors, safe allowlist serialization, and no secret values",
+        "Local FFmpeg minterpolate worker uses nodeMediaTransport with argument-array-only process invocation and validated parameters/paths",
+        "Missing FFmpeg, invalid input, process failure, hash mismatch, or failed QC yields truthful blocked/unverified result, never success",
+        "No remote provider APIs/calls, paid services, model downloads, bundled binaries or weights; no new dependencies without justification",
+        "Offline tests cover determinism, validation, safe arguments, missing binary, failure states, matching-hash inspection, and UNVERIFIED default",
+        "Focused documentation updated; npm test, npm run verify, npm run lint and plan validation pass with actual CI evidence"
+      ],
+      "dependsOn": []
     }
   ]
 }
