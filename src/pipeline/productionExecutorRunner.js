@@ -43,6 +43,7 @@ import {
 } from "../media/visualAdapter.js";
 import { executeVisualGeneration, visualProviderOutputExtension } from "../media/visualExecutor.js";
 import { executeAssemblyPlan, resolvePlanInputs, buildRenderPlan } from "../media/ffmpegAssemblyExecutor.js";
+import { runLocalMotionStage } from "./motionStage.js";
 import { buildCanonicalReelPackagePlan, buildReelAssemblyPlans } from "./reelsStage.js";
 import {
   createAssemblyPlan,
@@ -117,9 +118,23 @@ function requireSlot(registry, providerId) {
  * declares the 30–50 minute QC window (enforced post-render by the #175
  * duration gate against REAL ffprobe measurement).
  *
+ * Issue #241: when the release recorded a verified MOTION artifact, the
+ * visual program is that rendered clip (`video_clip`) instead of the still
+ * image. The clip fills the planned episode duration — the assembly executor
+ * loops a real clip that is shorter than its planned slot, so the main-video
+ * duration QC still measures the Director's own target. Without a motion
+ * artifact the plan is byte-identical to the pre-motion still-image plan.
+ *
  * Pure: identical release state yields an identical plan (idempotent resume).
  */
-export function buildLongformAssemblyPlan({ agentId, productionRunId, narrationArtifact, visualArtifact, durationSeconds }) {
+export function buildLongformAssemblyPlan({
+  agentId,
+  productionRunId,
+  narrationArtifact,
+  visualArtifact,
+  motionArtifact = null,
+  durationSeconds,
+}) {
   if (typeof agentId !== "string" || agentId.length === 0) throw runnerError("RUNNER_REQUEST_INVALID");
   if (typeof productionRunId !== "string" || productionRunId.length === 0) throw runnerError("RUNNER_REQUEST_INVALID");
   if (!isPlainObject(narrationArtifact) || typeof narrationArtifact.sha256 !== "string") throw runnerError("RUNNER_REQUEST_INVALID");
@@ -137,18 +152,33 @@ export function buildLongformAssemblyPlan({ agentId, productionRunId, narrationA
     throw runnerError("RUNNER_REQUEST_INVALID");
   }
 
+  let visualSegment;
+  if (motionArtifact !== null && motionArtifact !== undefined) {
+    if (!isPlainObject(motionArtifact) || typeof motionArtifact.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(motionArtifact.sha256)) {
+      throw runnerError("RUNNER_REQUEST_INVALID");
+    }
+    visualSegment = {
+      artifactRef: `sha256:${motionArtifact.sha256}`,
+      kind: "video_clip",
+      durationSeconds: plannedDuration,
+      transitionIn: "cut",
+    };
+  } else {
+    visualSegment = {
+      artifactRef: `sha256:${visualArtifact.sha256}`,
+      kind: "still_image",
+      durationSeconds: plannedDuration,
+      transitionIn: "cut",
+    };
+  }
+
   const plan = createAssemblyPlan({
     agentId,
     productionRunId,
     outputTarget: "main_longform",
     aspectRatio: "16:9",
     segments: [
-      {
-        artifactRef: `sha256:${visualArtifact.sha256}`,
-        kind: "still_image",
-        durationSeconds: plannedDuration,
-        transitionIn: "cut",
-      },
+      visualSegment,
       {
         artifactRef: `sha256:${narrationArtifact.sha256}`,
         kind: "voice",
@@ -168,7 +198,8 @@ export function buildLongformAssemblyPlan({ agentId, productionRunId, narrationA
  *     tts: { profile, registry },    — voice profile + declared capabilities
  *     visual: { profile, registry }, — style profile + declared capabilities
  *     spawnImpl?, readFileImpl?,     — injectable transports (tests)
- *     paths?: { audio, visual, episode, thumbnail, runPrefix },
+ *     writeFileImpl?,                — bounded operational-file writer (motion)
+ *     paths?: { audio, visual, motion, episode, thumbnail, runPrefix },
  *     now?, timeoutMs?, probeTimeoutMs?,
  *     qcChecks?,                     — optional automated policy checks
  *   }
@@ -186,6 +217,7 @@ export function bindProductionRunner(binding = {}) {
   const paths = deepFreeze({
     audio: binding.paths?.audio ?? "/stph/media/audio",
     visual: binding.paths?.visual ?? "/stph/media/visuals",
+    motion: binding.paths?.motion ?? "/stph/media/motion",
     episode: binding.paths?.episode ?? "/stph/media/episodes",
     thumbnail: binding.paths?.thumbnail ?? "/stph/media/thumbnails",
     runPrefix: binding.paths?.runPrefix ?? "episode",
@@ -313,11 +345,36 @@ export function bindProductionRunner(binding = {}) {
       });
     }
 
+    // Local motion stage (Issue #241): animate the release's OWN recorded
+    // visual frame with the local FFmpeg minterpolate worker. The stage only
+    // runs when the pipeline was started with motion enabled, so a missing
+    // implementation here is never a silent no-op: prerequisites fail closed
+    // with stable codes and the stage fails honestly.
+    if (stage === "motion") {
+      const visual = (request.recordedArtifacts ?? []).find((a) => a.stage === "visual");
+      return runLocalMotionStage({
+        agentId,
+        visualArtifact: visual ?? null,
+        outputPath: `${paths.motion}/${productionRunId}.mp4`,
+        frameListPath: `${paths.motion}/${productionRunId}.frames.txt`,
+        spawnImpl: binding.spawnImpl,
+        readFileImpl: binding.readFileImpl,
+        writeFileImpl: binding.writeFileImpl,
+        productionRunId,
+        now: binding.now,
+        timeoutMs: binding.timeoutMs,
+        probeTimeoutMs: binding.probeTimeoutMs,
+      });
+    }
+
     if (stage === "assembly" || stage === "reels") {
       // Assembly/reels consume the release's OWN verified artifacts (bridge-
-      // recorded in the audio/visual stages of THIS pipeline run).
+      // recorded in the audio/visual/motion stages of THIS pipeline run).
       const narration = (request.recordedArtifacts ?? []).find((a) => a.stage === "audio");
       const visual = (request.recordedArtifacts ?? []).find((a) => a.stage === "visual");
+      // The main longform render consumes the MOTION clip when the stage ran;
+      // reels keep their existing still-image short-form plans.
+      const motion = (request.recordedArtifacts ?? []).find((a) => a.stage === "motion");
       if (!narration?.sha256 || !visual?.sha256 || !narration.descriptor || !visual.descriptor) {
         return waitingResult("PROVIDER_UNAVAILABLE");
       }
@@ -351,6 +408,7 @@ export function bindProductionRunner(binding = {}) {
             productionRunId,
             narrationArtifact: narration,
             visualArtifact: visual,
+            motionArtifact: motion ?? null,
             durationSeconds: configuredDurationSeconds,
           });
           outputPath = `${paths.episode}/${productionRunId}.mp4`;

@@ -11,6 +11,7 @@ import { createArtifactDescriptor, verifyArtifactDescriptor } from "../src/media
 import { createVoiceProfile } from "../src/media/ttsAdapter.js";
 import { createVisualStyleProfile, createVisualGenerationRequest } from "../src/media/visualAdapter.js";
 import { createAssemblyPlan } from "../src/media/assemblyPlan.js";
+import { runLocalMotionStage } from "../src/pipeline/motionStage.js";
 
 const NOW = () => new Date("2026-09-25T10:00:00.000Z");
 
@@ -20,6 +21,7 @@ const NOW = () => new Date("2026-09-25T10:00:00.000Z");
 
 const NARRATION_BYTES = Buffer.from("fake-mp3-pipeline-bytes");
 const FRAME_BYTES = Buffer.from("fake-png-pipeline-bytes");
+const MOTION_BYTES = Buffer.from("fake-motion-clip-bytes");
 const EPISODE_BYTES = Buffer.from("fake-mp4-pipeline-bytes");
 const REEL_BYTES = {
   content_reel_1: Buffer.from("fake-reel-c1-bytes"),
@@ -60,6 +62,7 @@ function makeFiles() {
   const files = new Map();
   files.set("/run/narration.mp3", NARRATION_BYTES);
   files.set("/run/frame.png", FRAME_BYTES);
+  files.set("/run/motion.mp4", MOTION_BYTES);
   files.set("/run/episode.mp4", EPISODE_BYTES);
   files.set("/run/thumbnail.png", FRAME_BYTES);
   return async (path) => {
@@ -152,11 +155,32 @@ function makeRunner({ overrides = {} } = {}) {
       });
     }
 
+    if (stage === "motion") {
+      // Mirrors the production runner's motion branch: the worker animates the
+      // release's OWN recorded visual artifact, through the injected transports.
+      const visual = (requestRecorded ?? []).find((a) => a.stage === "visual");
+      return runLocalMotionStage({
+        agentId,
+        visualArtifact: visual ?? null,
+        outputPath: "/run/motion.mp4",
+        frameListPath: "/run/motion.frames.txt",
+        spawnImpl: makeSpawn(),
+        readFileImpl: makeFiles(),
+        writeFileImpl: async () => {},
+        productionRunId,
+        now: NOW,
+      });
+    }
+
     if (stage === "assembly") {
       const { executeAssemblyPlan } = await import("../src/media/ffmpegAssemblyExecutor.js");
       const audioBinding = artifactBindings[`sha256:${sha256(NARRATION_BYTES)}`];
-      const visualBinding = artifactBindings[`sha256:${sha256(FRAME_BYTES)}`];
-      if (!audioBinding || !visualBinding) {
+      // Issue #241: assembly consumes the MOTION clip when the stage ran; the
+      // still-image program is the pre-motion behaviour.
+      const motionArtifact = (requestRecorded ?? []).find((a) => a.stage === "motion");
+      const programRef = motionArtifact ? `sha256:${motionArtifact.sha256}` : `sha256:${sha256(FRAME_BYTES)}`;
+      const programBinding = artifactBindings[programRef];
+      if (!audioBinding || !programBinding) {
         return { success: false, executed: false, descriptor: null, inspection: null, qc: null, failureCode: "EXEC_REF_UNBOUND" };
       }
       const plan = createAssemblyPlan({
@@ -165,10 +189,11 @@ function makeRunner({ overrides = {} } = {}) {
         outputTarget: "main_longform",
         aspectRatio: "16:9",
         segments: [
-          { artifactRef: `sha256:${sha256(FRAME_BYTES)}`, kind: "still_image", durationSeconds: 1890, transitionIn: "cut" },
+          { artifactRef: programRef, kind: motionArtifact ? "video_clip" : "still_image", durationSeconds: 1890, transitionIn: "cut" },
           { artifactRef: `sha256:${sha256(NARRATION_BYTES)}`, kind: "voice" },
         ],
       });
+      if (overrides.onAssemblyPlan) overrides.onAssemblyPlan(plan);
       return executeAssemblyPlan(plan, {
         artifactBindings,
         outputPath: "/run/episode.mp4",
@@ -539,4 +564,53 @@ test("createStageExecutionContext binds only the release's own identity", () => 
   assert.equal(context.stage, "audio");
   assert.throws(() => createStageExecutionContext({ release: { id: "r" }, stage: "audio" }), /EXECUTOR_STAGE_MISMATCH/);
   assert.throws(() => createStageExecutionContext({ release: { id: "r", agentId: "agent-01" }, stage: "hologram" }), /UNKNOWN_PIPELINE_STAGE/);
+});
+
+// ---------------------------------------------------------------------------
+// Local motion stage gate (Issue #241)
+// ---------------------------------------------------------------------------
+
+test("motion gate OFF: no motion stage runs and assembly keeps the still program", async () => {
+  const { production, ownerId, release } = await buildHarness();
+  let plan = null;
+  const result = await runEpisodePipeline({
+    ownerId, releaseId: release.id, release, production,
+    jobs: { updateStatus: async () => {} },
+    executorRunner: makeRunner({ overrides: { onAssemblyPlan: (value) => { plan = value; } } }),
+  });
+
+  assert.equal(result.status, "review");
+  const artifacts = await production.listArtifactsForRelease(ownerId, release.id);
+  assert.equal(artifacts.find((a) => a.stage === "motion"), undefined, "opt-in stage never runs by default");
+  assert.equal(plan.segments[0].kind, "still_image", "the pre-motion assembly program is unchanged");
+  const events = await production.listPipelineEvents(ownerId, release.id);
+  assert.equal(events.some((e) => e.stage === "motion"), false);
+});
+
+test("motion gate ON: the verified local motion artifact is recorded and consumed by assembly", async () => {
+  const { production, ownerId, release } = await buildHarness();
+  let plan = null;
+  const result = await runEpisodePipeline({
+    ownerId, releaseId: release.id, release, production,
+    jobs: { updateStatus: async () => {} },
+    executorRunner: makeRunner({ overrides: { onAssemblyPlan: (value) => { plan = value; } } }),
+    motionEnabled: true,
+  });
+
+  assert.equal(result.status, "review");
+  const artifacts = await production.listArtifactsForRelease(ownerId, release.id);
+  const motion = artifacts.find((a) => a.stage === "motion");
+  assert.ok(motion, "motion artifact recorded");
+  assert.equal(motion.sha256, sha256(MOTION_BYTES), "hash anchored to the REAL interpolated bytes");
+  assert.equal(motion.ffprobeVerified, true);
+  assert.equal(motion.generationMode, "local_interpolation", "local work is never labelled a provider call");
+  assert.equal(motion.kind, "video");
+
+  // The motion stage ran between visual and assembly, and assembly consumed it.
+  const events = await production.listPipelineEvents(ownerId, release.id);
+  const order = events.filter((e) => e.status === "started").map((e) => e.stage);
+  assert.ok(order.indexOf("motion") > order.indexOf("visual"));
+  assert.ok(order.indexOf("motion") < order.indexOf("assembly"));
+  assert.equal(plan.segments[0].kind, "video_clip");
+  assert.equal(plan.segments[0].artifactRef, `sha256:${motion.sha256}`);
 });

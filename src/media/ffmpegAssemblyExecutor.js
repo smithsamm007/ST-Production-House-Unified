@@ -239,6 +239,10 @@ function segmentDurationSeconds(segment, entry) {
  *     tracks (volume per gainDb, normalize=0). Embedded audio of visual
  *     segments is intentionally not used.
  *   - Aspect normalization: scale + pad + setsar per segment.
+ *   - Duration fill: a still is held (`-loop 1 -t duration`); a real
+ *     `video_clip` shorter than its planned slot is looped to fill it
+ *     (`-stream_loop -1 -t duration`, Issue #241) instead of being silently
+ *     truncated. A clip with no planned duration keeps its own length.
  *   - Transitions: cut → none; fade/dissolve → real in/out fades;
  *     wipe → rendered as a fade WITH a labeled degradation (Rule 3).
  *   - Ducking: sidechaincompress against the first voice source when one
@@ -290,6 +294,12 @@ export function buildRenderPlan(plan, resolvedInputs, outputPath) {
       args.push("-framerate", "1");
       args.push("-loop", "1");
       if (duration !== null) args.push("-t", String(duration));
+    } else if (segment.kind === "video_clip" && duration !== null) {
+      // The planned slot is longer than the real clip (e.g. a local motion
+      // interpolation of the recorded frame): loop the real bytes rather than
+      // claiming a longer render than was produced.
+      args.push("-stream_loop", "-1");
+      args.push("-t", String(duration));
     }
     args.push("-i", entry.path);
     if (VISUAL_KINDS.has(segment.kind)) {

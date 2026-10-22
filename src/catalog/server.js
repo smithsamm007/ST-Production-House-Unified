@@ -49,6 +49,7 @@ import { createVisualStyleProfile, declareVisualProviderCapabilities } from "../
 import { ProductionRepository, isKnownPlatform, isValidChannelSlug } from "../catalog/productionRepository.js";
 import { DirectorWorkspaceRepository } from "../catalog/directorWorkspaceRepository.js";
 import { evaluatePublishGate, runEpisodePipeline } from "../pipeline/episodePipeline.js";
+import { localMotionEnabled } from "../pipeline/motionStage.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -186,6 +187,9 @@ export async function createRealMediaRunnerFactory({ bindProductionRunner, trans
     agentId,
     spawnImpl: transports.spawnImpl,
     readFileImpl: transports.readFileImpl,
+    // Bounded operational-file writer (the motion stage's concat frame list,
+    // Issue #241). Media outputs are still rendered by the executors.
+    writeFileImpl: transports.writeFileImpl,
     paths: mediaPaths,
       tts: {
       profile: createVoiceProfile({
@@ -373,6 +377,7 @@ export async function finalizeRuntimeStartup() {
         const mediaPaths = {
           audio: path.join(mediaRoot, "audio"),
           visual: path.join(mediaRoot, "visuals"),
+          motion: path.join(mediaRoot, "motion"),
           episode: path.join(mediaRoot, "episodes"),
           thumbnail: path.join(mediaRoot, "thumbnails"),
           runPrefix: "episode",
@@ -382,9 +387,19 @@ export async function finalizeRuntimeStartup() {
         const { mkdir } = await import("node:fs/promises");
         await mkdir(mediaPaths.audio, { recursive: true });
         await mkdir(mediaPaths.visual, { recursive: true });
+        await mkdir(mediaPaths.motion, { recursive: true });
         await mkdir(mediaPaths.episode, { recursive: true });
         await mkdir(mediaPaths.thumbnail, { recursive: true });
         executorRunnerFactory = createRealMediaRunnerFactory({ bindProductionRunner, transports, mediaPaths });
+      }
+      if (localMotionEnabled() && process.env.STPH_ENABLE_REAL_MEDIA !== "1") {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            code: "MOTION_STAGE_IGNORED_WITHOUT_REAL_MEDIA",
+            message: "STPH_ENABLE_LOCAL_MOTION=1 has no effect without STPH_ENABLE_REAL_MEDIA=1: the deterministic pipeline has no motion stage.",
+          })
+        );
       }
       productionWorker = new ProductionWorkerLoop({
         jobsRepository: new JobRepository(),
@@ -396,6 +411,11 @@ export async function finalizeRuntimeStartup() {
         // job's Director configuration so the configured episode duration
         // reaches the real render target and QC window.
         directorScheduleProvider: ({ ownerId, agentId }) => readDirectorSchedule(ownerId, agentId),
+        // Local motion stage (Issue #241): opt-in only. The stage is part of
+        // the REAL executor pipeline, so the flag is only meaningful with
+        // STPH_ENABLE_REAL_MEDIA=1; the combination is reported honestly
+        // below instead of silently doing nothing.
+        motionEnabled: localMotionEnabled(),
       });
       productionWorker.start();
     } catch (error) {

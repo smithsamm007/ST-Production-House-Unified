@@ -112,6 +112,39 @@ test("missing binary: an ENOENT spawn record yields MOTION_SPAWN_FAILED with med
   assert.equal(stage.spawn.exitCode, null);
 });
 
+test("stale output + missing binary: a pre-existing file is never promoted as this run's render", async () => {
+  const dir = await tmpDir();
+  const outputPath = path.join(dir, "motion.mp4");
+  // ffmpeg never starts (ENOENT), but ffprobe succeeds on a STALE file left by
+  // a previous attempt at the same deterministic output path (Issue #241).
+  const spawnImpl = async ({ command }) => {
+    if (command === "ffprobe") {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ format: { format_name: "mp4", size: "10" }, streams: [{ codec_type: "video" }] }),
+        stderr: "",
+        timedOut: false,
+      };
+    }
+    return { exitCode: null, stdout: "", stderr: "", timedOut: false, spawnErrorCode: "ENOENT" };
+  };
+  const stage = await runMotionStage(contractRequest(), {
+    frameListPath: path.join(dir, "list.txt"),
+    outputPath,
+    spawnImpl,
+    readFileImpl: async () => Buffer.from("stale-previous-attempt-bytes"),
+  });
+
+  assert.equal(stage.inspection.success, true, "the stale bytes ARE inspectable — that is exactly the hazard");
+  assert.equal(stage.success, false);
+  assert.equal(stage.mediaStatus, "unverified");
+  assert.equal(stage.failureCode, "MOTION_SPAWN_FAILED");
+  assert.equal(stage.generationMode, "not_evidenced");
+  assert.equal(stage.descriptor.verification.state, "UNVERIFIED");
+  assert.equal(stage.descriptor.verification.reasonCode, "RENDER_NOT_EXECUTED");
+  assert.equal(stage.outcome.mediaStatus, "unverified");
+});
+
 test("non-zero exit: honest MOTION_CALL_FAILED with a bounded stderr tail", async () => {
   const dir = await tmpDir();
   const fake = fakeSpawn([

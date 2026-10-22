@@ -87,6 +87,9 @@ export async function resolveEpisodeTargetDuration({
 const STAGE_KINDS = Object.freeze({
   story: { kind: "metadata", label: "story_plan" },
   visual: { kind: "image", label: "visual_storyboard" },
+  // Local motion stage (Issue #241): the S-M40-01 minterpolate worker's real
+  // rendered clip, recorded through the same #182 bridge as other media.
+  motion: { kind: "video", label: "interpolated_motion" },
   audio: { kind: "audio", label: "narration_track" },
   assembly: { kind: "video", label: "assembled_episode" },
   // Packaging-stage artifact kinds (Issue #185/#186): the thumbnail is real
@@ -193,6 +196,10 @@ export function renderStageContent(stage, stageInputsEl = {}) {
 /**
  * Runs the full pipeline for one release using the injected repositories.
  * `production` is a ProductionRepository; `jobs` is the JobRepository.
+ *
+ * The deterministic path keeps its four stages. The real-executor path runs
+ * `audio → visual → assembly` unless `motionEnabled === true`, in which case
+ * the local motion stage runs between visual and assembly (Issue #241).
  */
 export async function runEpisodePipeline({
   ownerId,
@@ -202,6 +209,11 @@ export async function runEpisodePipeline({
   evidenceLedger,
   executorRunner = null,
   directorSchedule = null,
+  // Feature gate for the local motion stage (Issue #241). Default OFF: the
+  // deterministic path and the executor path keep their pre-existing stage
+  // order. Only an explicit `true` (STPH_ENABLE_LOCAL_MOTION=1 in the worker)
+  // inserts `motion` between `visual` and `assembly`.
+  motionEnabled = false,
   log = () => {},
 }) {
   const release = await production.getRelease(ownerId, releaseId);
@@ -244,6 +256,7 @@ export async function runEpisodePipeline({
       executorRunner,
       stageInputs,
       targetDuration,
+      motionEnabled,
       log,
     });
   }
@@ -500,7 +513,15 @@ export function evaluateExecutorArtifact({ stage, release, executorResult }) {
     }
   }
 
-  const generationMode = verified ? "provider_generated" : "not_evidenced";
+  // Provenance honesty (Rule 3): a verified result is normally provider
+  // output, but the local motion stage performs NO provider call. Its worker
+  // reports `local_interpolation`, and that exact, verified value is kept so
+  // the artifact is never mislabelled as a remote generation. Any other
+  // executor claim is not trusted here: verified non-remote results are
+  // recorded as `provider_generated`, unverified ones as `not_evidenced`.
+  const generationMode = verified
+    ? (projected.generationMode === "local_interpolation" ? "local_interpolation" : "provider_generated")
+    : "not_evidenced";
   return Object.freeze({
     ok: true,
     waiting: false,
@@ -600,6 +621,7 @@ export async function runEpisodePipelineWithExecutors({
   executorRunner,
   stageInputs,
   targetDuration = null,
+  motionEnabled = false,
   log = () => {},
 }) {
   const configuredTargetSeconds = targetDuration?.seconds ?? null;
@@ -611,7 +633,11 @@ export async function runEpisodePipelineWithExecutors({
   // Executor stages in dependency order. `assembly` consumes the release's
   // OWN verified artifacts via sha256 descriptor bindings — the runner
   // resolves those bindings from `recorded` (Director-scoped by release).
-  const executorStages = ["audio", "visual", "assembly"];
+  // `motion` (Issue #241) is inserted only when the deployment opted in; it
+  // animates the recorded visual frame and assembly then consumes its clip.
+  const executorStages = motionEnabled === true
+    ? ["audio", "visual", "motion", "assembly"]
+    : ["audio", "visual", "assembly"];
   const recordedByStage = new Map();
 
   /**
