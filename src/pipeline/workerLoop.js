@@ -19,6 +19,9 @@
  *   use the configured episode duration. A provider error is logged with a
  *   stable code and the job continues with the job-payload/default duration —
  *   never a fabricated configuration.
+ * - Local motion (Issue #241): `motionEnabled` (STPH_ENABLE_LOCAL_MOTION=1 in
+ *   production) inserts the local FFmpeg motion stage between visual and
+ *   assembly. Default OFF keeps the pre-existing stage order exactly.
  */
 
 import { runEpisodePipeline } from "./episodePipeline.js";
@@ -35,6 +38,7 @@ export class ProductionWorkerLoop {
     enabledAgentsProvider = null,
     executorRunnerFactory = null,
     directorScheduleProvider = null,
+    motionEnabled = false,
     log = () => {},
     pollMs = DEFAULT_POLL_MS,
     leaseSeconds = DEFAULT_LEASE_SECONDS,
@@ -55,6 +59,10 @@ export class ProductionWorkerLoop {
       throw new Error("WORKER_DIRECTOR_SCHEDULE_PROVIDER_INVALID");
     }
     this.directorScheduleProvider = directorScheduleProvider;
+    if (typeof motionEnabled !== "boolean") {
+      throw new Error("WORKER_MOTION_FLAG_INVALID");
+    }
+    this.motionEnabled = motionEnabled;
     this.log = log;
     this.pollMs = Math.max(500, pollMs);
     this.leaseSeconds = Math.min(900, Math.max(15, leaseSeconds));
@@ -165,6 +173,7 @@ export class ProductionWorkerLoop {
         evidenceLedger: this.evidenceLedger,
         executorRunner,
         directorSchedule,
+        motionEnabled: this.motionEnabled,
         log: this.log,
       });
       if (result?.waited === true) {

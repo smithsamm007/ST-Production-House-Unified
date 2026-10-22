@@ -34,6 +34,9 @@
  *     unreadable path throws so the inspection layer keeps the descriptor
  *     UNVERIFIED. Files above `maxFileBytes` are rejected instead of being
  *     hashed partially.
+ *   - `writeFileImpl` writes ONE bounded text/binary operational input (the
+ *     motion stage's concat frame list, Issue #241). It is not a media
+ *     output path: executors render their own bytes with ffmpeg.
  *   - Injectable (`spawnImpl`, `readFileImpl`, `statImpl`) so tests prove the
  *     contract offline, and no secrets are read (Rule 17).
  *
@@ -48,6 +51,7 @@ import { spawn as nodeSpawn } from "node:child_process";
 import {
   readFile as nodeReadFile,
   stat as nodeStat,
+  writeFile as nodeWriteFile,
 } from "node:fs/promises";
 
 export const NODE_MEDIA_TRANSPORT_VERSION = "node_media_transport_v1";
@@ -56,6 +60,7 @@ export const NODE_MEDIA_TRANSPORT_VERSION = "node_media_transport_v1";
 export const NODE_MEDIA_TRANSPORT_ERROR_CODES = Object.freeze([
   "TRANSPORT_COMMAND_INVALID",
   "TRANSPORT_ARGS_INVALID",
+  "TRANSPORT_CONTENT_INVALID",
   "TRANSPORT_STDIN_INVALID",
   "TRANSPORT_TIMEOUT_INVALID",
   "TRANSPORT_PATH_INVALID",
@@ -314,7 +319,38 @@ export function createReadFileImpl({
 }
 
 /**
- * The one composition production wiring binds: both executor transports.
+ * Build the bounded file writer used for ONE operational input (the motion
+ * stage's concat frame list, Issue #241).
+ *
+ *   writeFileImpl: async (path, content) => void
+ *
+ * Path and content are shape-validated before any write; content above
+ * `maxFileBytes` is refused rather than truncated. Writes are injectable so
+ * tests prove the motion binding offline.
+ */
+export function createWriteFileImpl({
+  writeFileImpl = nodeWriteFile,
+  maxFileBytes = DEFAULT_FILE_LIMIT_BYTES,
+} = {}) {
+  if (typeof writeFileImpl !== "function") throw transportError("TRANSPORT_PATH_INVALID");
+  if (!Number.isFinite(maxFileBytes) || maxFileBytes <= 0) throw transportError("TRANSPORT_FILE_LIMIT_EXCEEDED");
+
+  return async function writeOperationalFile(path, content) {
+    const target = requireValidPath(path);
+    if (typeof content !== "string" && !Buffer.isBuffer(content) && !(content instanceof Uint8Array)) {
+      throw transportError("TRANSPORT_CONTENT_INVALID");
+    }
+    const buffer = typeof content === "string" ? Buffer.from(content, "utf8") : Buffer.from(content);
+    if (buffer.length === 0 || buffer.length > maxFileBytes) {
+      throw transportError("TRANSPORT_CONTENT_INVALID");
+    }
+    await writeFileImpl(target, buffer);
+  };
+}
+
+/**
+ * The one composition production wiring binds: the executor transports plus
+ * the bounded operational-file writer.
  * Frozen so a worker cannot mutate another stage's transport.
  */
 export function createNodeMediaTransports(options = {}) {
@@ -322,5 +358,6 @@ export function createNodeMediaTransports(options = {}) {
     transportVersion: NODE_MEDIA_TRANSPORT_VERSION,
     spawnImpl: createSpawnImpl(options),
     readFileImpl: createReadFileImpl(options),
+    writeFileImpl: createWriteFileImpl(options),
   });
 }

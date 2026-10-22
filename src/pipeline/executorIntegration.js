@@ -38,7 +38,7 @@ import {
 export const EXECUTOR_INTEGRATION_VERSION = "executor_integration_v1";
 
 /** Stages this module can drive through real executors. */
-export const EXECUTOR_STAGES = Object.freeze(["audio", "visual", "assembly"]);
+export const EXECUTOR_STAGES = Object.freeze(["audio", "visual", "motion", "assembly"]);
 
 /** Stable executor failure codes that mean WAIT, not fail (bridge-owned). */
 export { EXECUTOR_WAIT_CODES };

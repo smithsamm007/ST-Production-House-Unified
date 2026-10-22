@@ -180,8 +180,10 @@ export async function runMotionInterpolation(request, { spawnImpl, timeoutMs = D
  *       generationMode, success, failureCode, interpolationMode }
  *
  * On ANY failure the record is TRUTHFULLY unsuccessful: real observation
- * codes only, no fabricated media, no invented receipts. `now` is injectable
- * and NEVER part of identity (descriptor identity is the content hash).
+ * codes only, no fabricated media, no invented receipts. A failed spawn is
+ * never rescued by a file found at the output path — that file is stale, not
+ * this invocation's render. `now` is injectable and NEVER part of identity
+ * (descriptor identity is the content hash).
  */
 export async function runMotionStage(contractRequest, {
   frameListPath,
@@ -228,10 +230,16 @@ export async function runMotionStage(contractRequest, {
 
   // 3. Descriptor + truthful outcome (S-M30-01 + S-M40-01). The descriptor
   //    anchors on the REAL measured hash — no claimed dimensions, durations,
-  //    or interpolation quality are asserted. Exit 0 alone is not evidence.
+  //    or interpolation quality are asserted. Exit 0 alone is not evidence,
+  //    and neither is an inspectable file at the output path: when the render
+  //    did not actually run, a file already sitting at that path is STALE and
+  //    must never be promoted as this run's motion (Issue #241 fix — the
+  //    pipeline's output paths are deterministic per release, so a retry
+  //    could otherwise verify a previous attempt's bytes).
+  const renderExecuted = spawnFailure.code === null && execution !== null && execution.exitCode === 0;
   let descriptor = null;
   let outcome = null;
-  if (inspection.success === true) {
+  if (inspection.success === true && renderExecuted) {
     descriptor = createArtifactDescriptor({
       artifactType: "video",
       mimeType: "video/mp4",
@@ -267,12 +275,12 @@ export async function runMotionStage(contractRequest, {
         state: "UNVERIFIED",
         inspectedBy: null,
         inspectedAt: null,
-        reasonCode: inspection.reasonCode ?? "NO_INSPECTION_RESULT",
+        reasonCode: inspection.reasonCode ?? (inspection.success === true ? "RENDER_NOT_EXECUTED" : "NO_INSPECTION_RESULT"),
       }),
     };
   }
 
-  const verifiedDescriptor = inspection.success === true
+  const verifiedDescriptor = inspection.success === true && renderExecuted
     ? verifyArtifactDescriptor(descriptor, inspection)
     : descriptor;
 
@@ -289,7 +297,7 @@ export async function runMotionStage(contractRequest, {
   }
 
   const verificationState = verifiedDescriptor.verification?.state ?? "UNVERIFIED";
-  const mediaStatus = inspection.success === true && verificationState === "VERIFIED"
+  const mediaStatus = renderExecuted && inspection.success === true && verificationState === "VERIFIED"
     ? "verified"
     : "unverified";
   const failureCode = mediaStatus === "verified"
