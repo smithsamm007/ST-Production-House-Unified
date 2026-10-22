@@ -51,9 +51,11 @@ function makeSpawn() {
           // measured duration INSIDE the [3, 90] s short-form QC window —
           // reporting the 1890 s episode duration here would (correctly)
           // fail the real gate.
-          ? { format: { filename: "r", format_name: "mp4", size: "6000", duration: "30" }, streams: [{ codec_type: "video", codec_name: "h264" }] }
+          // Per-stream durations too: the completeness gate (S-M41-01) reads
+          // the measured audio/video stream lengths, not just the container.
+          ? { format: { filename: "r", format_name: "mp4", size: "6000", duration: "30" }, streams: [{ codec_type: "video", codec_name: "h264", duration: "30" }, { codec_type: "audio", codec_name: "aac", duration: "30" }] }
           : target.endsWith(".mp4")
-            ? { format: { filename: "e", format_name: "mp4", size: String(EPISODE_BYTES.length), duration: "1890" }, streams: [{ codec_type: "video", codec_name: "h264" }] }
+            ? { format: { filename: "e", format_name: "mp4", size: String(EPISODE_BYTES.length), duration: "1890" }, streams: [{ codec_type: "video", codec_name: "h264", duration: "1890" }, { codec_type: "audio", codec_name: "aac", duration: "1890" }] }
             : target.endsWith(".jpg")
               // The free primary (pollinations) really returns JPEG; the
               // runner names the file to match the SELECTED provider.

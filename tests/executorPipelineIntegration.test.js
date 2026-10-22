@@ -36,7 +36,15 @@ function sha256(buf) {
 function makeFfprobePayload({ bytes, formatName, codecType, extraStream = {}, durationSeconds = null }) {
   const format = { filename: "media", format_name: formatName, size: String(bytes.length) };
   if (durationSeconds !== null) format.duration = String(durationSeconds);
-  return { format, streams: [{ codec_type: codecType, ...extraStream }] };
+  const stream = { codec_type: codecType, ...extraStream };
+  if (durationSeconds !== null) stream.duration = String(durationSeconds);
+  // A measured video render (mp4 with a duration) is a PROGRAM: real ffprobe
+  // reports both its streams, and the completeness gate (S-M41-01) reads
+  // their measured durations.
+  if (durationSeconds !== null && codecType === "video") {
+    return { format, streams: [stream, { codec_type: "audio", codec_name: "aac", duration: String(durationSeconds) }] };
+  }
+  return { format, streams: [stream] };
 }
 
 function makeSpawn() {
@@ -197,7 +205,9 @@ function makeRunner({ overrides = {} } = {}) {
       return executeAssemblyPlan(plan, {
         artifactBindings,
         outputPath: "/run/episode.mp4",
-        spawnImpl: makeSpawn(),
+        // A test may replace the media transport (e.g. a probe that reports a
+        // short audio track) to prove the completeness gate fails closed.
+        spawnImpl: overrides.assemblySpawn ?? makeSpawn(),
         readFileImpl: makeFiles(),
         now: NOW,
         skipPreflight: false,
@@ -613,4 +623,51 @@ test("motion gate ON: the verified local motion artifact is recorded and consume
   assert.ok(order.indexOf("motion") < order.indexOf("assembly"));
   assert.equal(plan.segments[0].kind, "video_clip");
   assert.equal(plan.segments[0].artifactRef, `sha256:${motion.sha256}`);
+});
+
+// ---------------------------------------------------------------------------
+// Episode completeness gate (S-M41-01, Issue #243)
+// ---------------------------------------------------------------------------
+
+test("assembly completeness failure re-plans the release: a duration-valid render with seconds of audio is NOT a complete episode", async () => {
+  const { production, ownerId, release } = await buildHarness();
+  const jobUpdates = [];
+  const baseSpawn = makeSpawn();
+  // The render really ran and really is 1890 s long, but its audio track is
+  // 3.6 s — exactly the measured production narration length. The duration
+  // gate alone would accept this; the completeness gate must not.
+  const shortAudioSpawn = (call) => {
+    if (call.command === "ffprobe" && call.args[0] !== "-version") {
+      const payload = {
+        format: { filename: "media", format_name: "mp4", size: "1024", duration: "1890" },
+        streams: [
+          { codec_type: "video", codec_name: "h264", duration: "1890" },
+          { codec_type: "audio", codec_name: "aac", duration: "3.6" },
+        ],
+      };
+      return { exitCode: 0, stdout: JSON.stringify(payload), stderr: "", timedOut: false };
+    }
+    return baseSpawn(call);
+  };
+
+  const result = await runEpisodePipeline({
+    ownerId, releaseId: release.id, release, production,
+    jobs: { updateStatus: async (id, status, detail) => { jobUpdates.push({ id, status, detail }); } },
+    executorRunner: makeRunner({ overrides: { assemblySpawn: shortAudioSpawn } }),
+  });
+
+  assert.equal(result.status, "planned");
+  assert.equal(result.failedStage, "assembly");
+  assert.equal(result.failureCode, "QC_AUDIO_COVERAGE_INSUFFICIENT");
+  assert.equal(jobUpdates[0].status, "failed");
+  assert.equal(jobUpdates[0].detail.failureCode, "QC_AUDIO_COVERAGE_INSUFFICIENT");
+
+  const updated = await production.getRelease(ownerId, release.id);
+  assert.equal(updated.status, "planned");
+  const artifacts = await production.listArtifactsForRelease(ownerId, release.id);
+  assert.equal(artifacts.find((a) => a.stage === "assembly"), undefined, "an incomplete episode is never recorded");
+  assert.ok(artifacts.some((a) => a.stage === "audio"), "earlier verified stages stay recorded");
+  assert.ok(artifacts.some((a) => a.stage === "visual"));
+  const events = await production.listPipelineEvents(ownerId, release.id);
+  assert.ok(events.some((e) => e.stage === "assembly" && e.status === "failed"));
 });
