@@ -379,6 +379,23 @@
         "Focused documentation updated; npm test, npm run verify, npm run lint and plan validation pass with actual CI evidence"
       ],
       "dependsOn": []
+    },
+    {
+      "sliceId": "S-M41-01",
+      "module": 41,
+      "lane": "lane-2",
+      "ownerGated": false,
+      "title": "Episode completeness gate: required streams and measured audio coverage",
+      "brief": "End-to-end media reliability (Issue #243). Assembly QC verified DURATION only: a real 30 s render with 1 s of audio passed every gate, and the production narration script measures 3.6 s against an 1800-3000 s main-video target. Add a pure completeness gate over the real post-render FFprobe inspection: required video+audio streams, per-stream measured durations, audio coverage of the reference program length (configured main target, else measured video duration) within a documented tolerance, and no audio overrun past the picture. Wire it into executeAssemblyPlan for main long form and Reels, fail closed with stable codes, promote no descriptor on failure, and record the measured evidence in qc.completeness. No narration scaling, BGM/SFX, subtitle timing, publishing, or provider calls.",
+      "acceptance": [
+        "Required-stream, missing-duration, coverage and A/V-overrun failures reject the render with stable codes, descriptor null, and no recorded artifact; passing renders record qc.completeness measurements",
+        "Real local FFmpeg/FFprobe tests prove both directions: a short narration over a longer program is rejected, matching audio/video is accepted",
+        "Existing assembly, Reel and packaging behavior is preserved for genuinely covered media; pipeline failure re-plans the release and attaches the code to the job",
+        "Documentation updated; npm test, npm run test:integration, npm run lint, npm run verify, npm run plan:check and npm run release:certify pass with actual evidence"
+      ],
+      "dependsOn": [
+        "S-M33-01"
+      ]
     }
   ]
 }

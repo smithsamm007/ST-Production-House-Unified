@@ -16,6 +16,9 @@
  *           ├── inspectMediaFile()            — real bytes → hash + ffprobe (Issue #170)
  *           └── evaluateMainVideoRuntimeGate() /
  *               evaluateShortFormDurationGate() — QC duration policy
+ *               evaluateEpisodeCompleteness()    — required streams +
+ *                                                  measured audio coverage
+ *                                                  (S-M41-01, Issue #243)
  *
  * Honesty contract (AGENTS.md Rules 1–3):
  *   - Every artifact input is resolved THROUGH a descriptor: the caller
@@ -49,6 +52,7 @@ import {
   verifyAssemblyPlanIntegrity,
 } from "./assemblyPlan.js";
 import { createArtifactDescriptor, verifyArtifactDescriptor } from "./artifactDescriptor.js";
+import { evaluateEpisodeCompleteness } from "./episodeCompleteness.js";
 import { inspectMediaFile, validateArtifactPath } from "./mediaInspectionRunner.js";
 
 export const FFMPEG_EXECUTOR_VERSION = "ffmpeg_assembly_executor_v1";
@@ -683,7 +687,10 @@ export async function executeAssemblyPlan(plan, options = {}) {
     now,
   });
 
-  // 7. QC duration policy on the REAL post-render inspection.
+  // 7. QC policy on the REAL post-render inspection: the duration window AND
+  //    the completeness gate (required streams + measured audio coverage,
+  //    S-M41-01 / Issue #243). A 30-minute file with 3 s of audio is a real
+  //    render but NOT a complete episode; it must not be recorded as one.
   const targetKind = TARGET_KIND[plan.outputTarget];
   let qc;
   let verifiedDescriptor = null;
@@ -694,6 +701,7 @@ export async function executeAssemblyPlan(plan, options = {}) {
       reasonCode: "QC_DESCRIPTOR_NOT_VERIFIED",
       inspectionReasonCode: inspection.reasonCode,
       measuredDurationSeconds: null,
+      completeness: evaluateEpisodeCompleteness({ inspection }),
     });
   } else {
     // The rendered artifact's descriptor is created from the REAL measured
@@ -718,10 +726,20 @@ export async function executeAssemblyPlan(plan, options = {}) {
             targetSeconds: opts.runtimeTargetSeconds ?? null,
           })
         : evaluateShortFormDurationGate(renderedDescriptor, inspection);
+    // Completeness is measured against the configured main target when the
+    // Director set one; short-form (and untargeted) programs use the measured
+    // video duration as their reference.
+    const completeness = evaluateEpisodeCompleteness({
+      inspection,
+      targetSeconds: targetKind === "main" ? (opts.runtimeTargetSeconds ?? null) : null,
+    });
+    const passed = gate.passed === true && completeness.passed === true;
     qc = deepFreeze({
       policy: targetKind === "main" ? "main_video_runtime" : "short_form_runtime",
-      passed: gate.passed,
-      reasonCode: gate.reasonCode,
+      passed,
+      // The duration gate owns its reason when it fails; a duration-valid but
+      // incomplete program reports the completeness reason verbatim.
+      reasonCode: gate.passed === true ? completeness.reasonCode : gate.reasonCode,
       inspectionReasonCode: gate.inspectionReasonCode,
       measuredDurationSeconds: gate.measuredDurationSeconds,
       // Applied configured target (null when the caller supplied none) and the
@@ -729,8 +747,11 @@ export async function executeAssemblyPlan(plan, options = {}) {
       targetSeconds: targetKind === "main" ? (gate.targetSeconds ?? null) : null,
       targetWindowSeconds:
         targetKind === "main" && gate.window ? Object.freeze({ min: gate.window.min, max: gate.window.max }) : null,
+      // Measured stream evidence: video/audio seconds, reference length,
+      // tolerance, coverage ratio, and the exact rejection reason.
+      completeness,
     });
-    if (gate.passed) verifiedDescriptor = verifyArtifactDescriptor(renderedDescriptor, inspection);
+    if (passed) verifiedDescriptor = verifyArtifactDescriptor(renderedDescriptor, inspection);
   }
 
   const success = inspection.success === true && qc.passed === true;

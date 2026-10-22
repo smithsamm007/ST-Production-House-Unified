@@ -57,7 +57,13 @@ const sha256 = (buffer) => createHash("sha256").update(buffer).digest("hex");
 function ffprobePayload({ bytes, durationSeconds = null, codecType = "video" }) {
   const format = { filename: "media", format_name: "mp4", size: String(bytes.length) };
   if (durationSeconds !== null) format.duration = String(durationSeconds);
-  return { format, streams: [{ codec_type: codecType, codec_name: codecType === "video" ? "h264" : "aac" }] };
+  const stream = { codec_type: codecType, codec_name: codecType === "video" ? "h264" : "aac" };
+  if (durationSeconds !== null) stream.duration = String(durationSeconds);
+  // A measured rendered program reports both streams (S-M41-01 reads them).
+  if (durationSeconds !== null && codecType === "video") {
+    return { format, streams: [stream, { codec_type: "audio", codec_name: "aac", duration: String(durationSeconds) }] };
+  }
+  return { format, streams: [stream] };
 }
 
 /** Real-bytes reader: only the known artifact paths exist. */

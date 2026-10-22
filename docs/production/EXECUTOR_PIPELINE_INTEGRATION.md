@@ -59,6 +59,15 @@ Stage-failure ordering guarantees: failure at stage N preserves recorded
 stages 1..N-1 (same contract as the deterministic path). The pipeline never
 marks a stage successful without bridge-verified evidence.
 
+Assembly additionally enforces the **episode completeness gate**
+(S-M41-01, Issue #243): a duration-valid render whose audio does not cover
+the program (or that lacks a required stream / measured stream duration) is a
+truthful stage failure (`QC_AUDIO_COVERAGE_INSUFFICIENT`,
+`QC_STREAM_MISSING_AUDIO`, `QC_STREAM_MISSING_VIDEO`,
+`QC_STREAM_DURATION_MISSING`, `QC_AUDIO_EXTENDS_BEYOND_VIDEO`). The release
+re-plans, the job carries the code, and no incomplete artifact is recorded;
+`qc.completeness` records the measured video/audio seconds and coverage ratio.
+
 ## Local motion stage (Issue #241, opt-in)
 
 `motionEnabled === true` (from `STPH_ENABLE_LOCAL_MOTION=1`) inserts `motion`

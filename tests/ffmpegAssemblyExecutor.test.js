@@ -133,9 +133,11 @@ function makeFfprobePayload(durationSeconds) {
       format_name: "mov,mp4,m4a,3gp,m4a,m4b",
       size: String(OUTPUT_BYTES.length),
     },
+    // Real ffprobe reports per-stream durations for an mp4/aac render; the
+    // completeness gate (S-M41-01) reads them, so the fixture must carry them.
     streams: [
-      { codec_type: "video", codec_name: "h264", width: 1920, height: 1080 },
-      { codec_type: "audio", codec_name: "aac", sample_rate: "48000", channels: 2 },
+      { codec_type: "video", codec_name: "h264", width: 1920, height: 1080, duration: String(durationSeconds) },
+      { codec_type: "audio", codec_name: "aac", sample_rate: "48000", channels: 2, duration: String(durationSeconds) },
     ],
   };
 }
@@ -146,7 +148,7 @@ function makeFfprobePayload(durationSeconds) {
  * the args actually name (post-render QC). The inspection's hash comes from
  * the executor hashing the REAL injected bytes via readFileImpl.
  */
-function makeSpawnImpl({ ffmpeg, probeDurationSeconds, ffprobeExitCode = 0, ffprobeTimedOut = false } = {}) {
+function makeSpawnImpl({ ffmpeg, probeDurationSeconds, probePayload = null, ffprobeExitCode = 0, ffprobeTimedOut = false } = {}) {
   return ({ command, args }) => {
     if (command === "ffmpeg") {
       if (!ffmpeg) throw new Error("spawn ffmpeg ENOENT");
@@ -158,7 +160,7 @@ function makeSpawnImpl({ ffmpeg, probeDurationSeconds, ffprobeExitCode = 0, ffpr
       }
       if (ffprobeTimedOut) return { exitCode: null, stdout: "", stderr: "", timedOut: true };
       if (ffprobeExitCode !== 0) return { exitCode: ffprobeExitCode, stdout: "", stderr: "probe failed", timedOut: false };
-      return { exitCode: 0, stdout: JSON.stringify(makeFfprobePayload(probeDurationSeconds)), stderr: "", timedOut: false };
+      return { exitCode: 0, stdout: JSON.stringify(probePayload ?? makeFfprobePayload(probeDurationSeconds)), stderr: "", timedOut: false };
     }
     throw new Error(`unexpected command ${command}`);
   };
@@ -613,4 +615,73 @@ test("subtitled main render end-to-end with a degradation-free build", async () 
   assert.equal(result.success, true);
   assert.match(result.filtergraph, /subtitles=/);
   assert.deepEqual([...result.degradations], []);
+});
+
+// ---------------------------------------------------------------------------
+// Episode completeness gate (S-M41-01, Issue #243)
+// ---------------------------------------------------------------------------
+
+function completenessProbe({ video, audio }) {
+  const streams = [
+    { codec_type: "video", codec_name: "h264", width: 1920, height: 1080, duration: video },
+    // An explicit null means "the stream is absent from the probe".
+    ...(audio === null ? [] : [{ codec_type: "audio", codec_name: "aac", duration: audio }]),
+  ];
+  return { format: { filename: "out.mp4", format_name: "mov,mp4", size: String(OUTPUT_BYTES.length), duration: video }, streams };
+}
+
+test("completeness: a duration-valid main video with seconds of audio is rejected, never recorded", async () => {
+  const plan = makePlan();
+  const spawn = makeSpawnImpl({ ffmpeg: makeFfmpegSpawnImpl(), probePayload: completenessProbe({ video: "1830", audio: "3.604036" }) });
+  const result = await executeAssemblyPlan(plan, makeExecutorOptions({ spawn, skipPreflight: true }));
+
+  assert.equal(result.executed, true, "the render really ran");
+  assert.equal(result.success, false);
+  assert.equal(result.failureCode, "QC_AUDIO_COVERAGE_INSUFFICIENT");
+  assert.equal(result.descriptor, null, "an incomplete program never yields a verified descriptor");
+  assert.equal(result.qc.passed, false);
+  assert.equal(result.qc.reasonCode, "QC_AUDIO_COVERAGE_INSUFFICIENT");
+  assert.equal(result.qc.completeness.passed, false);
+  assert.equal(result.qc.completeness.videoSeconds, 1830);
+  assert.equal(result.qc.completeness.audioSeconds, 3.604036);
+  assert.equal(result.qc.completeness.referenceSeconds, 1830);
+  assert.ok(result.qc.completeness.audioCoverageRatio < 0.01);
+});
+
+test("completeness: missing required streams and missing stream durations fail closed", async () => {
+  const plan = makePlan();
+  const noAudio = await executeAssemblyPlan(plan, makeExecutorOptions({
+    spawn: makeSpawnImpl({ ffmpeg: makeFfmpegSpawnImpl(), probePayload: completenessProbe({ video: "1830", audio: null }) }),
+    skipPreflight: true,
+  }));
+  assert.equal(noAudio.success, false);
+  assert.equal(noAudio.failureCode, "QC_STREAM_MISSING_AUDIO");
+  assert.equal(noAudio.descriptor, null);
+
+  const noDurations = await executeAssemblyPlan(plan, makeExecutorOptions({
+    spawn: makeSpawnImpl({
+      ffmpeg: makeFfmpegSpawnImpl(),
+      probePayload: {
+        format: { filename: "out.mp4", format_name: "mov,mp4", size: "10", duration: "1830" },
+        streams: [{ codec_type: "video", codec_name: "h264" }, { codec_type: "audio", codec_name: "aac" }],
+      },
+    }),
+    skipPreflight: true,
+  }));
+  assert.equal(noDurations.success, false);
+  assert.equal(noDurations.failureCode, "QC_STREAM_DURATION_MISSING");
+});
+
+test("completeness: a genuinely covered render records the measured stream evidence", async () => {
+  const plan = makePlan();
+  const spawn = makeSpawnImpl({ ffmpeg: makeFfmpegSpawnImpl(), probePayload: completenessProbe({ video: "1830", audio: "1829.9" }) });
+  const result = await executeAssemblyPlan(plan, makeExecutorOptions({ spawn, skipPreflight: true }));
+
+  assert.equal(result.success, true);
+  assert.equal(result.qc.passed, true);
+  assert.equal(result.qc.completeness.passed, true);
+  assert.equal(result.qc.completeness.videoSeconds, 1830);
+  assert.equal(result.qc.completeness.audioSeconds, 1829.9);
+  assert.equal(result.qc.completeness.audioCoverageRatio, 1829.9 / 1830);
+  assert.equal(result.descriptor.verification.state, "VERIFIED");
 });
