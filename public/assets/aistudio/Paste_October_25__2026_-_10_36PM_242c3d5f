@@ -1,0 +1,544 @@
+I am attaching the https://github.com/smithsamm007/ST-Production-House-Unified   link of repo and the  concept of my project lets analysis this repo against the plan and help me to complete this project # ST Production House — The Complete Vision, Concept, Architecture & Workflow
+
+[Long Form AI Video Generation Agent: The Future of Content in 2026](https://images.openai.com/static-rsc-4/pPpsmDdoWhuj6lfIZsLEBEQmo7VzEEyqdo6XkjjjMppul2j7vte-DnM-IgZmbburYAY3Ilq3azc6EWshuA3ud4nP9C4qoO6oU-BG89TZXPipeNgxuXzFh103zZiC8piHhj5b3ECopM3BxeXfR1D9S5iDbixK9DxzmaDqEJ2QdnE?purpose=inline)
+
+[resource.digen.ai](https://resource.digen.ai/long-form-ai-video-generation-agent-2026/?utm_source=chatgpt.com)
+
+ST Production House (ST) is your vision for a cloud-based, owner-controlled, multi-universe AI media company that can research ideas, develop stories, produce animated and cinematic videos, manage independent content brands, publish to social platforms, learn from performance, and grow into a large automated production business.
+
+The central idea is simple:
+
+You own the production house. Hermes manages the operation. Independent AI Directors run their own universes. Each Director develops, produces, and manages its own content brand. You retain control over credentials, sensitive decisions, and publishing approval.
+
+ST is not intended to be a single AI that makes one video at a time. It is intended to be a coordinated production company with multiple independent creative businesses operating in parallel on shared cloud infrastructure.
+
+One important distinction: this is the intended product design. The repository contains substantial software infrastructure, but not every live provider integration, complete media-production run, or business operation has been proven.
+
+## 1. The complete concept
+
+[Empresas Criam Landing Pages para Agentes de IA Multimodal | Toolzz Blog](https://images.openai.com/static-rsc-4/T1dKAdrLKh_O4o-dhEaVqQM94dZGZzJGlHKlFOA4y7Atr1hPn2gLUgFtU3ktHCM4P879VH7jA9qMUBT7zlU-aKr4eXx5FZzsm0LdbQpRJx8mHf74p7917p3vlwqb_TB4hWel5wJnFWw2KJETrdDLYCGDMAIZ0LH2mWx5s6GnAG4?purpose=inline)
+
+1\. Owner — You
+
+The founder, administrator and final authority.
+
+You define the vision, create Directors, configure providers and accounts, set budgets and schedules, approve sensitive actions, and decide when content can go public.
+
+[AI in Enterprise Software: What's Real, What's Hype, and What to Build First | easy.bi Blog](https://images.openai.com/static-rsc-4/rXlCGMUKlpCJ6SwE3Cxya6UjDN2qj2oPObEX9xqmYQmBQVFMDLazsQVZJq5bvPIf-nt5koxBPGnfNpb56lWssox1mvX8NtpXApQbOEWQki9ccXr4F9mPSLIkfTqj7gYFt3mtg_vtK5xLsasu_d83TF3mxIoLGPAvseDwe1HVefE?purpose=inline)
+
+2\. HERMES — ST AI Manager
+
+The central management and orchestration layer.
+
+Hermes coordinates production priorities, monitors Directors, allocates eligible resources, handles scheduling and escalations, observes performance, and prepares recommendations for the owner. It should not bypass owner approval gates.
+
+[Искусственный интеллект придёт в творческие колледжи: как ИИ изменит отечественное кино и мультипликацию](https://images.openai.com/static-rsc-4/FBT0bO_1GWfpOxqG43Xc-S3xx4HwqOOsy5xTpEdNdVFIIAteam-a3BYa6SFAfDVAaDZcWWH8bGy1Gqj0h0yjx51KPuBtQlT4TMwbgBrAAdOW2IZfyXFzoCFcZ8nsQB_g_6YrnttP-vhK1pDt-MWcWT6TAak1XNIyoQxnITOXEW0?purpose=inline)
+
+3\. Independent AI Directors
+
+Separate creative universes and brands.
+
+JARVIS, COSMOS, LAKME, CHRONOS and other Directors own their respective creative strategies and production lifecycles. They are not merely stages in one shared pipeline.
+
+[PLAYMO](https://images.openai.com/static-rsc-4/J41hgddVVm0kjx2H0wF6usfWbg4uAIlfRxEkKHd6ipLWN-fYh4oudds2TAXZ2uDNoMlj8L6aPsQjyMJCXrqFZbBJf_kjpxYQWaU8KlZiYyCjU4uIaYTBbbL8U86Exer5O-zQgfr_cJjbpLt6QkV-BfQG7q9FNYi7HQzJsqjHA5g?purpose=inline)
+
+4\. Shared production infrastructure
+
+Reusable services without merging Director identities.
+
+The cloud scheduler, worker runtime, database, media tools, evidence storage, provider routing and monitoring serve the whole company while maintaining per-Director isolation.
+
+## 2. The organizational hierarchy
+
+## OWNER
+
+Vision · Budgets · Credentials · Final approvals
+
+## HERMES — AI MANAGER
+
+Planning · Scheduling · Resource coordination · Monitoring
+
+JARVIS
+
+Horror universe
+
+COSMOS
+
+Space & science
+
+CHRONOS
+
+History documentaries
+
+LAKME
+
+Indian mythology
+
+NEWTON
+
+Current affairs & opportunities
+
+MORE
+
+Independent Directors
+
+Illustrative hierarchy; Directors operate independently under shared governance.
+
+Each Director has its own creative team and workflow. For example, JARVIS should not need to wait for COSMOS to finish an episode before it can research its next horror story. Hermes coordinates resources and priorities without turning the Directors into sequential production stages.
+
+## 3. Your planned Director catalog
+
+The catalog is intended to grow from the initial Directors toward a 20-Director catalog, with a hard maximum of 50 independent Directors.
+
+[The Whispering Walls | Story.com](https://images.openai.com/static-rsc-4/XwfBw40ymxJf-utR9dUsz1SKFY6ttfZdPJ4xp_PhzfqIAdL5SpVYTnZ830PFs4u2u55CChRAu7Vv8530qEFMz3Bp7TmxFJq6p3_ctLoF1Fhhy5Jeh3qIo5PiNtsgEMIUjbZysrEuNssS3U1Tb_KNM3sqlKkG1BVF7qk01BHEUDs?purpose=inline)
+
+JARVIS — Horror, thriller & suspense
+
+Hindi/Hinglish stories, cinematic horror, mysteries, recurring characters, suspense episodes and animated storytelling.
+
+[Multi-Region News Coverage Vs Bias: How AI Rewrites Global](https://images.openai.com/static-rsc-4/dLipA7aOKFaY76rVZ1S4a1hzjHwaqNq1y6gRP6FyC2E-J-TW_TVbTMrFK2M3pA_zZsF6ZjyTjw37QEM-zLEE8Ixg_t2QixdbSzbRiSogGoj_S2x1y1_gJEwLsYK_N0WTSLQ70U5MMHFaGj58uCwd3wnFD05UiQe4t82EJN0xVaA?purpose=inline)
+
+AI NEWS — AI & technology news
+
+AI developments, industry updates, new tools, explainers and technology stories.
+
+[Cosmic Journey: A Vision of Future Space Travel](https://images.openai.com/static-rsc-4/wfIZiD_etUcSpA4BxFFsDn3p5xxzm2nEc_pKi30wPGsWEtj8ZqPv7P_FW1NnjuhQIdYk19pB2pIood4zYUs14MpqNoG7whUrP_CPnaSsg_X-TqKZR010NCHorf6Qu5j2CmZQSUOgI_4CXvLWpIHQqyQK8FnqO-E0tk-X8OnZ3w4?purpose=inline)
+
+COSMOS — Space, science & aliens
+
+Space exploration, astronomy, cosmology, scientific discoveries and carefully distinguished speculation.
+
+[PreppRight | Premium Learning Platform](https://images.openai.com/static-rsc-4/y7IXyOn2kJ9D2zLyi8B-lc0gcDzqjQm56xVqgk2jhu8-C6ySWLtwghqZvk3Lp84720sKO9OAFFtQSV-FNH5acHKShwuQi19yoRGR6fwZ5rxBh7suNHQwimAs4-UeuTcA5H_xOO3hKTOiuh7JkKoL-oTHprJW8odYZHiombt5tD8?purpose=inline)
+
+NEWTON — Indian current affairs & opportunities
+
+Relevant developments, opportunities, educational explainers and practical information, with source verification.
+
+[Iraq: riemerge l’Alessandria perduta](https://images.openai.com/static-rsc-4/a5GqS9sbo0mUM1wf57f1hPD4p9pDat4ymstJIZ288vNhIcgjzi8tAR1bMwISoM_InNRY18ltsXhk7TFUDjP4P583Vjm0IrspP97qWlFEPy7B2nkIR81ZitVEQdKrWgsRuUeSz0Ked_vgZkSoo36BW7g9zxSgMNqB0SsxiFYz5q8?purpose=inline)
+
+AADI — Research & global discoveries
+
+Global discoveries, unusual facts, new research and documentary concepts.
+
+[HOTO SNAPBLOQ™ S-A01 Electric Precision Screwdriver Master Set(HFE0025  – HOTO India](https://images.openai.com/static-rsc-4/LK8R5qaIrzwqLbfBZEzi8MY5Dkse3BKoUIHEauawVtj6sz_ma7oc_xmhgukQEQrCFAVRNW888qiTHBWIk8EpFEcCFWj2bhN5aT6xMl2o4E0IR9BpXyZCWm62_LgwUQZPT4MKpEdPgI5U7JTIs2FOtuaZWMFh3K5bE1rRNTLuXLc?purpose=inline)
+
+TECH MASTER — Technology
+
+Gadgets, engineering, how products work, digital tools and technical explainers.
+
+[Path of Dharma - 3D Open World by Jabali AI](https://images.openai.com/static-rsc-4/BNoEDjhYcY9LsuR4lVOOXRISgj8CHPBZidi-Vlk4cLK1HWDxKKgfKiMLOEWBzQERqhinRRgOxdUq-xAhh8zDOF64X1nWcaOM4aEEhDboHuUXMisV4M1KCuxaP4iR5pk3eoVXuQAd1-kqEdVEipD0NEoLluPxZ5su7ZJZ6LzIgyU?purpose=inline)
+
+LAKME — Indian mythology
+
+Mythological stories, characters, epics and cinematic interpretations with cultural sensitivity.
+
+[ECHOES: Interactive Crime Thriller — Redoxx Studio](https://images.openai.com/static-rsc-4/1h9Q-Zk82ipAHOB8QzOKx6TWmTIph3F8Kt4usoGO6J_EC4POd0qIl0I6Trnu3MSsAP09_YK95IrNcKz_qc7XGvrcjPpkO_1PF74GUmeLqhlHUDGDtyY5JlXrkL4jDvLmjpRgNbvoC_RWfUkbKgPp1_SrwX8ARlk_faULMV8URyA?purpose=inline)
+
+SHERLOCK — Crime & investigations
+
+Investigative storytelling, mysteries, evidence-led narratives and crime documentaries.
+
+[M9 Mestre: the museum that reinvents history | ATVO](https://images.openai.com/static-rsc-4/9TEVuPi_qMUSBXurnk9Ez4NRTyWhA3YnSAaeBIvanoxPsM6lNeCmdqbzNGJdb7PaX2vllD7U7B20z1vncI3swS_FukGosUajEcChy8CpfNGVEdEy1WLf0055xsS3ncZ303z0Xw9CyNsqfJY-PoWhT9Jecw16qWymxg3YbFH97mY?purpose=inline)
+
+CHRONOS — History documentaries
+
+Historical personalities and events, including Subhas Chandra Bose, Sardar Vallabhbhai Patel, and other figures from world history.
+
+Other defined ideas include:
+
+- INNOVATION: science and how things work, from everyday objects to physics, chemistry, biology, and human organs.
+- ASH: an additional planned universe.
+- Butterfly: a separate creative universe.
+- 9 Chapters of Love: nine seasons, each with nine stories, each story containing nine episodes.
+- Indian anime: an additional animation-focused universe.
+- Additional science, discovery, education, documentary and entertainment brands.
+
+These are planned catalog identities, not a claim that every Director is already operational.
+
+### The 50-Director rule
+
+Every Director must have a separate:
+
+- Universe, brand identity, memory and creative instructions.
+- Production queue, schedule, and progress history.
+- Secrets & Connections configuration.
+- Publishing accounts and platform permissions.
+- Content approvals, receipts, analytics and performance history.
+
+The owner can create, configure, activate, pause, resume and retire Directors. Creating Director 51 must be rejected. Shared infrastructure is permitted; sharing private credentials, memory, or publishing identity across Directors is not.
+
+## 4. The complete production workflow
+
+This is the heart of ST: every Director should be capable of taking a content idea through the entire production lifecycle.
+
+### 01
+
+IDEA & PLANNING
+
+Find a topic, define the audience, format, duration, language, and production deadline.
+
+### 02
+
+RESEARCH & VERIFICATION
+
+Collect credible sources, validate claims, assess rights, and flag uncertainty.
+
+### 03
+
+STORY & SCRIPT
+
+Create the outline, scenes, narration, dialogue, character arcs, and episode structure.
+
+### 04
+
+CHARACTER & VISUAL DESIGN
+
+Define character references, locations, scene composition, visual style, and continuity.
+
+### 05
+
+VOICE & AUDIO
+
+Generate or record narration and dialogue; prepare emotion, pronunciation, BGM, SFX, and music.
+
+### 06
+
+VISUALS & MOTION
+
+Generate or assemble scenes, animation, camera movement, transitions, and motion effects.
+
+### 07
+
+VIDEO ASSEMBLY
+
+Use FFmpeg to combine visuals, voice, music, sound effects, captions, and transitions.
+
+### 08
+
+TECHNICAL & CONTENT QC
+
+Use FFprobe and automated checks to verify duration, stream integrity, audio/video, captions, and package completeness.
+
+### 09
+
+FINAL CONTENT PACKAGE
+
+Create the main episode, two standalone content Shorts/Reels, one standalone brand-promotion Reel, thumbnails, subtitles, metadata, and evidence.
+
+### 10
+
+OWNER APPROVAL
+
+Present the exact artifacts, destinations, metadata, and disclosures for approval.
+
+### 11
+
+PUBLISH & VERIFY
+
+Submit only to authorized platforms; capture genuine responses and publication receipts.
+
+### 12
+
+ANALYTICS & LEARNING
+
+Collect actual performance metrics, evaluate results, and propose the next improvements.
+
+### How the workflow should behave
+
+- A failed provider should trigger a permitted fallback, a retry, or an honest waiting state—not fabricated success.
+- Every long-running stage should support durable checkpoints, heartbeats, retries and idempotency.
+- If narration or required media is missing, the package must remain incomplete.
+- A video cannot pass merely because an MP4 file exists. It must pass technical checks and content-specific QC.
+- Publishing success must be based on a genuine platform response and persisted receipt.
+- Analytics must come from real observations, not invented numbers.
+
+This is how ST moves from an AI script generator to an auditable production system.
+
+## 5. The mandatory output package: 1 + 2 + 1
+
+Every standard episode production cycle is designed to produce the following:
+
+[Xana y el secreto del tiempo (The Girl Who Stole Time) - Marmitako Films - productora audiovisual](https://images.openai.com/static-rsc-4/eDIeCWbfw6tTEv-hLX23-Npggo7NS2HocvfNN3DEegYX59xuq5krOyJR4VQSIF4lTeyt8-JTdD6MrmVO9amGKwUzRtqhD5BbYEVYvtyf9GhQk1HY1t6n9rWy9CVnimzuiuPW6RjDSup19Enme_uJTBqGWjfxwZ0YEHWBjzaFNuI?purpose=inline)
+
+## 1 × Main episode
+
+30–50 minutes
+
+The complete story or documentary, with narration/dialogue, visuals, music and sound effects, subtitles, thumbnail, metadata, and technical QC.
+
+[AI Horror Story Video Generator - Create Scary Shorts](https://images.openai.com/static-rsc-4/SEYVgMi_aJYXY6Jz8ek1mAWV8fWCdat8o2GiQ4-xrxEycHUy6HLiPPA1xVykG7jT6MOLGoGaRT6KS-FOTdj6KEfHHSGPQq8Ab5aAzqreIGQ0nyDr-PHqZwWRVyHs6RU1T4fs7Dr2F0MRuogCiZGuFG1L3JwDhRbc8YDtWTgJZzo?purpose=inline)
+
+## 2 × Standalone content Shorts/Reels
+
+Two independently usable pieces of episode-related content, each with its own hook, editing, framing and ending. They must not be mere duplicate exports of the same clip.
+
+[Brand Identity Reveal • Premiere Pro Template • Uppbeat](https://images.openai.com/static-rsc-4/I7eDz3uUjfCC7r01exkaGczCJ8tCyG9bRDAq79VygYJHOe_MQ5ZUjYPGxUyG7UeJVKLajIFBcdTk-G7_3csRdr3SFoIW_aRZpgHfcilIKtrcYvFd8xeeMgjZWSlM838d8B5BGCaYSePKqg3VEk79vi7TpMOWhG4Y2xznOK1hGKc?purpose=inline)
+
+## 1 × Brand-promotion Reel
+
+A separate promotional deliverable for the Director's brand, a sponsor or an approved campaign. It has its own brief, disclosure and approval requirements.
+
+The brand Reel remains a standalone output by default. If a suitable sponsor segment is approved for inclusion in the main episode, ST may also integrate it there, but this does not silently eliminate the required standalone promotional deliverable.
+
+### Distribution plan
+
+| Deliverable              | Target destinations                                                                                      |
+| ------------------------ | -------------------------------------------------------------------------------------------------------- |
+| Main episode             | YouTube and Bilibili                                                                                     |
+| Two content Shorts/Reels | YouTube Shorts, Instagram Reels, Facebook Reels, Snapchat Spotlight; Bilibili short-form where supported |
+| Brand-promotion Reel     | Appropriate approved social platforms, subject to platform permissions and campaign requirements         |
+
+Each destination needs its own formatting, metadata, account connection, permissions, and publication evidence. ST must not assume that an adapter guarantees access to a platform's live upload API.
+
+## 6. Hermes — the brain of the production house
+
+Hermes is intended to be more than a chatbot or dashboard. It is ST's central orchestration and management layer.
+
+Its responsibilities include:
+
+1. Planning: identify production priorities and coordinate episode schedules.
+2. Resource management: assign available workers, select eligible providers, respect quota limits and avoid unnecessary paid usage.
+3. Director supervision: monitor queues, progress, failed stages, quality, delays and bottlenecks.
+4. Recovery: resume durable checkpoints, retry recoverable failures and prevent duplicate production or publication.
+5. Quality oversight: ensure a Director cannot label an incomplete episode as finished.
+6. Owner communication: report decisions, blockers, upcoming plans and requests for approval.
+7. Analytics: compare genuine performance data and recommend improvements.
+8. Business coordination: support approved campaigns, affiliate links, promotions and collaborations.
+
+Hermes should make routine, reversible decisions within policies the owner has approved. It should escalate decisions involving public publishing, new credentials, spending, sensitive content, or other protected actions.
+
+## 7. The owner dashboard and communication system
+
+The dashboard is intended to be your central control room.
+
+Company overview
+
+Active Directors, queues, production status and blockers.
+
+Director communication
+
+Separate discussions, plans, feedback and instructions for each Director.
+
+Secrets & Connections
+
+Per-Director credential locators, providers and account connections.
+
+Approval center
+
+Review exact artifacts, destinations, metadata and publishing requests.
+
+Analytics
+
+Verified views, retention, engagement, revenue and campaign performance when available.
+
+Automation health
+
+Workers, quotas, retries, checkpoints, failures and evidence.
+
+### Separate communication window for every Director
+
+You should be able to open JARVIS's communication window and discuss its next horror universe, episode ideas, characters or long-term strategy without mixing those conversations into COSMOS's memory.
+
+The same applies to every other Director.
+
+Hermes can coordinate across the company, but each Director's private context, creative identity and account credentials must remain isolated.
+
+### Secrets & Connections
+
+Each Director needs a dedicated configuration area for its own:
+
+- AI and media-provider connections.
+- YouTube, Instagram, Facebook, Snapchat and Bilibili accounts.
+- OAuth tokens and credential references.
+- Provider limits, availability and approved fallback policies.
+- Publishing permissions and account-specific settings.
+
+Secrets should be stored in an approved secret manager, not exposed in ordinary logs, prompts, source code or public repository history.
+
+## 8. How ST becomes autonomous
+
+Your goal is for ST to operate in the cloud even when your Chromebook or laptop is switched off.
+
+That requires a durable cloud control plane, not a browser tab left open on your computer.
+
+#### 1
+
+### Cloud scheduler
+
+Find eligible production tasks and respect each Director's schedule.
+
+#### 2
+
+### Durable task queue
+
+Record task ownership, dependencies, retries and idempotency keys.
+
+#### 3
+
+### Independent workers
+
+Research, script, voice, visuals, assembly, QC and publishing preparation.
+
+#### 4
+
+### Checkpoint and evidence store
+
+Persist stage results, artifact identities, logs and recovery information.
+
+#### 5
+
+### Health and quota watchdog
+
+Detect stalled workers, provider limits and failed jobs.
+
+#### 6
+
+### Recovery and reporting
+
+Resume eligible work and tell the owner what succeeded, failed or needs action.
+
+### Autonomous does not mean unrestricted
+
+ST should distinguish three types of work:
+
+- Autonomous: offline coding, research, script preparation, permitted media processing, QC, internal scheduling and approved maintenance.
+- Owner-gated: connecting accounts, adding sensitive credentials, granting permissions, enabling spending, approving public publication and authorizing sensitive campaigns.
+- Provider-dependent: operations that need external API access, available quota, supported models or platform permissions.
+
+When a provider is unavailable, ST should record `WAITING_FOR_QUOTA`, `UNVERIFIED`, or an appropriate failure state. It must not claim a video was produced or published when that did not happen.
+
+The automation should also enforce one governed implementation PR at a time, avoid duplicate issues, test changes, verify the exact commit head and report real results.
+
+## 9. The technology and operational foundation
+
+ST's intended architecture includes the following building blocks:
+
+| Component                      | Purpose                                                          |
+| ------------------------------ | ---------------------------------------------------------------- |
+| PostgreSQL 15+                 | Durable production records, queues, task state and analytics     |
+| Worker runtime and checkpoints | Reliable execution, recovery and idempotency                     |
+| FFmpeg and FFprobe             | Media assembly, stream inspection and technical verification     |
+| AI and media-provider adapters | Research, writing, TTS, visuals and motion                       |
+| OAuth and publisher adapters   | Authorized connections and platform-specific publishing          |
+| Evidence ledger                | Traceable artifacts, approvals, receipts and QC results          |
+| Cloud scheduler and watchdog   | Unattended operation, monitoring and recovery                    |
+| Owner dashboard                | Configuration, communication, approvals and oversight            |
+| Analytics and optimization     | Learning from verified performance                               |
+| Postiz integration             | Optional social scheduling/management through a separate service |
+
+The architecture should be free-first and quota-aware. Open-source tools and permitted local execution should be preferred where practical, with external providers used only when configured and available.
+
+The system must also provide authentication, role-based access control, CSRF protection where applicable, credential isolation, safe migrations, audit logs, backups, monitoring and recovery procedures.
+
+A successful unit test suite is necessary, but it is not sufficient to establish that the cloud system can operate continuously or produce a complete real episode.
+
+## 10. How ST makes money
+
+ST is intended to become a multi-brand media business, not merely a video-generation tool.
+
+[Razvan Paraschiv (@razvanparaschiv) on X](https://images.openai.com/static-rsc-4/piiA7qzabK4jD79SLgim88IwpjU0afqi8Cg-GVgVfiGVx0EXdJo1ZKTH-Zf3IrPqeamDa4VntLL_m3xLFtJnpf9WfIY8ZrVxQzSxBMiwec9NiCzx0DpcJFUvPHH-TxMf2jrRhB1oYRMROXv6Yf85QQ2NcQ3FLVJF5-MmFtnR_oI?purpose=inline)
+
+1\. Platform monetization
+
+Revenue from eligible YouTube and other platform monetization programs, subject to each platform's requirements and approval.
+
+[Movie Location Rental Exposed: Real Costs, Risks and Big Wins - tasteray.com](https://images.openai.com/static-rsc-4/-ebhQK4GUuZxvQJM5HDW9s5BDrl1Wq_cNrbKPGE2bw9GQeqFve1hcmdIUm3XfOSZ_8AfxpMegUE8r9bMe3snZIgTsWRX_IDh5yT60JmZTX6bNlNkcv1T5G0x80w6CxZXrEbpNs6hiqfshDeTuo6gTqg2TFRhME1dkfqKPRpSEcE?purpose=inline)
+
+2\. Brand promotions and sponsorships
+
+The standalone brand-promotion Reel provides a dedicated format for approved advertising campaigns and sponsor deliverables.
+
+[Sources de trafic natif vs autres, et ce qui fonctionne en 2022 | Post Affiliate Pro](https://images.openai.com/static-rsc-4/VaD6O0-ts0MbodkVZtUyA8DDBplec0v4cfYQRYzF-77sQULc2SgK0lxfmHzJSo9J4y1lcvV1b4pg2LLiXnaLP8IO_zENTuJq8_0BhzERzHB23yi4HVQyXw_InxX8vEVmoYcmCvkILBpZl2MCdivmdjhCz24oiB_B8Y4SsToT9G0?purpose=inline)
+
+3\. Affiliate marketing
+
+Track approved affiliate links, disclosures, clicks and conversions. ST must not fabricate conversion data or publish undisclosed promotional links.
+
+[Resleeve | Build. Launch. Grow.](https://images.openai.com/static-rsc-4/s5i5sXjM5ShhnrMSuqlGSpCd6I87dqQl-g7OJzqqbwjjytCH0vUIrwMjdFPh_f6S_d2qkj3eZXQGijTC0gFhro0AsZMae-4Dsdzs-1dJqVlJnKOLxIO9rAZUauqsLMi3SXxdzQsIzT5_fJkUGheybM-y87RLYLQX3Um_r-GT4Hs?purpose=inline)
+
+4\. Collaborations and digital marketing
+
+Build partnerships, sponsorship packages, cross-channel campaigns and branded content for suitable advertisers.
+
+Hermes should eventually compare production cost, audience retention, engagement, campaign performance and verified revenue to help prioritize the most valuable work.
+
+Important: Monetization is a business objective, not guaranteed income. Revenue depends on audience demand, content quality, eligibility, advertiser interest, rights compliance and platform policies.
+
+## 11. The end-to-end business loop
+
+The complete vision is a continuous improvement cycle:
+
+Research
+
+Discover audience needs and viable ideas.
+
+Produce
+
+Create the full 1+2+1 content package.
+
+Verify
+
+Check content, rights, technical quality and evidence.
+
+Approve
+
+Obtain the required owner authorization.
+
+Publish
+
+Distribute to connected, authorized accounts.
+
+Measure
+
+Collect genuine platform analytics and campaign results.
+
+Optimize
+
+Use the evidence to improve future production.
+
+The optimization cycle feeds the next research and production round.
+
+This cycle is what ultimately turns separate AI Directors into an increasingly efficient production business.
+
+## 12. What counts as a genuinely finished ST Production House?
+
+ST should not be considered fully complete just because the repository builds, tests pass or the dashboard loads.
+
+Use three separate acceptance levels:
+
+Level 1 — Software-complete
+
+The core application, independent Director configuration, durable queues, provider adapters, media pipeline, approval gates, evidence, security and automation pass their required tests.
+
+Level 2 — Live-enabled
+
+Real provider access and account connections work. ST produces genuine media, verifies it, publishes only with authorization, stores real receipts, and ingests official analytics.
+
+Level 3 — Business-operational
+
+The entire system runs reliably in the cloud, recovers from failures, manages multiple Directors independently, produces the canonical package repeatedly, operates approved campaigns, and uses genuine performance data to improve its business.
+
+The final acceptance test should include at least one complete real episode, both independently usable content Shorts/Reels, the separate brand Reel, verified QC evidence, approved publication, genuine receipts, official analytics and demonstrated recovery from a controlled failure. Scaling claims require separate load and isolation evidence.
+
+## 13. Where the project stands based on our latest evidence
+
+The last repository evidence discussed in this conversation was from October 16, 2026. I have not independently refreshed GitHub in this response, so I will not claim that this is the repository's current state on October 25.
+
+At that last checkpoint:
+
+- The core software foundation and many offline contracts had been implemented.
+- CI tests and verification were passing.
+- Publishing dry-run validation, backup/restore evidence, campaign security and release certification had been added.
+- The governed offline task queue was empty.
+- Issue #236 for the motion adapter needed grooming before it could become a READY implementation slice.
+- Provider credentials, remaining OAuth integrations, genuine media production, live publishing, analytics activation and production-scale validation remained outstanding.
+
+The next step is to restore governed implementation, finish remaining integrations, and prove the complete production workflow with real artifacts and real operational evidence.
+
+## The vision in one sentence
+
+ST Production House is a cloud-based AI media company in which you own the business, Hermes manages the operation, and up to 50 independent AI Directors run separate creative universes—from research and cinematic production through approved distribution, analytics, marketing and continuous improvement.
+
+The ultimate goal is for you to manage the company from one dashboard, communicate with any Director, approve the actions that matter, and let reliable cloud automation handle the rest.
+
+Concept and workflow based on your previously defined ST Production House requirements.&#x20;

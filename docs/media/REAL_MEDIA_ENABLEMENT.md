@@ -10,7 +10,6 @@ each outcome honestly means.
 |---|---|---|
 | `STPH_ENABLE_WORKERS=1` | Starts the durable `ProductionWorkerLoop` (lease-claimed `episode_production` jobs, bounded concurrency) | Server starts but no jobs ever run |
 | `STPH_ENABLE_REAL_MEDIA=1` | Worker claims route through the **real executor runner** (`src/pipeline/productionExecutorRunner.js`) instead of the deterministic pipeline | Only deterministic (plan-level) artifacts are produced — `mediaStatus: not_generated` |
-| `STPH_ENABLE_LOCAL_MOTION=1` | Inserts the local FFmpeg motion stage between visual and assembly (Issue #241); assembly consumes the recorded clip | `audio → visual → assembly`, unchanged. Needs `STPH_ENABLE_REAL_MEDIA=1`; the combination without it is reported at boot as `MOTION_STAGE_IGNORED_WITHOUT_REAL_MEDIA` |
 
 Wiring lives in `src/catalog/server.js` (see `STPH_ENABLE_REAL_MEDIA` gate):
 when the flag is on, each claimed job runs through a per-Director runner
