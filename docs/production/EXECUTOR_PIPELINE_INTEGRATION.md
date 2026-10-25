@@ -8,17 +8,13 @@
 
 ## Architecture
 
-    runEpisodePipeline({ ..., executorRunner, motionEnabled })
+    runEpisodePipeline({ ..., executorRunner })
       ├── executorRunner injected? → runEpisodePipelineWithExecutors()
       │     ├── audio    → executeTtsGeneration      (#177/#179)
       │     ├── visual   → executeVisualGeneration   (#181)
-      │     ├── motion   → runLocalMotionStage       (#241, opt-in only)
-      │     │     (local ffmpeg minterpolate over the release's OWN
-      │     │      verified visual artifact)
       │     ├── assembly → executeAssemblyPlan       (#174/#175)
       │     │     (consumes the release's OWN verified artifacts via
-      │     │      sha256 descriptor bindings built by the runner; the
-      │     │      motion clip when present, else the still)
+      │     │      sha256 descriptor bindings built by the runner)
       │     ├── every result → evaluateExecutorArtifact (#182 bridge)
       │     ├── recorded verdict → recordExecutorArtifact (idempotent)
       │     └── story stage stays deterministic (plan document, not media)
@@ -50,7 +46,7 @@
 
 | Executor result | Pipeline behavior |
 |---|---|
-| verified media (matching inspection) | artifact recorded `provider_generated` — or `local_interpolation` for the local motion stage, which makes no provider call — with `ffprobe_verified=true`; stage succeeded |
+| verified media (matching inspection) | artifact recorded `provider_generated`, `ffprobe_verified=true`; stage succeeded |
 | unverified (ran, inspection failed) | truthful stage failure with the executor's stable code; release → `planned`; job marked failed; no artifact |
 | `WAITING_FOR_QUOTA` / `CREDENTIAL_MISSING` / `PROVIDER_UNAVAILABLE` | DURABLE WAIT: release → `planned` for scheduler resume, `pipeline_stage_waiting` evidence, wait code attached to the job WITHOUT changing its status (R5) |
 | forged / cross-Director / malformed | bridge gate throws; stage failed; release → `planned` |
@@ -68,46 +64,21 @@ truthful stage failure (`QC_AUDIO_COVERAGE_INSUFFICIENT`,
 re-plans, the job carries the code, and no incomplete artifact is recorded;
 `qc.completeness` records the measured video/audio seconds and coverage ratio.
 
-## Local motion stage (Issue #241, opt-in)
-
-`motionEnabled === true` (from `STPH_ENABLE_LOCAL_MOTION=1`) inserts `motion`
-between visual and assembly. The stage is owned by
-`src/pipeline/motionStage.js`; `docs/media/MOTION_EXECUTOR.md` holds the full
-contract:
-
-- prerequisites fail closed (`MOTION_SOURCE_UNAVAILABLE`,
-  `MOTION_AGENT_MISMATCH`, `MOTION_SOURCE_PATH_UNSAFE`,
-  `MOTION_FRAME_LIST_WRITE_FAILED`) before any binary is spawned;
-- the worker's real matching-hash inspection is the only success path
-  (`MOTION_SPAWN_FAILED` / `MOTION_TIMEOUT` / `MOTION_CALL_FAILED` /
-  `INSPECTION_FAILED` otherwise);
-- assembly consumes the recorded clip (`video_clip`, planned duration, looped
-  when shorter), while the flag-off path records and renders exactly as
-  before;
-- `sql/031_motion_stage.sql` widens `pipeline_events.stage` so the stage's
-  events are durable (additive migration, no status enum changes).
-
+(The prior opt-in local motion stage, Issue #241, was removed on `main` in
+6161dd8; see `docs/media/MOTION_EXECUTOR.md` in git history for its contract.)
 ## Tests
 
-`tests/executorPipelineIntegration.test.js` (14 tests): end-to-end real
+`tests/executorPipelineIntegration.test.js` (9 tests): end-to-end real
 executor run recording verified narration/visual/assembled-episode artifacts
 hash-anchored to the REAL bytes; persistence with honest provenance;
 durable-wait semantics (release re-planned, job metadata, no fabricated
 artifact); truthful unverified failure (job failed, nothing recorded);
 gate-error propagation; cross-Director fail-closed; per-stage Director
 binding assertions; wait/failure classification closure; stage-context
-binding; and the motion gate both ways (off: no motion stage, still program;
-on: verified local motion artifact recorded and consumed by assembly).
-
-`tests/motionPipelineBinding.test.js` (11 tests) covers the motion seam in
-isolation: gate parsing, deterministic frame list, fail-closed prerequisites,
-the bridge mapping of a verified local render, the runner's stage branch, and
-the assembly loop/plan binding.
+binding.
 
 ## Non-goals
 
 No provider calls inside the pipeline module itself (transports stay with
-the worker's runner); no publishing; no new job-status states (R5). The only
-schema change is `sql/031_motion_stage.sql` (pipeline_events.stage widening
-for the opt-in motion stage); the release→job link still uses the Rule-13
-idempotency key.
+the worker's runner); no publishing; no new SQL migration (job link via
+idempotency key); no new job-status states (R5).
