@@ -15,8 +15,10 @@ validated plan (media_assembly_plan_v1)
         ├── buildRenderPlan()             — ARRAY ARGS ONLY (CONVENTIONS Rule 2)
         ├── runFfmpeg()                   — injectable spawn, no shell
         ├── inspectMediaFile()            — real bytes → hash + ffprobe (Issue #170)
-        └── evaluateMainVideoRuntimeGate() /
-            evaluateShortFormDurationGate() — QC duration policy
+        ├── evaluateMainVideoRuntimeGate() /
+        │   evaluateShortFormDurationGate() — QC duration policy
+        └── evaluateEpisodeCompleteness()  — required streams + measured
+                                             audio coverage (S-M41-01)
 ```
 
 ## Safety: references, paths, and array args
@@ -73,12 +75,17 @@ validated plan (media_assembly_plan_v1)
 | Measured duration missing | `QC_INSPECTION_DURATION_MISSING` |
 | Claimed vs measured conflict > 1 s | `QC_DURATION_CONFLICT` |
 | Duration outside the policy window | `QC_DURATION_OUT_OF_RANGE` |
+| Required stream absent | `QC_STREAM_MISSING_VIDEO` / `QC_STREAM_MISSING_AUDIO` |
+| Per-stream duration absent | `QC_STREAM_DURATION_MISSING` |
+| Audio does not cover the program | `QC_AUDIO_COVERAGE_INSUFFICIENT` |
+| Audio runs past the picture | `QC_AUDIO_EXTENDS_BEYOND_VIDEO` |
 
 A success result requires ALL of: real command execution, a real inspection
 of the rendered bytes (hash computed from the actual file, ffprobe payload
-present), and a passing QC duration gate. The returned descriptor is
-`VERIFIED` only through the existing S-M30-01 promotion, anchored to the
-REAL rendered content hash — the executor asserts no claimed duration on it.
+present), a passing QC duration gate, and a passing completeness gate. The
+returned descriptor is `VERIFIED` only through the existing S-M30-01
+promotion, anchored to the REAL rendered content hash — the executor asserts
+no claimed duration on it.
 
 ## QC duration policy (defined and enforced here)
 
@@ -91,6 +98,33 @@ REAL rendered content hash — the executor asserts no claimed duration on it.
   fail-closed structure) with the reel window **[3, 90] s**.
 - The gate consumes the POST-RENDER inspection of the rendered file — never
   a caller's claim — so the policy is evidence-based end to end.
+
+## Episode completeness gate (S-M41-01, Issue #243)
+
+Duration alone does not make an episode. Measured on `main`: a real 30 s
+render with a 1 s narration track passed every QC check, and the production
+narration script measures **3.6 s** against an 1800–3000 s main-video target.
+`src/media/episodeCompleteness.js` evaluates the SAME post-render inspection
+and must pass before a render is recorded:
+
+| Check | Rule |
+|---|---|
+| Required streams | both `video` and `audio` streams present in the probe |
+| Measured durations | per-stream `duration` present and parseable; no default pass |
+| Audio coverage | `audioSeconds + tolerance >= referenceSeconds`; the reference is the Director's configured main target when supplied, otherwise the measured video duration |
+| A/V sync | `audioSeconds <= videoSeconds + 1 s` (an audio tail with no picture is a broken render) |
+| Tolerance | `min(15 s, max(1 s, 0.5 % of the reference))` — a 30-minute program may end at most 9 s before its planned length; a 6 s Reel gets a 1 s allowance |
+
+The QC record carries the measured evidence (`qc.completeness.videoSeconds`,
+`audioSeconds`, `referenceSeconds`, `coverageToleranceSeconds`,
+`audioCoverageRatio`, `reasonCode`), so a rejection states exactly how much
+audio is missing. A failure means `success: false`, `descriptor: null`, the
+release re-plans, and the job carries the stable code — an incomplete render
+is never recorded as a complete episode.
+
+This gate does **not** scale narration to the episode, add BGM/SFX, or
+validate subtitle timing. It makes the completeness claim truthful and turns
+the current short-narration reality into an explicit, resumable failure.
 
 ## Injected transports (offline testability)
 
