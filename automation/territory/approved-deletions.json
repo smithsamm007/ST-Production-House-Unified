@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Documented, owner-reviewed approvals that permanently authorize deleting a protected Node control-plane path. Each entry requires a non-empty path, reason, approvedBy, and approvedOn; placeholder or partial entries are ignored by the guard. This list is the explicit escape hatch required for legitimate, reviewed backend migrations — use a PR that updates this file in the same change.",
+  "entries": []
+}

@@ -22,8 +22,22 @@ permissions:
   issues: write
 
 jobs:
+  territory-guard:
+    name: Repository Territory Guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.expected_head || github.sha }}
+          fetch-depth: 0
+
+      - name: Detect unapproved deletion of protected backend paths
+        run: node .github/scripts/territory-guard.mjs --base "origin/${{ github.base_ref || 'main' }}" "${{ inputs.expected_head || github.sha }}"
+
   lint-and-validate:
     name: Lint & Security Audit
+    needs: [territory-guard]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -47,7 +61,7 @@ jobs:
 
   unit-and-policy-tests:
     name: Unit & Policy Tests
-    needs: [lint-and-validate]
+    needs: [territory-guard, lint-and-validate]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

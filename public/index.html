@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ST Production House — Owner Console</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- ============================ LOGIN ============================ -->
+  <div id="login-view" class="login-wrap hidden">
+    <form id="login-form" class="login-card" autocomplete="on">
+      <div class="brand brand-lg"><span class="logo">ST</span><div><h1>PRODUCTION HOUSE</h1><span class="brand-sub">UNIFIED · Owner Console</span></div></div>
+      <p class="muted">Sign in to the unified control plane. Every value on the next screen comes from a real API response — nothing on this console is simulated.</p>
+      <input id="email" type="email" placeholder="owner email" autocomplete="username" required />
+      <input id="password" type="password" placeholder="password" autocomplete="current-password" required />
+      <button type="submit" id="login-btn">Sign in</button>
+      <div class="error" id="login-error" role="alert"></div>
+      <div class="muted" id="demo-hint"></div>
+    </form>
+  </div>
+
+  <!-- ============================ APP SHELL ============================ -->
+  <div id="app-view" class="hidden">
+    <header class="topbar">
+      <div class="brand"><span class="logo">ST</span><div><h1>PRODUCTION HOUSE</h1><span class="brand-sub">UNIFIED · Owner Console</span></div></div>
+      <div class="top-tags">
+        <span>Multiple Directors</span><i></i><span>Independent Universes</span><i></i><span>One AI-Powered Production House</span>
+      </div>
+      <div class="top-right">
+        <span id="storage-pill" class="pill">…</span>
+        <span id="owner-email" class="muted"></span>
+        <button id="logout-btn" class="btn-ghost">Sign out</button>
+      </div>
+    </header>
+
+    <div class="shell">
+      <nav class="sidebar" aria-label="Owner dashboard sections">
+        <div class="side-title">Owner Dashboard</div>
+        <button class="nav-item active" data-view="overview"><span class="ico">▦</span>Command Center</button>
+        <button class="nav-item" data-view="directors"><span class="ico">◉</span>Directors</button>
+        <button class="nav-item" data-view="schedule"><span class="ico">⏱</span>Episode &amp; Schedule</button>
+        <button class="nav-item" data-view="communication"><span class="ico">✉</span>Director Communication</button>
+        <button class="nav-item" data-view="memory"><span class="ico">▣</span>Director Memory</button>
+        <button class="nav-item" data-view="production"><span class="ico">▶</span>Production</button>
+        <button class="nav-item" data-view="jobs"><span class="ico">≡</span>Active Jobs</button>
+        <button class="nav-item" data-view="providers"><span class="ico">⛁</span>Provider Status</button>
+        <button class="nav-item" data-view="quotas"><span class="ico">◔</span>Quotas</button>
+        <button class="nav-item" data-view="connections"><span class="ico">⚿</span>Secrets &amp; Connections</button>
+        <button class="nav-item" data-view="publishing"><span class="ico">⇪</span>Publishing Accounts</button>
+        <button class="nav-item" data-view="approvals"><span class="ico">✓</span>Approvals</button>
+        <button class="nav-item" data-view="analytics"><span class="ico">≈</span>Analytics</button>
+        <button class="nav-item" data-view="hermes"><span class="ico">✳</span>Hermes Decisions</button>
+        <button class="nav-item" data-view="evidence"><span class="ico">⛓</span>Evidence</button>
+        <button class="nav-item" data-view="alerts"><span class="ico">⚑</span>Alerts</button>
+        <button class="nav-item" data-view="settings"><span class="ico">⚙</span>Settings</button>
+
+        <div class="hermes-mini">
+          <div class="side-title">Hermes · ST AI Manager</div>
+          <div class="mini-kv"><span>Registered directors</span><b id="mini-directors">…</b></div>
+          <div class="mini-kv"><span>Channels (live)</span><b id="mini-channels">…</b></div>
+          <div class="mini-kv"><span>Central platform</span><b>1</b></div>
+          <div class="mini-kv"><span>Storage</span><b id="mini-storage">…</b></div>
+          <p class="mini-note">Counts are live from the control plane. Channels are capped by the owner registry; story slots grow with the catalog.</p>
+        </div>
+      </nav>
+
+      <main id="main">
+        <!-- Command Center -->
+        <section id="view-overview" class="view">
+          <div class="metrics-strip" id="metrics-strip"></div>
+          <div class="panel wide">
+            <h2>The Production Pipeline</h2>
+            <p class="muted">Every director runs its own independent production team. Stage set is the durable <code>pipeline_events</code> enum (sql/020 + 024 + 025) — the same stages the worker writes.</p>
+            <div class="pipeline" id="pipeline-strip"></div>
+          </div>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Director channels</h2><button class="btn-ghost" id="overview-refresh">Refresh</button></div>
+            <div class="cards" id="overview-channels"></div>
+          </div>
+          <div class="panel wide">
+            <h2>Real output examples</h2>
+            <p class="muted">Latest recorded artifacts across all releases. Artifacts are labeled with their true generation mode and verification state — nothing is promoted without a real inspection.</p>
+            <div id="overview-artifacts" class="artifact-list"></div>
+          </div>
+        </section>
+
+        <!-- Directors -->
+        <section id="view-directors" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Director channels</h2><button class="btn-ghost" id="directors-refresh">Refresh</button></div>
+            <p class="muted">Public channel branding only. Internal director identities stay server-side and never render here. Registered agents: <span id="directors-agent-count">…</span> (registry hard cap 50).</p>
+            <div class="cards" id="directors-cards"></div>
+            <div id="directors-channel-detail"></div>
+          </div>
+        </section>
+
+        <!-- Episode & Production Schedule (per director, sql/029) -->
+        <section id="view-schedule" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Episode &amp; production schedule</h2><button class="btn-ghost" id="sched-refresh">Refresh</button></div>
+            <p class="muted">Each director owns its settings: episode duration, episodes per day, production days, preferred start time, timezone, and an explicit enable/pause flag. Saving a schedule never publishes and never bypasses owner approval — a scheduler run only queues planned episodes into the existing approval pipeline.</p>
+            <div class="form-row">
+              <label for="sched-agent">Director</label>
+              <select id="sched-agent"></select>
+              <button id="sched-load">Load schedule</button>
+            </div>
+            <form id="sched-form" class="stack">
+              <div class="form-row">
+                <label for="sched-duration">Main episode duration</label>
+                <select id="sched-duration">
+                  <option value="1800">30 minutes</option>
+                  <option value="2400">40 minutes</option>
+                  <option value="3000">50 minutes</option>
+                </select>
+                <label for="sched-per-day">Episodes per day</label>
+                <input id="sched-per-day" type="number" min="1" max="6" step="1" list="sched-per-day-options" />
+                <datalist id="sched-per-day-options">
+                  <option value="1"></option>
+                  <option value="2"></option>
+                  <option value="3"></option>
+                </datalist>
+              </div>
+              <fieldset id="sched-days" class="stack">
+                <legend>Production days</legend>
+                <label class="check"><input type="checkbox" id="sched-day-1" /> Monday</label>
+                <label class="check"><input type="checkbox" id="sched-day-2" /> Tuesday</label>
+                <label class="check"><input type="checkbox" id="sched-day-3" /> Wednesday</label>
+                <label class="check"><input type="checkbox" id="sched-day-4" /> Thursday</label>
+                <label class="check"><input type="checkbox" id="sched-day-5" /> Friday</label>
+                <label class="check"><input type="checkbox" id="sched-day-6" /> Saturday</label>
+                <label class="check"><input type="checkbox" id="sched-day-7" /> Sunday</label>
+                <div class="form-row">
+                  <button type="button" id="sched-preset-every">Every day</button>
+                  <button type="button" id="sched-preset-five">Mon–Fri</button>
+                </div>
+              </fieldset>
+              <div class="form-row">
+                <label for="sched-start-time">Preferred start time</label>
+                <input id="sched-start-time" type="time" required />
+                <label for="sched-timezone">Timezone (IANA)</label>
+                <input id="sched-timezone" list="sched-timezone-options" maxlength="64" placeholder="Asia/Kolkata" required />
+                <datalist id="sched-timezone-options">
+                  <option value="Asia/Kolkata"></option>
+                  <option value="Asia/Dubai"></option>
+                  <option value="Europe/London"></option>
+                  <option value="America/New_York"></option>
+                  <option value="America/Los_Angeles"></option>
+                  <option value="UTC"></option>
+                </datalist>
+              </div>
+              <label class="check"><input type="checkbox" id="sched-enabled" /> Schedule enabled (unchecked = paused)</label>
+              <div class="form-row">
+                <button type="submit">Save schedule</button>
+                <span class="muted">Saving stores the configuration only. Enabling a schedule queues planned episodes; publishing still requires owner approval.</span>
+              </div>
+              <div class="error" id="sched-error" aria-live="polite"></div>
+            </form>
+            <div class="form-row">
+              <button id="sched-dry-run" type="button">Preview plan (no writes)</button>
+              <button id="sched-run" type="button">Run scheduler now</button>
+              <span class="muted">A run creates at most the current period's due slots, respects capacity/quota, and records why any slot is delayed, blocked, or skipped.</span>
+            </div>
+            <div id="sched-status"></div>
+            <div id="sched-run-output"></div>
+          </div>
+        </section>
+
+        <!-- Director Communication -->
+        <section id="view-communication" class="view" hidden>
+          <div class="panel wide">
+            <h2>Director communication window</h2>
+            <p class="muted">One persistent window per director. Messages carry explicit semantics (conversation | proposal | instruction | decision); recording never triggers production or publishing.</p>
+            <div class="form-row">
+              <label for="comm-agent">Director</label>
+              <select id="comm-agent"></select>
+              <button id="comm-load">Load window</button>
+            </div>
+            <div id="comm-thread" class="thread"></div>
+            <form id="comm-form" class="stack hidden">
+              <div class="form-row">
+                <select id="comm-kind">
+                  <option value="conversation">conversation</option>
+                  <option value="proposal">proposal</option>
+                  <option value="instruction">instruction</option>
+                  <option value="decision">decision</option>
+                </select>
+                <select id="comm-sender">
+                  <option value="owner">owner</option>
+                  <option value="director">director</option>
+                </select>
+              </div>
+              <textarea id="comm-body" rows="3" maxlength="8000" placeholder="Message body (max 8000 chars)"></textarea>
+              <button type="submit">Record message</button>
+              <div class="error" id="comm-error"></div>
+            </form>
+          </div>
+        </section>
+
+        <!-- Director Memory -->
+        <section id="view-memory" class="view" hidden>
+          <div class="panel wide">
+            <h2>Director memory (isolated)</h2>
+            <p class="muted">One JSON entry per category, scoped to owner + director. No cross-director leakage.</p>
+            <div class="form-row">
+              <label for="memory-agent">Director</label>
+              <select id="memory-agent"></select>
+              <button id="memory-load">Load memory</button>
+            </div>
+            <div id="memory-list" class="memory-grid"></div>
+          </div>
+        </section>
+
+        <!-- Production -->
+        <section id="view-production" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Productions</h2><button class="btn-ghost" id="production-refresh">Refresh</button></div>
+            <form id="production-form" class="stack">
+              <div class="form-row">
+                <select id="prod-channel" required></select>
+                <input id="prod-title" placeholder="Episode title" required />
+                <input id="prod-season" type="number" min="1" max="100" placeholder="Season" required />
+                <input id="prod-episode" type="number" min="1" max="2000" placeholder="Episode" required />
+              </div>
+              <div class="form-row">
+                <button type="submit">Queue production</button>
+                <span class="muted">One planned release per (channel, season, episode) slot — a failed attempt creates a new job, never a second logical release.</span>
+              </div>
+              <div class="error" id="production-error"></div>
+            </form>
+            <div id="production-list"></div>
+          </div>
+          <div class="panel wide hidden" id="release-detail-panel">
+            <div class="panel-head"><h2 id="release-detail-title">Release detail</h2><button class="btn-ghost" id="release-detail-close">Close</button></div>
+            <div id="release-detail"></div>
+          </div>
+        </section>
+
+        <!-- Active Jobs -->
+        <section id="view-jobs" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Active jobs</h2><button class="btn-ghost" id="jobs-refresh">Refresh</button></div>
+            <div id="jobs-by-status" class="chips"></div>
+            <div id="jobs-list"></div>
+          </div>
+        </section>
+
+        <!-- Provider Status -->
+        <section id="view-providers" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Provider catalog</h2><button class="btn-ghost" id="providers-refresh">Refresh</button></div>
+            <p class="muted">Governed provider catalog with official credential URLs. No provider is live until the owner binds secrets in the secret manager.</p>
+            <div id="providers-list" class="cards"></div>
+          </div>
+        </section>
+
+        <!-- Quotas -->
+        <section id="view-quotas" class="view" hidden>
+          <div class="panel wide">
+            <h2>Quotas</h2>
+            <div id="quotas-body"></div>
+          </div>
+        </section>
+
+        <!-- Secrets & Connections -->
+        <section id="view-connections" class="view" hidden>
+          <div class="panel wide">
+            <h2>Secrets &amp; Connections</h2>
+            <p class="muted">Per-director provider bindings. Enter only opaque secret-manager locators, never API keys or passwords. Saved locators are not returned to the dashboard, and a connection test may honestly remain unverified until a live transport is configured.</p>
+            <div class="form-row">
+              <label for="conn-agent">Director</label>
+              <select id="conn-agent"></select>
+              <button id="conn-load">Load connections</button>
+            </div>
+            <form id="connection-form" class="stack">
+              <div class="form-row">
+                <label for="conn-provider">Provider</label>
+                <select id="conn-provider" required></select>
+                <span class="sub">connection kind: <b id="conn-kind">—</b></span>
+                <input id="conn-label" maxlength="120" placeholder="Owner-only label" autocomplete="off" />
+              </div>
+              <div id="connection-fields" class="stack"></div>
+              <div class="form-row">
+                <button type="submit">Save provider binding</button>
+                <span class="muted">This stores configuration only; it does not connect OAuth or prove provider availability.</span>
+              </div>
+              <div class="error" id="connection-error" aria-live="polite"></div>
+            </form>
+            <div class="youtube-oauth stack">
+              <h2>YouTube account (official OAuth)</h2>
+              <p class="muted">Official Google OAuth lifecycle for the selected director: authorization → token exchange → official YouTube account verification → revocation. Tokens go only to the external secret manager; the database stores an opaque locator. No client secret, token, authorization code, or locator is ever displayed here.</p>
+              <div id="youtube-status" class="stack"></div>
+              <div class="form-row">
+                <button id="youtube-connect" type="button">Connect YouTube</button>
+                <button id="youtube-revoke" type="button" hidden>Revoke YouTube access</button>
+              </div>
+              <div class="error" id="youtube-error" aria-live="polite"></div>
+            </div>
+            <div class="social-oauth stack">
+              <h2>Social accounts (official OAuth)</h2>
+              <p class="muted">Each director connects its OWN social accounts. Official provider authorization → token exchange → provider identity verification → revocation. Tokens go only to the external secret manager; the database stores an opaque locator. Application-wide developer credentials are configured centrally by the operator, never re-entered per director. No token, secret, locator, or authorization code is ever displayed here.</p>
+              <div class="form-row">
+                <label for="social-provider">Platform</label>
+                <select id="social-provider"></select>
+                <span class="sub" id="social-provider-note"></span>
+              </div>
+              <div id="social-status" class="stack"></div>
+              <div class="form-row">
+                <button id="social-connect" type="button">Connect account</button>
+                <button id="social-revoke" type="button" hidden>Revoke access</button>
+              </div>
+              <div class="error" id="social-error" aria-live="polite"></div>
+            </div>
+            <div id="connections-list"></div>
+          </div>
+        </section>
+
+        <!-- Publishing Accounts -->
+        <section id="view-publishing" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Publishing accounts (per channel)</h2><button class="btn-ghost" id="publishing-refresh">Refresh</button></div>
+            <p class="muted">Platform destinations with owner-defined public attribution. Publishing records intent + evidence only — live platform calls remain pending until accounts are connected.</p>
+            <div id="publishing-list"></div>
+            <form id="destination-form" class="stack">
+              <div class="form-row">
+                <select id="dest-channel" required></select>
+                <select id="dest-platform">
+                  <option value="youtube">youtube</option>
+                  <option value="instagram">instagram</option>
+                  <option value="facebook">facebook</option>
+                  <option value="snapchat">snapchat</option>
+                </select>
+                <input id="dest-handle" placeholder="@handle" required />
+              </div>
+              <input id="dest-attribution" placeholder="Public attribution (shown with published content; internal director names are rejected)" required />
+              <label class="check"><input type="checkbox" id="dest-primary" /> Primary destination</label>
+              <button type="submit">Add destination</button>
+              <div class="error" id="destination-error"></div>
+            </form>
+          </div>
+        </section>
+
+        <!-- Approvals -->
+        <section id="view-approvals" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Owner approval queue</h2><button class="btn-ghost" id="approvals-refresh">Refresh</button></div>
+            <div id="approvals-body"></div>
+          </div>
+        </section>
+
+        <!-- Analytics -->
+        <section id="view-analytics" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Analytics (operational counters)</h2><button class="btn-ghost" id="analytics-refresh">Refresh</button></div>
+            <div id="analytics-body"></div>
+          </div>
+        </section>
+
+        <!-- Hermes Decisions -->
+        <section id="view-hermes" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Hermes decision command center</h2><button class="btn-ghost" id="hermes-refresh">Refresh</button></div>
+            <p class="muted">Decision authority without secret access. Every decision is recorded and auditable; prohibited actions are structurally refused.</p>
+            <div id="hermes-overview" class="cards"></div>
+            <h2 class="mt">Authority matrix</h2>
+            <div id="hermes-authority" class="chips"></div>
+            <h2 class="mt">Recent decisions</h2>
+            <div id="hermes-decisions" class="thread"></div>
+          </div>
+        </section>
+
+        <!-- Evidence -->
+        <section id="view-evidence" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Evidence ledger</h2><button class="btn-ghost" id="evidence-refresh">Refresh</button></div>
+            <p class="muted">Append-only, hash-chained events. Unverified claims cannot enter this ledger.</p>
+            <div id="evidence-list" class="thread"></div>
+          </div>
+        </section>
+
+        <!-- Alerts -->
+        <section id="view-alerts" class="view" hidden>
+          <div class="panel wide">
+            <h2>Alerts</h2>
+            <div id="alerts-body"></div>
+          </div>
+        </section>
+
+        <!-- Settings -->
+        <section id="view-settings" class="view" hidden>
+          <div class="panel wide">
+            <div class="panel-head"><h2>Settings</h2><button class="btn-ghost" id="settings-refresh">Refresh</button></div>
+            <div id="settings-owner"></div>
+            <h2 class="mt">Active sessions</h2>
+            <div id="sessions-list" class="thread"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <script src="/dashboard.js"></script>
+</body>
+</html>
