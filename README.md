@@ -2,6 +2,15 @@
 
 Android Owner Console and Control Plane for ST Production House, written in Kotlin with Jetpack Compose and Material Design 3.
 
+## Repository architecture (two coexisting territories)
+
+This repository hosts:
+
+1. **The Android owner console** (`app/**`, Kotlin/Jetpack Compose, Material 3) — restored as an intentional pivot in October 2026. It currently renders the owner-console surfaces over local demo fixtures and is being wired to the Node control plane below as its authenticated backend.
+2. **The Node.js control plane** (`src/`, `tests/`, `sql/001–031`, `server.js`, `public/` dashboard, `scripts/`, `automation/`, root manifests) — the production backend with PostgreSQL migrations, authenticated owner API (Argon2id + sessions + CSRF), leased workers, deterministic media pipeline, publisher adapters, and the autonomous backlog lifecycle. Recovered in the Phase-0 regression recovery (issue #245) after an AI-Studio sync accidentally deleted the backend, and now preserved by an automated repository-territory guard (`docs/TERRITORY_GUARD.md`) that fails CI on unapproved backend deletions.
+
+The two territories are kept separate in CI: Android app syncs must not delete backend paths, and backend changes must not touch the app tree.
+
 ## Overview
 
 ST Production House Unified is the secure, multi-director control plane for managing an autonomous AI-powered animation and episodic production house. It consolidates creative charters, channels, media pipelines, scheduling, provider slots, and publishing gates with strict zero-trust honesty.

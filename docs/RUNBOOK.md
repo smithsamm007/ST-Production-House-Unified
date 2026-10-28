@@ -6,6 +6,14 @@ and the migration rollback policy. Every procedure below references real
 scripts, modules, and database objects in this repository — nothing here is
 aspirational.
 
+> **Repository territory (since Phase-0 recovery, issue #245).** The
+> repository hosts the Node control plane (`src/ tests/ sql/ automation/
+> scripts/ public/ specs/`, root manifests) and the Android owner-console
+> client (`app/**`, root Gradle config) side by side. Automated CI enforces
+> the boundary; see `docs/TERRITORY_GUARD.md` for the guard, the approved
+> deletions escape hatch, and the recovery procedure after any accidental
+> backend sweep.
+
 ---
 
 ## 1. Component Map (what runs where)

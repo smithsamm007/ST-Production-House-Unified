@@ -1,0 +1,22 @@
+INSERT INTO agents (id, name, namespace) VALUES
+('agent-01','JARVIS','st.agent.jarvis'),
+('agent-02','SHERLOCK','st.agent.sherlock'),
+('agent-03','LAKME','st.agent.lakme'),
+('agent-04','PANCHI','st.agent.panchi'),
+('agent-05','VEDA','st.agent.veda'),
+('agent-06','BYTE','st.agent.byte'),
+('agent-07','CHANAKYA','st.agent.chanakya'),
+('agent-08','KABIR','st.agent.kabir'),
+('agent-09','SHAKTI','st.agent.shakti'),
+('agent-10','ROHAN','st.agent.rohan'),
+('agent-11','MAYA','st.agent.maya'),
+('agent-12','AAROHI','st.agent.aarohi'),
+('agent-13','VIKRAM','st.agent.vikram'),
+('agent-14','TARA','st.agent.tara'),
+('agent-15','ANANYA','st.agent.ananya'),
+('agent-16','KARAN','st.agent.karan'),
+('agent-17','DEV','st.agent.dev'),
+('agent-18','AANYA','st.agent.aanya'),
+('agent-19','ARJUN','st.agent.arjun'),
+('agent-20','NISHA','st.agent.nisha')
+ON CONFLICT DO NOTHING;

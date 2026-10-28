@@ -1,0 +1,1928 @@
+/**
+ * ST Production House — dashboard runtime.
+ *
+ * Renders ONLY what the API actually returns. No simulated states: if a
+ * request fails, the UI says so and shows the real error code. Works under
+ * CSP `script-src 'self'` (external file, no inline handlers, no eval).
+ *
+ * Contract notes (AGENTS.md):
+ *   Rule 1  — every state is real: loading / error / empty are explicit.
+ *   Rule 15 — internal director names are never fetched for display and
+ *             never rendered; panels use channel branding + opaque agentId.
+ *   Rule 17 — the connections panel lists secret field KEYS only; locator
+ *             values never reach this file.
+ */
+(function () {
+  "use strict";
+
+  const state = {
+    me: null,
+    csrfToken: null,
+    health: null,
+    metrics: null,
+    providers: [],
+    channels: [],
+    productions: [],
+    social: {},
+    activeView: "overview",
+  };
+
+  // ------------------------------------------------------------------
+  // Small helpers
+  // ------------------------------------------------------------------
+  function $(id) { return document.getElementById(id); }
+
+  function esc(value) {
+    return String(value ?? "").replace(/[&<>"']/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
+    });
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+  }
+
+  function shortHash(value, size) {
+    const n = size || 12;
+    if (typeof value !== "string" || value.length === 0) return "—";
+    return value.length <= n ? value : value.slice(0, n) + "…";
+  }
+
+  function jsonPretty(value) {
+    try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+  }
+
+  function statusPillClass(status) {
+    switch (status) {
+      case "succeeded": case "published": case "ready": case "healthy": case "active":
+      case "EXECUTED": case "AUTHORISED": case "authorized":
+        return "ok";
+      case "running": case "leased": case "in_production": case "rendering": case "EXECUTING":
+      case "pending": case "mfa_pending":
+        return "warn";
+      case "failed": case "dead_letter": case "BLOCKED": case "REFUSED": case "unhealthy":
+        return "bad";
+      case "queued": case "planned": case "review": case "OWNER_APPROVAL_REQUIRED":
+        return "info";
+      default:
+        return "";
+    }
+  }
+
+  function pill(text, cls) {
+    return '<span class="pill ' + esc(cls || statusPillClass(text)) + '">' + esc(text) + "</span>";
+  }
+
+  function errorBox(message) {
+    return '<div class="empty">⚠ ' + esc(message) + "</div>";
+  }
+
+  function storageErrorMessage(err) {
+    if (err && err.code === "STORAGE_NOT_CONFIGURED") {
+      return "Storage is not configured on this server (honest 503) — this panel needs a configured database or demo storage.";
+    }
+    if (err && (err.code === "SESSION_TOKEN_REQUIRED" || err.code === "INVALID_SESSION_TOKEN" || err.status === 401)) {
+      return "Session expired — sign in again.";
+    }
+    return (err && err.code) || (err && err.message) || "request failed";
+  }
+
+  async function api(path, options) {
+    const opts = Object.assign({ credentials: "same-origin" }, options || {});
+    const method = (opts.method || "GET").toUpperCase();
+    if (method !== "GET") {
+      opts.headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
+      if (state.csrfToken) opts.headers["x-csrf-token"] = state.csrfToken;
+      if (opts.body === undefined) opts.body = "{}";
+    }
+    const res = await fetch(path, opts);
+    let body = null;
+    try { body = await res.json(); } catch { /* non-JSON body */ }
+    if (!res.ok) {
+      const err = new Error((body && body.error) || "HTTP_" + res.status);
+      err.code = body && body.error;
+      err.status = res.status;
+      throw err;
+    }
+    return body;
+  }
+
+  // Real durable pipeline stage enum (sql/020 + 024 + 025 CHECK constraint).
+  const PIPELINE_STAGES = [
+    ["story", "script & beats"],
+    ["visual", "scene visuals"],
+    ["audio", "voice & sound"],
+    ["assembly", "ffmpeg render"],
+    ["reels", "short-form"],
+    ["packaging", "package"],
+    ["qc", "quality gate"],
+    ["complete", "published state"],
+  ];
+
+  // The four canonical media slots of a release (S-M34-01): the longform main
+  // video plus the canonical short-form package — 2 independent content Reels
+  // and 1 standalone brand Reel. The reel keys are the CANONICAL_REELS
+  // identities from src/pipeline/reelsStage.js. A slot fills ONLY from
+  // durable evidence (see releaseSlotState); anything else stays an explicit
+  // empty slot (Rule 1): no invented thumbnail, duration, date, or engagement
+  // number is ever rendered.
+  const MEDIA_SLOTS = [
+    { key: "main_video", label: "Main Video", hint: "longform episode" },
+    { key: "content_reel_1", label: "Short 1", hint: "content reel" },
+    { key: "content_reel_2", label: "Short 2", hint: "content reel" },
+    { key: "brand_reel", label: "Brand Reel", hint: "standalone brand promo" },
+  ];
+
+  // ------------------------------------------------------------------
+  // Boot, auth, shell
+  // ------------------------------------------------------------------
+  function showLogin() {
+    $("app-view").classList.add("hidden");
+    $("login-view").classList.remove("hidden");
+  }
+
+  function enterApp() {
+    $("login-view").classList.add("hidden");
+    $("app-view").classList.remove("hidden");
+    $("owner-email").textContent = state.me && state.me.email ? state.me.email : "";
+    refreshCore().then(function () {
+      if (youtubeOauthBoot) {
+        // Returning from the Google OAuth round-trip (Issue #206).
+        showView("connections");
+        applyOauthBootResult();
+      } else {
+        showView("overview");
+      }
+    });
+  }
+
+  async function refreshCore() {
+    const results = await Promise.allSettled([
+      api("/api/health"),
+      api("/api/metrics"),
+      api("/api/channels"),
+    ]);
+    if (results[1].status === "fulfilled") {
+      state.metrics = results[1].value;
+    } else if (results[1].reason && results[1].reason.status === 401) {
+      state.csrfToken = null;
+      showLogin();
+      return;
+    }
+    if (results[0].status === "fulfilled") {
+      state.health = results[0].value;
+      if (state.health.isDemoStorage === true) {
+        $("demo-hint").textContent =
+          "Demo storage detected on this server — the repository documentation lists the seeded demo owner credentials.";
+      }
+    }
+    if (results[2].status === "fulfilled") {
+      state.channels = (results[2].value && results[2].value.channels) || [];
+    }
+    renderStoragePill();
+    renderMiniStats();
+    fillChannelSelects();
+    fillDirectorSelects();
+  }
+
+  function renderStoragePill() {
+    const el = $("storage-pill");
+    if (!state.health) { el.textContent = "health unreachable"; el.className = "pill bad"; return; }
+    const mode = state.health.storage || "unknown";
+    const status = state.health.status || "unknown";
+    el.textContent = mode + " · " + status;
+    el.className = "pill " + (status === "healthy" ? "ok" : "warn");
+  }
+
+  function renderMiniStats() {
+    const m = state.metrics;
+    $("mini-directors").textContent = m ? String(m.agents ?? "—") : "…";
+    $("mini-channels").textContent = m ? String(m.channels ?? "—") : "…";
+    $("mini-storage").textContent = state.health ? (state.health.storage || "—") : "…";
+  }
+
+  function fillChannelSelects() {
+    const options = state.channels.map(function (c) {
+      return '<option value="' + esc(c.id) + '">' + esc(c.displayName) + " (" + esc(c.slug) + ")</option>";
+    });
+    for (const id of ["prod-channel", "dest-channel"]) {
+      const select = $(id);
+      if (select) select.innerHTML = options.length > 0 ? options : '<option value="">no channels yet</option>';
+    }
+  }
+
+  function fillDirectorSelects() {
+    // Directors are addressed by opaque agentId, labeled with the channel's
+    // PUBLIC display name. Internal names are never fetched or rendered.
+    const seen = new Map();
+    for (const c of state.channels) {
+      if (c.agentId && !seen.has(c.agentId)) seen.set(c.agentId, c.displayName);
+    }
+    const options = Array.from(seen.entries()).map(function (pair) {
+      return '<option value="' + esc(pair[0]) + '">Director ' + esc(pair[0]) + " · " + esc(pair[1]) + "</option>";
+    });
+    for (const id of ["comm-agent", "memory-agent", "conn-agent", "sched-agent"]) {
+      const select = $(id);
+      if (select) select.innerHTML = options.length > 0 ? options : '<option value="">no directors with channels yet</option>';
+    }
+  }
+
+  function bindLogin() {
+    $("login-form").addEventListener("submit", async function (event) {
+      event.preventDefault();
+      const button = $("login-btn");
+      const errorBoxEl = $("login-error");
+      errorBoxEl.textContent = "";
+      button.disabled = true;
+      try {
+        const body = await api("/api/auth/login", {
+          method: "POST",
+          body: JSON.stringify({ email: $("email").value, password: $("password").value }),
+        });
+        state.me = body.owner;
+        state.csrfToken = body.csrfToken || null;
+        enterApp();
+      } catch (err) {
+        errorBoxEl.textContent = String(err.code || err.message || "login failed")
+          .toLowerCase().replace(/_/g, " ");
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    $("logout-btn").addEventListener("click", async function () {
+      try {
+        await api("/api/auth/logout", { method: "POST" });
+      } catch (err) {
+        // Cookie-session restores have no CSRF material; the logout route
+        // fails closed. The UI still returns to the login gate honestly.
+      }
+      state.me = null;
+      state.csrfToken = null;
+      showLogin();
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Sidebar router
+  // ------------------------------------------------------------------
+  const loaders = {
+    overview: loadOverview,
+    directors: loadDirectors,
+    schedule: loadScheduleView,
+    communication: loadCommunicationView,
+    memory: loadMemoryView,
+    production: loadProductionView,
+    jobs: loadJobs,
+    providers: loadProviders,
+    quotas: loadQuotas,
+    connections: loadConnectionsView,
+    publishing: loadPublishing,
+    approvals: loadApprovals,
+    analytics: loadAnalytics,
+    hermes: loadHermes,
+    evidence: loadEvidence,
+    alerts: loadAlerts,
+    settings: loadSettings,
+  };
+
+  function showView(name) {
+    state.activeView = name;
+    for (const section of document.querySelectorAll(".view")) section.hidden = section.id !== "view-" + name;
+    for (const item of document.querySelectorAll(".nav-item")) {
+      item.classList.toggle("active", item.getAttribute("data-view") === name);
+    }
+    const loader = loaders[name];
+    if (loader) loader().catch(function (err) {
+      const main = $("view-" + name);
+      if (main) main.insertAdjacentHTML("afterbegin", errorBox(storageErrorMessage(err)));
+    });
+  }
+
+  function bindNav() {
+    for (const item of document.querySelectorAll(".nav-item")) {
+      item.addEventListener("click", function () { showView(item.getAttribute("data-view")); });
+    }
+    const refreshMap = {
+      "overview-refresh": "overview", "directors-refresh": "directors", "sched-refresh": "schedule",
+      "production-refresh": "production", "jobs-refresh": "jobs",
+      "providers-refresh": "providers", "publishing-refresh": "publishing",
+      "approvals-refresh": "approvals", "analytics-refresh": "analytics",
+      "hermes-refresh": "hermes", "evidence-refresh": "evidence",
+      "settings-refresh": "settings",
+    };
+    for (const id of Object.keys(refreshMap)) {
+      const el = $(id);
+      if (el) el.addEventListener("click", function () { showView(refreshMap[id]); });
+    }
+    $("release-detail-close").addEventListener("click", function () {
+      $("release-detail-panel").classList.add("hidden");
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Shared renderers
+  // ------------------------------------------------------------------
+  function renderMetricsStrip() {
+    const strip = $("metrics-strip");
+    const m = state.metrics;
+    if (!m) { strip.innerHTML = errorBox("Metrics unavailable — check the session and the server health."); return; }
+    const jobs = m.jobsByStatus || {};
+    const running = (jobs.running || 0) + (jobs.leased || 0) + (jobs.queued || 0);
+    const failed = (jobs.failed || 0) + (jobs.dead_letter || 0);
+    const tiles = [
+      ["Registered directors", m.agents, ""],
+      ["Channels (live)", m.channels, ""],
+      ["Jobs in flight", running, running > 0 ? "warn" : ""],
+      ["Jobs failed", failed, failed > 0 ? "bad" : "ok"],
+      ["Evidence events", m.evidenceEvents, ""],
+      ["Active sessions", m.activeSessions, ""],
+      ["Storage mode", m.storage || "—", ""],
+      ["Uptime", m.process ? Math.round(m.process.uptimeSeconds / 60) + "m" : "—", ""],
+    ];
+    strip.innerHTML = tiles.map(function (t) {
+      return '<div class="metric"><div class="label">' + esc(t[0]) + '</div><div class="value ' + t[2] + '">' + esc(String(t[1] ?? "—")) + "</div></div>";
+    }).join("");
+  }
+
+  // ------------------------------------------------------------------
+  // Channel cards (Command Center + Directors) — real data only
+  // ------------------------------------------------------------------
+  // One enrichment pass per render: the real channel detail (releases +
+  // destinations) for every channel, plus the durable pipeline detail of
+  // each channel's most recent release. A failed lookup stays visible on
+  // the card as an explicit error note — never silently downgraded to an
+  // empty state (Rule 1).
+  async function loadChannelCardData() {
+    const details = await Promise.allSettled(
+      state.channels.map(function (c) { return api("/api/channels/" + encodeURIComponent(c.id)); })
+    );
+    // listReleasesForChannel orders by season DESC, episode DESC: the first
+    // row is the channel's most recent release.
+    const latestReleases = details.map(function (result) {
+      if (result.status !== "fulfilled") return null;
+      return (result.value.releases || [])[0] || null;
+    });
+    const latestData = await Promise.allSettled(latestReleases.map(function (release) {
+      return release ? api("/api/productions/" + encodeURIComponent(release.id)) : Promise.resolve(null);
+    }));
+    return state.channels.map(function (channel, i) {
+      return {
+        channel: channel,
+        detail: details[i].status === "fulfilled" ? details[i].value : null,
+        detailError: details[i].status === "rejected",
+        latest: latestReleases[i],
+        latestData: latestData[i].status === "fulfilled" ? latestData[i].value : null,
+        latestDataError: latestData[i].status === "rejected",
+      };
+    });
+  }
+
+  // Platform chips come ONLY from the channel's real configured publishing
+  // destinations (/api/channels/:id). Unconfigured platforms are never shown
+  // as if connected.
+  function platformChips(entry) {
+    if (entry.detailError) {
+      return '<div class="platforms"><span class="plat">destination lookup failed</span></div>';
+    }
+    const destinations = (entry.detail && entry.detail.destinations) || [];
+    if (destinations.length === 0) {
+      return '<div class="platforms"><span class="plat">no destinations configured</span></div>';
+    }
+    return '<div class="platforms">' + destinations.map(function (d) {
+      return '<span class="plat on"' + (d.handle ? ' title="' + esc(d.handle) + '"' : "") + ">" +
+        esc(d.platform) + (d.isPrimary ? " ★" : "") + "</span>";
+    }).join("") + "</div>";
+  }
+
+  // Slot binding through durable evidence only:
+  //   Main Video           — artifact kind "video" recorded at stage "assembly"
+  //   Short 1 / Short 2 /  — pipeline event stage "reels" status "succeeded"
+  //   Brand Reel             carrying detail.reel (content_reel_1 /
+  //                          content_reel_2 / brand_reel), matched to its
+  //                          artifact by the event's sha256.
+  function releaseSlotState(latestData) {
+    const events = (latestData && latestData.events) || [];
+    const artifacts = (latestData && latestData.artifacts) || [];
+    const artifactBySha = new Map(artifacts.map(function (a) { return [a.sha256, a]; }));
+    const reelArtifacts = new Map();
+    for (const event of events) {
+      const detail = event && event.detail;
+      if (event.stage === "reels" && event.status === "succeeded" &&
+          detail && typeof detail.reel === "string" && typeof detail.sha256 === "string") {
+        reelArtifacts.set(detail.reel, artifactBySha.get(detail.sha256) || null);
+      }
+    }
+    const mainVideo = artifacts.find(function (a) { return a.kind === "video" && a.stage === "assembly"; }) || null;
+    return { mainVideo: mainVideo, reelArtifacts: reelArtifacts };
+  }
+
+  function mediaSlot(slot, entry) {
+    const label = '<div class="slot-label">' + esc(slot.label) + "</div>";
+    if (!entry.latest) {
+      return '<div class="slot empty" title="' + esc(slot.hint) + '">' + label +
+        '<div class="slot-note">no release planned yet</div></div>';
+    }
+    if (entry.latestDataError || !entry.latestData) {
+      return '<div class="slot empty" title="' + esc(slot.hint) + '">' + label +
+        '<div class="slot-note">release detail unavailable (lookup failed)</div></div>';
+    }
+    const slots = releaseSlotState(entry.latestData);
+    const artifact = slot.key === "main_video"
+      ? slots.mainVideo
+      : slots.reelArtifacts.get(slot.key) || null;
+    if (!artifact) {
+      return '<div class="slot empty" title="' + esc(slot.hint) + '">' + label +
+        '<div class="slot-note">no media yet — ffprobe verification pending</div></div>';
+    }
+    return '<div class="slot filled" title="' + esc(slot.hint) + '">' + label +
+      '<div class="slot-note">' + esc(artifact.kind) + (artifact.stage ? " · " + esc(artifact.stage) : "") + "</div>" +
+      pill(artifact.ffprobeVerified === true ? "ffprobe verified" : "ffprobe unverified", artifact.ffprobeVerified === true ? "ok" : "warn") +
+      '<div class="slot-note">mode ' + esc(artifact.generationMode || "unknown") + "</div>" +
+      '<div class="sha" title="SHA-256">' + esc(shortHash(artifact.sha256, 10)) + "</div>" +
+      "</div>";
+  }
+
+  function channelCard(entry, options) {
+    const c = entry.channel;
+    const opts = options || {};
+    return '<div class="card channel-card">' +
+      '<div class="card-head"><h3>' + esc(c.displayName) + "</h3>" +
+        pill(c.agentEnabled === false ? "director disabled" : "director enabled", c.agentEnabled === false ? "bad" : "ok") + "</div>" +
+      platformChips(entry) +
+      (opts.mediaSlots
+        ? '<div class="media-slots">' + MEDIA_SLOTS.map(function (slot) { return mediaSlot(slot, entry); }).join("") + "</div>" +
+          (entry.latest
+            ? '<div class="slot-release">latest release ' + esc("S" + entry.latest.season + "E" + entry.latest.episode) +
+              " · " + esc(entry.latest.title) + " " + pill(entry.latest.status) + "</div>"
+            : '<div class="slot-release">no releases yet</div>')
+        : "") +
+      '<div class="meta">' + pill((c.releaseCount ?? 0) + " releases", "info") + "</div>" +
+      '<div class="row"><span>slug</span><b>' + esc(c.slug) + "</b></div>" +
+      '<div class="row"><span>language</span><b>' + esc(c.language || "—") + "</b></div>" +
+      '<div class="row"><span>director slot</span><b>' + esc(c.agentId) + "</b></div>" +
+      (opts.actionsButton ? '<div class="actions"><button data-channel="' + esc(c.id) + '">Open detail</button></div>' : "") +
+      '<div class="card-footer tagline">' + esc(c.tagline || "—") + "</div>" +
+      "</div>";
+  }
+
+  function renderPipelineStrip() {
+    const host = $("pipeline-strip");
+    host.innerHTML = PIPELINE_STAGES.map(function (stage, i) {
+      const sep = i > 0 ? '<span class="sep">→</span>' : "";
+      return sep + '<span class="stage"><b>' + esc(stage[0]) + "</b><span>" + esc(stage[1]) + "</span></span>";
+    }).join("");
+  }
+
+  // ------------------------------------------------------------------
+  // Overview
+  // ------------------------------------------------------------------
+  async function loadOverview() {
+    renderMetricsStrip();
+    renderPipelineStrip();
+    const cards = $("overview-channels");
+    if (state.channels.length === 0) {
+      cards.innerHTML = '<div class="empty">No channels yet — create one to give a director its first universe.</div>';
+    } else {
+      cards.innerHTML = '<div class="loading">Loading channel cards…</div>';
+      const entries = await loadChannelCardData();
+      cards.innerHTML = entries.map(function (entry) { return channelCard(entry, { mediaSlots: true }); }).join("");
+    }
+
+    // Latest artifacts across the most recent releases (real data only).
+    const target = $("overview-artifacts");
+    target.innerHTML = '<div class="loading">Loading latest recorded artifacts…</div>';
+    try {
+      const productions = await api("/api/productions?limit=20");
+      state.productions = productions.productions || [];
+      if (state.productions.length === 0) {
+        target.innerHTML = '<div class="empty">No productions recorded yet. Queue an episode from the Production panel — this list only shows real pipeline output.</div>';
+        return;
+      }
+      const details = await Promise.allSettled(
+        state.productions.slice(0, 8).map(function (p) { return api("/api/productions/" + encodeURIComponent(p.id)); })
+      );
+      const rows = [];
+      for (const result of details) {
+        if (result.status !== "fulfilled") continue;
+        const release = result.value.release || {};
+        for (const artifact of result.value.artifacts || []) rows.push({ release: release, artifact: artifact });
+      }
+      if (rows.length === 0) {
+        target.innerHTML = '<div class="empty">No artifacts recorded yet — pipeline runs will attach real, hash-verified artifacts here (ffprobe state shown honestly).</div>';
+        return;
+      }
+      target.innerHTML = rows.map(artifactRow).join("");
+    } catch (err) {
+      target.innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  function artifactRow(entry) {
+    const a = entry.artifact;
+    const r = entry.release || {};
+    return '<div class="row-item">' +
+      '<span class="title">' + esc(a.kind) + (a.stage ? " · " + esc(a.stage) : "") + "</span>" +
+      '<span class="sub">' + esc(r.title || "release " + shortHash(a.releaseId)) + "</span>" +
+      '<span class="sub">mode ' + esc(a.generationMode || "unknown") + "</span>" +
+      pill(a.ffprobeVerified === true ? "ffprobe verified" : "ffprobe unverified", a.ffprobeVerified === true ? "ok" : "warn") +
+      '<span class="spacer"></span>' +
+      '<span class="sha" title="SHA-256">' + esc(shortHash(a.sha256)) + "</span>" +
+      '<span class="sub">' + esc(a.sizeBytes != null ? Math.round(a.sizeBytes / 1024) + " KB" : "size —") + "</span>" +
+      "</div>";
+  }
+
+  // ------------------------------------------------------------------
+  // Directors
+  // ------------------------------------------------------------------
+  async function loadDirectors() {
+    $("directors-agent-count").textContent = state.metrics ? String(state.metrics.agents ?? "—") : "…";
+    const host = $("directors-cards");
+    if (state.channels.length === 0) {
+      host.innerHTML = '<div class="empty">No channels yet — each director gets its public brand through a channel.</div>';
+    } else {
+      host.innerHTML = '<div class="loading">Loading channel cards…</div>';
+      const entries = await loadChannelCardData();
+      host.innerHTML = entries.map(function (entry) {
+        return channelCard(entry, { mediaSlots: true, actionsButton: true });
+      }).join("");
+    }
+    for (const button of host.querySelectorAll("button[data-channel]")) {
+      button.addEventListener("click", function () { loadChannelDetail(button.getAttribute("data-channel")); });
+    }
+    $("directors-channel-detail").innerHTML = "";
+  }
+
+  async function loadChannelDetail(channelId) {
+    const host = $("directors-channel-detail");
+    host.innerHTML = '<div class="loading">Loading channel detail…</div>';
+    try {
+      const detail = await api("/api/channels/" + encodeURIComponent(channelId));
+      const releases = detail.releases || [];
+      const destinations = detail.destinations || [];
+      host.innerHTML =
+        '<div class="panel" style="margin-top:14px;">' +
+        '<h2>' + esc(detail.displayName) + " — detail</h2>" +
+        '<div class="chips">' + pill(detail.agentEnabled === false ? "director disabled" : "director enabled", detail.agentEnabled === false ? "bad" : "ok") + "</div>" +
+        "<h2>Releases</h2>" +
+        (releases.length === 0
+          ? '<div class="empty">No releases planned for this channel yet.</div>'
+          : '<div class="list">' + releases.map(releaseRow).join("") + "</div>") +
+        "<h2>Publishing destinations</h2>" +
+        (destinations.length === 0
+          ? '<div class="empty">No destinations configured — publishing accounts panel can add them.</div>'
+          : destinations.map(destinationRow).join("")) +
+        "</div>";
+    } catch (err) {
+      host.innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Episode & production schedule (per director, sql/029)
+  // ------------------------------------------------------------------
+
+  // Every value below comes from the API response. Nothing is defaulted in the
+  // browser: an unconfigured director shows the server's declared defaults and
+  // is labelled `not configured yet`.
+  function scheduleStatusText(schedule) {
+    if (!schedule || schedule.invalid === true) return schedule && schedule.invalidReason ? schedule.invalidReason : "invalid";
+    if (!schedule.configured) return "not configured yet — showing defaults";
+    return schedule.scheduleEnabled ? "enabled" : "paused";
+  }
+
+  function renderScheduleStatus(view) {
+    const host = $("sched-status");
+    if (!view) { host.innerHTML = '<div class="empty">Pick a director to inspect its schedule.</div>'; return; }
+    const s = view.schedule || {};
+    const c = view.counters || {};
+    const slots = c.slots || {};
+    const jobs = c.jobs || {};
+    const releases = c.releases || {};
+    const next = view.planning && view.planning.nextEligibleSlot;
+    const queued = slots.queued || 0;
+    const delayed = slots.delayed || 0;
+    const blocked = slots.blocked || 0;
+    const skipped = slots.skipped || 0;
+    const blockers = [];
+    if ((jobs.queued || 0) + (jobs.leased || 0) + (jobs.running || 0) > 0) {
+      blockers.push(pill("queue in flight: " + ((jobs.queued || 0) + (jobs.leased || 0) + (jobs.running || 0)), "warn"));
+    }
+    if (delayed > 0) blockers.push(pill("capacity/quota delayed: " + delayed, "warn"));
+    if (blocked > 0) blockers.push(pill("blocked: " + blocked, "bad"));
+    if (skipped > 0) blockers.push(pill("skipped (missed window): " + skipped, "info"));
+    if (view.lastSlot && view.lastSlot.reasonCode) {
+      blockers.push(pill("last slot: " + view.lastSlot.reasonCode, "bad"));
+    }
+    const today = (view.planning && view.planning.todayPlannedSlots) || [];
+    host.innerHTML =
+      '<div class="panel" style="margin-top:14px;">' +
+      '<h2>' + esc(view.channelDisplayName || "Director") + " — schedule</h2>" +
+      '<div class="chips">' +
+        pill(scheduleStatusText(s), s.scheduleEnabled === true ? "ok" : "warn") +
+        pill(s.episodeDurationMinutes ? s.episodeDurationMinutes + " min episode" : "duration —", "info") +
+        pill((s.episodesPerDay || "—") + " per day", "info") +
+        pill(s.productionDaysLabel || "days —", "info") +
+        pill(s.productionStartTime ? s.productionStartTime + " " + (s.timezone || "") : "start —", "info") +
+      "</div>" +
+      '<div class="chips" style="margin-top:8px;">' + (blockers.length > 0 ? blockers.join("") : pill("no blocker recorded", "ok")) + "</div>" +
+      '<div class="row"><span>next eligible slot</span><b>' +
+        esc(next ? fmtDate(next.startsAt) + " · slot " + next.slotIndex : "none in the configured window") + "</b></div>" +
+      '<div class="row"><span>today planned slots</span><b>' +
+        esc(today.length === 0 ? "none" : today.map(function (slot) { return (slot.localTime || "?") + " · " + fmtDate(slot.startsAt); }).join("  |  ")) + "</b></div>" +
+      '<div class="row"><span>slots persisted</span><b>' + esc("total " + (slots.total || 0) + " · queued " + queued + " · delayed " + delayed + " · blocked " + blocked + " · skipped " + skipped) + "</b></div>" +
+      '<div class="row"><span>jobs by status</span><b>' + esc(jsonInline(jobs)) + "</b></div>" +
+      '<div class="row"><span>releases by status</span><b>' + esc(jsonInline(releases)) + "</b></div>" +
+      '<div class="row"><span>completed releases (review + published)</span><b>' + esc(String(c.completedReleases || 0)) + "</b></div>" +
+      '<div class="row"><span>awaiting owner approval</span><b>' + esc(String(c.awaitingOwnerApproval || 0)) + "</b></div>" +
+      '<div class="row"><span>last scheduled slot</span><b>' +
+        esc(view.lastSlot ? (view.lastSlot.scheduleDate || "—") + " slot " + view.lastSlot.slotIndex + " · " + (view.lastSlot.state || "—") + (view.lastSlot.reasonCode ? " · " + view.lastSlot.reasonCode : "") : "—") + "</b></div>" +
+      '<p class="muted">Planned slots are NOT completed episodes. Counters above are persisted rows only: an episode counts as completed when its release reaches <code>review</code> (owner approval) or <code>published</code>.</p>' +
+      "</div>";
+  }
+
+  function jsonInline(value) {
+    const keys = Object.keys(value || {});
+    if (keys.length === 0) return "none";
+    return keys.map(function (key) { return key + ":" + value[key]; }).join("  ");
+  }
+
+  function renderSchedulerReport(report) {
+    const host = $("sched-run-output");
+    if (!report) { host.innerHTML = ""; return; }
+    const totals = report.totals || {};
+    const director = (report.directors || [])[0] || null;
+    const slots = (director && director.slots) || [];
+    host.innerHTML =
+      '<div class="panel" style="margin-top:14px;">' +
+      '<h2>Scheduler run ' + esc(report.dryRun === true ? "(preview — nothing written)" : "(durable)") + "</h2>" +
+      '<div class="chips">' +
+        pill("created " + (totals.created || 0), (totals.created || 0) > 0 ? "ok" : "info") +
+        pill("delayed " + (totals.delayed || 0), (totals.delayed || 0) > 0 ? "warn" : "info") +
+        pill("blocked " + (totals.blocked || 0), (totals.blocked || 0) > 0 ? "bad" : "info") +
+        pill("skipped " + (totals.skipped || 0), "info") +
+        pill("duplicates " + (totals.duplicates || 0), "info") +
+        pill("planned, not yet due " + (totals.notYetDue || 0), "info") +
+      "</div>" +
+      (slots.length === 0
+        ? '<div class="empty">No slot was due and no missed date was inside the bounded catch-up window.</div>'
+        : '<div class="list">' + slots.map(function (slot) {
+            return '<div class="row-item"><span class="title">' + esc(slot.scheduleDate + " · slot " + slot.slotIndex) + "</span>" +
+              pill(slot.state, slot.state === "queued" ? "ok" : slot.state === "blocked" ? "bad" : "warn") +
+              '<span class="sub">' + esc(slot.reasonCode || (slot.releaseId ? "release " + shortHash(slot.releaseId) : "no reason recorded")) + "</span>" +
+              '<span class="sub">' + esc(slot.season != null ? "S" + slot.season + "E" + slot.episode : "") + "</span>" +
+              '<span class="sub">starts ' + esc(fmtDate(slot.startsAt)) + "</span></div>";
+          }).join("") + "</div>") +
+      "</div>";
+  }
+
+  // The selectable durations/frequencies are DECLARED by the server. The static
+  // markup carries the documented defaults so the panel works before the fetch
+  // resolves, and this hydration replaces them with whatever the contract
+  // actually allows — the browser never invents an option.
+  async function hydrateScheduleLimits() {
+    if (state.scheduleLimitsApplied === true) return;
+    let limits = null;
+    try {
+      limits = await api("/api/scheduling/limits");
+    } catch (err) {
+      // Keep the documented static defaults; the form still cannot bypass the
+      // server-side validation that rejects anything unsupported.
+      return;
+    }
+    const durations = Array.isArray(limits.episodeDurationOptionsSeconds) ? limits.episodeDurationOptionsSeconds : [];
+    if (durations.length > 0) {
+      $("sched-duration").innerHTML = durations.map(function (seconds) {
+        return '<option value="' + seconds + '">' + (seconds / 60) + " minutes</option>";
+      }).join("");
+    }
+    const quickCounts = Array.isArray(limits.episodesPerDayOptions) ? limits.episodesPerDayOptions : [];
+    if (quickCounts.length > 0) {
+      $("sched-per-day-options").innerHTML = quickCounts.map(function (count) {
+        return '<option value="' + count + '"></option>';
+      }).join("");
+    }
+    const safeLimit = limits.episodesPerDaySafeLimit;
+    if (Number.isInteger(safeLimit) && safeLimit > 0) $("sched-per-day").max = String(safeLimit);
+    state.scheduleLimitsApplied = true;
+  }
+
+  async function loadScheduleView() {
+    const select = $("sched-agent");
+    if (select.options.length === 0) {
+      select.innerHTML = '<option value="">no directors with channels yet</option>';
+    }
+    await hydrateScheduleLimits();
+    await loadDirectorSchedule();
+  }
+
+  function fillScheduleForm(schedule) {
+    $("sched-duration").value = String(schedule.episodeDurationSeconds || 2400);
+    $("sched-per-day").value = String(schedule.episodesPerDay || 1);
+    for (const day of [1, 2, 3, 4, 5, 6, 7]) {
+      $("sched-day-" + day).checked = (schedule.productionDays || []).indexOf(day) !== -1;
+    }
+    $("sched-start-time").value = schedule.productionStartTime || "09:00";
+    $("sched-timezone").value = schedule.timezone || "Asia/Kolkata";
+    $("sched-enabled").checked = schedule.scheduleEnabled === true;
+  }
+
+  function collectProductionDays() {
+    const days = [];
+    for (const day of [1, 2, 3, 4, 5, 6, 7]) {
+      if ($("sched-day-" + day).checked) days.push(day);
+    }
+    return days;
+  }
+
+  async function loadDirectorSchedule() {
+    const agentId = $("sched-agent").value;
+    const errorEl = $("sched-error");
+    errorEl.textContent = "";
+    $("sched-run-output").innerHTML = "";
+    if (!agentId) {
+      $("sched-form").classList.add("hidden");
+      renderScheduleStatus(null);
+      return;
+    }
+    $("sched-form").classList.remove("hidden");
+    try {
+      const view = await api("/api/scheduling/directors/" + encodeURIComponent(agentId));
+      fillScheduleForm(view.schedule || {});
+      renderScheduleStatus(view);
+    } catch (err) {
+      $("sched-status").innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  async function runScheduler(dryRun) {
+    const agentId = $("sched-agent").value;
+    const errorEl = $("sched-error");
+    errorEl.textContent = "";
+    if (!agentId) { errorEl.textContent = "Select a director first."; return; }
+    try {
+      const report = await api("/api/scheduling/directors/" + encodeURIComponent(agentId) + "/run", {
+        method: "POST",
+        body: JSON.stringify({ dryRun: dryRun === true }),
+      });
+      renderSchedulerReport(report);
+      await loadDirectorSchedule();
+    } catch (err) {
+      errorEl.textContent = storageErrorMessage(err);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Director communication
+  // ------------------------------------------------------------------
+  async function loadCommunicationView() {
+    if (state.channels.length === 0) {
+      $("comm-thread").innerHTML = '<div class="empty">No directors with channels yet.</div>';
+      $("comm-form").classList.add("hidden");
+      return;
+    }
+    $("comm-form").classList.remove("hidden");
+    await loadConversation();
+  }
+
+  async function loadConversation() {
+    const agentId = $("comm-agent").value;
+    const host = $("comm-thread");
+    if (!agentId) { host.innerHTML = '<div class="empty">Pick a director to open its persistent window.</div>'; return; }
+    host.innerHTML = '<div class="loading">Loading window…</div>';
+    try {
+      const data = await api("/api/directors/" + encodeURIComponent(agentId) + "/conversation");
+      const messages = data.messages || [];
+      host.innerHTML = (messages.length === 0
+        ? '<div class="empty">Window is open and empty — record the first message below. Recording never triggers production or publishing.</div>'
+        : messages.map(function (msg) {
+            return '<div class="bubble"><div class="head">' +
+              '<span class="who">' + esc(msg.sender) + "</span>" + pill(msg.kind, "info") +
+              '<span class="when">' + esc(fmtDate(msg.createdAt)) + "</span></div>" +
+              '<div class="body">' + esc(msg.body) + "</div></div>";
+          }).join(""));
+    } catch (err) {
+      host.innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Director memory
+  // ------------------------------------------------------------------
+  async function loadMemoryView() {
+    if (state.channels.length === 0) {
+      $("memory-list").innerHTML = '<div class="empty">No directors with channels yet.</div>';
+      return;
+    }
+    await loadMemory();
+  }
+
+  async function loadMemory() {
+    const agentId = $("memory-agent").value;
+    const host = $("memory-list");
+    if (!agentId) { host.innerHTML = '<div class="empty">Pick a director to read its isolated memory.</div>'; return; }
+    host.innerHTML = '<div class="loading">Loading memory…</div>';
+    try {
+      const data = await api("/api/directors/" + encodeURIComponent(agentId) + "/memory");
+      const entries = data.entries || [];
+      host.innerHTML = entries.length === 0
+        ? '<div class="empty">Memory is empty for this director — categories fill as the universe bible, characters and identities are authored.</div>'
+        : entries.map(function (entry) {
+            return '<div class="card"><h3>' + esc(entry.category) + "</h3>" +
+              '<pre class="detail-pre">' + esc(jsonPretty(entry.content)) + "</pre>" +
+              '<div class="row"><span>updated</span><b>' + esc(fmtDate(entry.updatedAt)) + "</b></div></div>";
+          }).join("");
+    } catch (err) {
+      host.innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Production
+  // ------------------------------------------------------------------
+  function releaseRow(r) {
+    return '<div class="row-item">' +
+      '<span class="title">' + esc(r.title) + "</span>" +
+      '<span class="sub">S' + esc(r.season) + "E" + esc(r.episode) + "</span>" +
+      '<span class="sub">' + esc(r.channelName || r.channelSlug || "") + "</span>" +
+      pill(r.status) +
+      '<span class="spacer"></span>' +
+      '<button data-release="' + esc(r.id) + '">Detail</button>' +
+      "</div>";
+  }
+
+  async function loadProductionView() {
+    $("release-detail-panel").classList.add("hidden");
+    const host = $("production-list");
+    host.innerHTML = '<div class="loading">Loading productions…</div>';
+    try {
+      const productions = await api("/api/productions?limit=100");
+      state.productions = productions.productions || [];
+      host.innerHTML = state.productions.length === 0
+        ? '<div class="empty">No productions yet. Queue an episode above — one planned release per (channel, season, episode) slot, enforced by the database.</div>'
+        : '<div class="list">' + state.productions.map(releaseRow).join("") + "</div>";
+      for (const button of host.querySelectorAll("button[data-release]")) {
+        button.addEventListener("click", function () { loadReleaseDetail(button.getAttribute("data-release")); });
+      }
+    } catch (err) {
+      host.innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  async function loadReleaseDetail(releaseId) {
+    const panel = $("release-detail-panel");
+    const host = $("release-detail");
+    panel.classList.remove("hidden");
+    host.innerHTML = '<div class="loading">Loading release detail…</div>';
+    try {
+      const data = await api("/api/productions/" + encodeURIComponent(releaseId));
+      const release = data.release || {};
+      const events = data.events || [];
+      const artifacts = data.artifacts || [];
+      $("release-detail-title").textContent = release.title + " — S" + release.season + "E" + release.episode;
+
+      const latestByStage = new Map();
+      for (const event of events) latestByStage.set(event.stage, event);
+      const stageChips = PIPELINE_STAGES.map(function (stage) {
+        const event = latestByStage.get(stage[0]);
+        return '<span class="stage"><b>' + esc(stage[0]) + "</b><span>" +
+          (event ? esc(event.status) : "not run") + "</span></span>";
+      }).join('<span class="sep">→</span>');
+
+      let destinationsHtml = '<div class="empty">Loading destinations…</div>';
+      host.innerHTML =
+        '<div class="chips">' + pill(release.status) + "</div>" +
+        "<h2>Pipeline stages (durable events)</h2>" +
+        '<div class="pipeline">' + stageChips + "</div>" +
+        "<h2>Pipeline events</h2>" +
+        (events.length === 0
+          ? '<div class="empty">No pipeline events recorded — run the pipeline to produce real stages.</div>'
+          : '<div class="thread">' + events.slice().reverse().map(function (event) {
+              return '<div class="bubble"><div class="head">' + esc(event.stage) + "</div>" +
+                '<div class="body">' + esc(event.status) + " · " + esc(fmtDate(event.createdAt)) +
+                (event.detail ? "\n" + esc(jsonPretty(event.detail)) : "") + "</div></div>";
+            }).join("") + "</div>") +
+        "<h2>Artifacts</h2>" +
+        (artifacts.length === 0
+          ? '<div class="empty">No media yet — ffprobe verification pending. Artifacts appear here only after real pipeline stages write them.</div>'
+          : artifacts.map(function (a) { return artifactRow({ release: release, artifact: a }); }).join("")) +
+        '<div id="release-actions"></div>';
+
+      const actions = $("release-actions");
+      const canRun = release.status !== "published" && release.status !== "cancelled";
+      actions.innerHTML =
+        (canRun ? '<div class="form-row"><button id="run-release" class="btn-primary">Run pipeline now</button>' +
+          '<span class="muted">Claims the queued job with a legal lease and executes the real stage executors.</span></div>' : "") +
+        '<div class="form-row" id="publish-row"></div>';
+      const runButton = $("run-release");
+      if (runButton) {
+        runButton.addEventListener("click", async function () {
+          runButton.disabled = true;
+          try {
+            await api("/api/productions/" + encodeURIComponent(releaseId) + "/run", { method: "POST" });
+            await loadReleaseDetail(releaseId);
+          } catch (err) {
+            host.insertAdjacentHTML("afterbegin", errorBox(storageErrorMessage(err)));
+            runButton.disabled = false;
+          }
+        });
+      }
+      // Publish intent (Rule 7 gate is server-side).
+      try {
+        const channelDetail = await api("/api/channels/" + encodeURIComponent(release.channelId));
+        const destinations = channelDetail.destinations || [];
+        const publishRow = $("publish-row");
+        if (destinations.length === 0) {
+          publishRow.innerHTML = '<span class="muted">Publishing needs a configured destination with public attribution (add one under Publishing Accounts).</span>';
+        } else {
+          publishRow.innerHTML =
+            '<select id="publish-destination">' +
+            destinations.map(function (d) {
+              return '<option value="' + esc(d.id) + '">' + esc(d.platform) + " · " + esc(d.handle) + "</option>";
+            }).join("") + "</select>" +
+            '<button id="publish-release" class="btn-primary">Record publish intent</button>' +
+            '<span class="muted">Owner-gated intent + evidence only; live platform calls remain pending.</span>';
+          $("publish-release").addEventListener("click", async function () {
+            const button = $("publish-release");
+            button.disabled = true;
+            try {
+              await api("/api/productions/" + encodeURIComponent(releaseId) + "/publish", {
+                method: "POST",
+                body: JSON.stringify({ destinationId: $("publish-destination").value }),
+              });
+              await loadReleaseDetail(releaseId);
+            } catch (err) {
+              host.insertAdjacentHTML("afterbegin", errorBox(storageErrorMessage(err)));
+              button.disabled = false;
+            }
+          });
+        }
+      } catch { destinationsHtml = ""; }
+    } catch (err) {
+      host.innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Active jobs
+  // ------------------------------------------------------------------
+  async function loadJobs() {
+    const chips = $("jobs-by-status");
+    const host = $("jobs-list");
+    const jobs = (state.metrics && state.metrics.jobsByStatus) || {};
+    const keys = Object.keys(jobs);
+    chips.innerHTML = keys.length === 0
+      ? '<div class="empty">No jobs recorded yet.</div>'
+      : keys.map(function (k) { return pill(k + " · " + jobs[k], "info"); }).join("");
+    host.innerHTML = '<div class="loading">Loading job runs…</div>';
+    try {
+      const runs = await api("/api/content-runs?limit=50");
+      const list = runs.runs || [];
+      host.innerHTML = list.length === 0
+        ? '<div class="empty">No package runs recorded yet.</div>'
+        : '<div class="list">' + list.map(function (run) {
+            const provenance = run.provenance || {};
+            return '<div class="row-item">' +
+              '<span class="title">' + esc(shortHash(run.packageTaskId, 14)) + "</span>" +
+              pill(run.readiness || "pending") +
+              '<span class="sub">orchestrator ' + esc(run.orchestrator || "—") + "</span>" +
+              '<span class="sub">provider calls ' + esc(String(provenance.providerCalls ?? "—")) + "</span>" +
+              '<span class="sub">media ' + esc(provenance.mediaStatus || "—") + "</span>" +
+              '<span class="spacer"></span>' +
+              '<span class="sub">' + esc(run.reasonCode || "") + "</span>" +
+              "</div>";
+          }).join("") + "</div>";
+    } catch (err) {
+      host.innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Providers / quotas / connections
+  // ------------------------------------------------------------------
+  async function loadProviders() {
+    const host = $("providers-list");
+    host.innerHTML = '<div class="loading">Loading governed catalog…</div>';
+    try {
+      const providers = await refreshProviderCatalog();
+      host.innerHTML = providers.length === 0
+        ? '<div class="empty">Provider catalog is empty.</div>'
+        : providers.map(function (p) {
+            const fields = (p.fields || []).map(function (f) {
+              return '<span class="plat ' + (f.kind === "secret" ? "" : "on") + '">' + esc(f.key) + " · " + esc(f.kind) + "</span>";
+            }).join("");
+            const caps = (p.capabilities || []).map(function (c) { return '<span class="plat">' + esc(c) + "</span>"; }).join("");
+            return '<div class="card"><h3>' + esc(p.displayName) + "</h3>" +
+              '<div class="meta">' + pill(p.category, "info") + pill("auth: " + p.authType, "") + "</div>" +
+              '<div class="row"><span>credential fields</span></div><div class="platforms">' + fields + "</div>" +
+              '<div class="row"><span>capabilities</span></div><div class="platforms">' + caps + "</div>" +
+              '<div class="row"><span>official credential URL</span><b><a href="' + esc(p.credentialUrl) + '" target="_blank" rel="noopener noreferrer">' + esc(shortHash(p.credentialUrl, 34)) + "</a></b></div>" +
+              "</div>";
+          }).join("");
+    } catch (err) {
+      host.innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  async function refreshProviderCatalog() {
+    const data = await api("/api/providers/catalog");
+    state.providers = Array.isArray(data.providers) ? data.providers : [];
+    fillConnectionProviderSelect();
+    return state.providers;
+  }
+
+  function fillConnectionProviderSelect() {
+    const select = $("conn-provider");
+    if (!select) return;
+    const current = select.value;
+    select.innerHTML = state.providers.length === 0
+      ? '<option value="">provider catalog unavailable</option>'
+      : state.providers.map(function (provider) {
+          return '<option value="' + esc(provider.providerKey) + '">' + esc(provider.displayName) + "</option>";
+        }).join("");
+    if (state.providers.some(function (provider) { return provider.providerKey === current; })) {
+      select.value = current;
+    }
+    renderConnectionFields();
+  }
+
+  function renderConnectionFields() {
+    const select = $("conn-provider");
+    const host = $("connection-fields");
+    const provider = state.providers.find(function (item) { return item.providerKey === select.value; });
+    $("conn-kind").textContent = provider ? provider.category : "—";
+    host.innerHTML = !provider || !Array.isArray(provider.fields) || provider.fields.length === 0
+      ? '<div class="empty">No catalog fields are available for this provider.</div>'
+      : provider.fields.map(function (field) {
+          const secret = field.kind === "secret";
+          const detail = secret ? "Opaque locator only (vault:// or opaque://)" : "Non-secret configuration";
+          return '<label class="stack-field" for="conn-field-' + esc(field.key) + '">' +
+            '<span>' + esc(field.label) + (field.required ? " · required" : " · optional") + '</span>' +
+            '<input id="conn-field-' + esc(field.key) + '" data-connection-field="' + esc(field.key) +
+            '" data-connection-kind="' + (secret ? "secret" : "config") + '" maxlength="' + (secret ? "512" : "300") +
+            '" placeholder="' + esc(detail) + '" autocomplete="off"' + (field.required ? " required" : "") + " />" +
+            "</label>";
+        }).join("");
+  }
+
+  async function loadQuotas() {
+    const host = $("quotas-body");
+    const jobs = (state.metrics && state.metrics.jobsByStatus) || {};
+    const keys = Object.keys(jobs);
+    host.innerHTML =
+      '<p class="muted">Provider quota windows and rate-limit budgets are enforced server-side (quota state lives with the credential broker and the owner-operations service). This control-plane server does not expose a quota read route yet, so no numbers are invented here.</p>' +
+      "<h2>Real queue pressure (current snapshot)</h2>" +
+      (keys.length === 0
+        ? '<div class="empty">No jobs recorded — queue pressure is zero right now.</div>'
+        : '<div class="chips">' + keys.map(function (k) { return pill(k + " · " + jobs[k], "info"); }).join("") + "</div>");
+  }
+
+  async function loadConnectionsView() {
+    if (state.channels.length === 0) {
+      $("connections-list").innerHTML = '<div class="empty">No directors with channels yet.</div>';
+      $("youtube-status").innerHTML = '<div class="empty">No directors with channels yet.</div>';
+      return;
+    }
+    await loadConnections();
+    await loadYouTubeStatus();
+    await loadSocialStatus();
+  }
+
+  async function loadConnections() {
+    const agentId = $("conn-agent").value;
+    const host = $("connections-list");
+    if (!agentId) { host.innerHTML = '<div class="empty">Pick a director to list its provider bindings.</div>'; return; }
+    host.innerHTML = '<div class="loading">Loading connections…</div>';
+    try {
+      if (state.providers.length === 0) await refreshProviderCatalog();
+      const data = await api("/api/connections/directors/" + encodeURIComponent(agentId));
+      const items = data.items || [];
+      host.innerHTML = items.length === 0
+        ? '<div class="empty">No provider bindings for this director yet — slots stay unconfigured until the owner binds secret-manager locators.</div>'
+        : '<div class="list">' + items.map(function (c) {
+            const secretKeys = (c.secretFieldKeys || []).map(function (k) {
+              return '<span class="plat" title="locator value never serializes">⚿ ' + esc(k) + "</span>";
+            }).join("");
+            return '<div class="row-item">' +
+              '<span class="title">' + esc(c.providerKey) + "</span>" +
+              pill(c.kind, "info") + pill(c.status || "unknown") +
+              '<span class="sub">' + esc(c.credentialLabel || "no label") + "</span>" +
+              '<span class="platforms">' + (secretKeys || '<span class="plat">no secret fields</span>') + "</span>" +
+              '<span class="sub">config keys: ' + esc(Object.keys(c.configFields || {}).join(", ") || "—") + "</span>" +
+              '<span class="connection-actions">' +
+              '<button type="button" data-connection-test="' + esc(c.id) + '">Test</button>' +
+              '<button type="button" data-connection-delete="' + esc(c.id) + '">Delete</button>' +
+              "</span>" +
+              "</div>";
+          }).join("") + "</div>";
+      for (const button of host.querySelectorAll("button[data-connection-test]")) {
+        button.addEventListener("click", async function () {
+          button.disabled = true;
+          try {
+            const result = await api("/api/connections/directors/" + encodeURIComponent(agentId) + "/" +
+              encodeURIComponent(button.getAttribute("data-connection-test")) + "/test", { method: "POST" });
+            await loadConnections();
+            const notice = document.createElement("div");
+            notice.className = "empty";
+            notice.textContent = "Connection test: " + (result.result?.outcome || "unknown") +
+              (result.result?.errorCode ? " · " + result.result.errorCode : "");
+            host.prepend(notice);
+          } catch (err) {
+            host.prepend(Object.assign(document.createElement("div"), {
+              className: "empty",
+              textContent: storageErrorMessage(err),
+            }));
+          }
+        });
+      }
+      for (const button of host.querySelectorAll("button[data-connection-delete]")) {
+        button.addEventListener("click", async function () {
+          button.disabled = true;
+          try {
+            await api("/api/connections/directors/" + encodeURIComponent(agentId) + "/" +
+              encodeURIComponent(button.getAttribute("data-connection-delete")), { method: "DELETE" });
+            await loadConnections();
+          } catch (err) {
+            button.disabled = false;
+            host.prepend(Object.assign(document.createElement("div"), {
+              className: "empty",
+              textContent: storageErrorMessage(err),
+            }));
+          }
+        });
+      }
+    } catch (err) {
+      host.innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // YouTube OAuth (Issue #206): official lifecycle, honest status only.
+  // Tokens/locators/client secrets are NEVER displayed (Rule 17); every
+  // state comes from /api/youtube/* — missing server config is shown as
+  // the honest limitation it is, never hidden or faked (Rule 1).
+  // ------------------------------------------------------------------
+  const youtubeOauthBoot = (function () {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const result = params.get("oauth");
+      if (result !== "connected" && result !== "failed") return null;
+      // The authorization `code` param is deliberately ignored: it is
+      // single-use, already consumed server-side, and never rendered.
+      return {
+        result: result,
+        agentId: params.get("agent") || "",
+        provider: params.get("provider") || "youtube",
+        errorCode: params.get("code") || "",
+      };
+    } catch {
+      return null;
+    }
+  })();
+
+  function clearOauthParams() {
+    try {
+      window.history.replaceState({}, "", window.location.pathname);
+    } catch {
+      // Older browsers keep the params; they carry no secret material.
+    }
+  }
+
+  function applyOauthBootResult() {
+    clearOauthParams();
+    if (!youtubeOauthBoot) return;
+    if (youtubeOauthBoot.agentId) {
+      const select = $("conn-agent");
+      const has = Array.from(select.options).some(function (o) { return o.value === youtubeOauthBoot.agentId; });
+      if (has) select.value = youtubeOauthBoot.agentId;
+    }
+    loadConnections().catch(function () {});
+    const isSocial = youtubeOauthBoot.provider !== "youtube";
+    const loader = isSocial ? loadSocialStatus : loadYouTubeStatus;
+    const hostId = isSocial ? "social-status" : "youtube-status";
+    const label = isSocial ? "Social authorization" : "YouTube authorization";
+    loader().then(function () {
+      const host = $(hostId);
+      if (!host) return;
+      const banner = document.createElement("div");
+      banner.className = "empty";
+      banner.textContent = youtubeOauthBoot.result === "connected"
+        ? label + " completed — the account was verified with the official provider API."
+        : "⚠ " + label + " FAILED" + (youtubeOauthBoot.errorCode ? " · " + youtubeOauthBoot.errorCode : "") +
+          " — no account was connected. Nothing was faked; start a new connection to retry.";
+      host.prepend(banner);
+    }).catch(function () {});
+  }
+
+  async function loadYouTubeStatus() {
+    const host = $("youtube-status");
+    const errorEl = $("youtube-error");
+    const connectBtn = $("youtube-connect");
+    const revokeBtn = $("youtube-revoke");
+    errorEl.textContent = "";
+    const agentId = $("conn-agent").value;
+    if (!agentId) {
+      host.innerHTML = '<div class="empty">Pick a director to see its YouTube account status.</div>';
+      connectBtn.disabled = true;
+      revokeBtn.hidden = true;
+      return;
+    }
+    host.innerHTML = '<div class="loading">Loading YouTube account status…</div>';
+    try {
+      const status = await api("/api/youtube/directors/" + encodeURIComponent(agentId) + "/status");
+      renderYouTubeStatus(status);
+    } catch (err) {
+      host.innerHTML = errorBox(storageErrorMessage(err));
+      connectBtn.disabled = true;
+      revokeBtn.hidden = true;
+    }
+  }
+
+  function renderYouTubeStatus(status) {
+    const host = $("youtube-status");
+    const connectBtn = $("youtube-connect");
+    const revokeBtn = $("youtube-revoke");
+    const account = status.account;
+    const parts = [];
+
+    // Honest prerequisites — the server reports exactly what is missing.
+    if (status.oauthConfigured === false) {
+      parts.push('<div class="empty">Server has no Google OAuth client configured (STPH_YOUTUBE_OAUTH_* env). Connecting will fail honestly until the operator configures it.</div>');
+    }
+    if (status.secretManagerConfigured === false) {
+      parts.push('<div class="empty">No external secret-manager adapter is wired on this server. Tokens are never stored in the database, so connecting is refused rather than faked.</div>');
+    }
+
+    if (!account) {
+      parts.push('<div class="row"><span>status</span>' + pill("unconfigured", "info") + "</div>");
+      parts.push('<div class="empty">No YouTube account is connected for this director.</div>');
+    } else {
+      parts.push(
+        '<div class="row"><span>status</span>' +
+        pill(account.status, account.status === "connected" ? "ok" : account.status === "disconnected" ? "bad" : "warn") +
+        "</div>");
+      if (account.channel && account.channel.id) {
+        parts.push('<div class="row"><span>channel</span><b>' + esc(account.channel.title || account.channel.id) + "</b></div>");
+        if (account.channel.handle) {
+          parts.push('<div class="row"><span>handle</span><b>' + esc(account.channel.handle) + "</b></div>");
+        }
+        parts.push('<div class="row"><span>channel id</span><b>' + esc(account.channel.id) + "</b></div>");
+      }
+      parts.push('<div class="row"><span>verified</span><b>' + esc(fmtDate(account.verifiedAt)) + "</b></div>");
+      if (account.status === "connected" && account.tokenExpiresAt) {
+        parts.push('<div class="row"><span>access token expires</span><b>' + esc(fmtDate(account.tokenExpiresAt)) + "</b></div>");
+      }
+      if (account.revokedAt) {
+        parts.push('<div class="row"><span>revoked</span><b>' + esc(fmtDate(account.revokedAt)) + "</b></div>");
+      }
+      if (account.lastErrorCode) {
+        parts.push('<div class="row"><span>last error</span>' + pill(account.lastErrorCode, "bad") + "</div>");
+      }
+      parts.push('<div class="sub">Tokens live in the external secret manager; the database holds an opaque locator only. No token, secret, or locator value is ever shown here (Rule 17).</div>');
+    }
+    if (status.pendingAuthorization) {
+      parts.push('<div class="sub">An authorization start is pending and expires ' +
+        esc(fmtDate(status.pendingAuthorization.stateExpiresAt)) + ".</div>");
+    }
+
+    host.innerHTML = '<div class="stack">' + parts.join("") + "</div>";
+    connectBtn.disabled = status.oauthConfigured === false || status.secretManagerConfigured === false;
+    revokeBtn.hidden = !account;
+    revokeBtn.disabled = false;
+    revokeBtn.textContent = account && account.status === "disconnected"
+      ? "Re-run secret cleanup"
+      : "Revoke YouTube access";
+  }
+
+  async function startYouTubeOauth() {
+    const errorEl = $("youtube-error");
+    const agentId = $("conn-agent").value;
+    errorEl.textContent = "";
+    if (!agentId) {
+      errorEl.textContent = "Pick a director first.";
+      return;
+    }
+    const button = $("youtube-connect");
+    button.disabled = true;
+    try {
+      const result = await api("/api/youtube/directors/" + encodeURIComponent(agentId) + "/oauth/start", { method: "POST" });
+      if (!result || typeof result.authorizationUrl !== "string" ||
+          !result.authorizationUrl.startsWith("https://accounts.google.com/")) {
+        errorEl.textContent = "Server returned no usable Google authorization URL.";
+        button.disabled = false;
+        return;
+      }
+      // Full-page navigation to Google. The single-use state travels in the
+      // URL; the owner's session completes the flow on return (Rule 6).
+      window.location.assign(result.authorizationUrl);
+    } catch (err) {
+      errorEl.textContent = storageErrorMessage(err);
+      button.disabled = false;
+    }
+  }
+
+  async function revokeYouTube() {
+    const errorEl = $("youtube-error");
+    const agentId = $("conn-agent").value;
+    errorEl.textContent = "";
+    if (!agentId) return;
+    const button = $("youtube-revoke");
+    button.disabled = true;
+    try {
+      const result = await api("/api/youtube/directors/" + encodeURIComponent(agentId) + "/revoke", { method: "POST" });
+      await loadYouTubeStatus();
+      const notice = document.createElement("div");
+      notice.className = "empty";
+      notice.textContent = "Revoke result: status " + (result.status || "unknown") +
+        " · provider revoked: " + (result.providerRevoked === true ? "yes" : "no") +
+        (result.alreadyDisconnected ? " · was already disconnected" : "") +
+        (result.secretCleanupFailed ? " · secret cleanup FAILED" : "") +
+        (result.errorCode ? " · " + result.errorCode : "");
+      $("youtube-status").prepend(notice);
+    } catch (err) {
+      errorEl.textContent = storageErrorMessage(err);
+      button.disabled = false;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Social account connections (Section 6): facebook / instagram /
+  // snapchat / bilibili via /api/social/*. Official OAuth, verified
+  // provider identity, opaque secret custody, honest status only. The
+  // authorization `code` is never rendered; providers whose identity
+  // endpoint is unconfirmed are disclosed and not connectable.
+  // ------------------------------------------------------------------
+  async function loadSocialProviders() {
+    const select = $("social-provider");
+    if (!select || select.options.length > 0) return;
+    try {
+      const data = await api("/api/social/providers");
+      const providers = data.providers || [];
+      select.innerHTML = providers.map(function (provider) {
+        return '<option value="' + esc(provider.providerKey) + '"' +
+          (provider.connectable ? "" : ' data-connectable="false"') + ">" +
+          esc(provider.displayName) + (provider.connectable ? "" : " · not connectable yet") + "</option>";
+      }).join("");
+    } catch {
+      select.innerHTML = '<option value="">unavailable</option>';
+    }
+  }
+
+  function syncSocialButtons() {
+    const select = $("social-provider");
+    if (!select) return;
+    const option = select.options[select.selectedIndex];
+    const connectable = Boolean(option) && option.getAttribute("data-connectable") !== "false";
+    const item = state.social[select.value];
+    const note = $("social-provider-note");
+    const connectBtn = $("social-connect");
+    const revokeBtn = $("social-revoke");
+    note.textContent = connectable
+      ? ""
+      : "Official identity endpoint not yet confirmed — connecting is refused rather than faked.";
+    connectBtn.disabled = !connectable;
+    connectBtn.textContent = item && item.provider.connectable
+      ? (item.account ? "Reconnect this account" : "Connect account")
+      : "Connect account";
+    revokeBtn.hidden = !(item && item.account);
+    revokeBtn.textContent = item && item.account && item.account.status === "disconnected"
+      ? "Re-run secret cleanup"
+      : "Revoke access";
+  }
+
+  async function loadSocialStatus() {
+    await loadSocialProviders();
+    const host = $("social-status");
+    const errorEl = $("social-error");
+    const connectBtn = $("social-connect");
+    const revokeBtn = $("social-revoke");
+    errorEl.textContent = "";
+    const agentId = $("conn-agent").value;
+    if (!agentId) {
+      host.innerHTML = '<div class="empty">Pick a director to see its social accounts.</div>';
+      connectBtn.disabled = true;
+      revokeBtn.hidden = true;
+      return;
+    }
+    host.innerHTML = '<div class="loading">Loading social account status…</div>';
+    try {
+      const data = await api("/api/social/directors/" + encodeURIComponent(agentId) + "/accounts");
+      state.social = {};
+      for (const item of data.items || []) state.social[item.providerKey] = item;
+      renderSocialStatus(data);
+    } catch (err) {
+      host.innerHTML = errorBox(storageErrorMessage(err));
+      connectBtn.disabled = true;
+      revokeBtn.hidden = true;
+    }
+  }
+
+  function renderSocialStatus(data) {
+    const host = $("social-status");
+    const parts = [];
+    if (data.oauthConfigured === false) {
+      parts.push('<div class="empty">Server has no social OAuth app credentials configured (STPH_&lt;PROVIDER&gt;_OAUTH_* env). Connecting will fail honestly until the operator configures them.</div>');
+    }
+    if (data.secretManagerConfigured === false) {
+      parts.push('<div class="empty">No external secret-manager adapter is wired on this server. Tokens are never stored in the database, so connecting is refused rather than faked.</div>');
+    }
+    const rows = (data.items || []).map(function (item) {
+      const account = item.account;
+      const row = ['<div class="row-item">' +
+        pill(item.provider.providerKey, "info") +
+        '<span class="title">' + esc(item.provider.displayName) + "</span>" +
+        pill(item.status, item.status === "connected" ? "ok" : item.status === "disconnected" ? "bad" : "warn")];
+      if (account && account.account && account.account.id) {
+        row.push('<span class="sub">account: ' + esc(account.account.name || account.account.id) + "</span>");
+      }
+      if (account && account.verifiedAt) {
+        row.push('<span class="sub">verified: ' + esc(fmtDate(account.verifiedAt)) + "</span>");
+      }
+      if (account && account.lastErrorCode) row.push(pill(account.lastErrorCode, "bad"));
+      if (!item.provider.connectable) {
+        row.push('<span class="sub">identity endpoint unconfirmed — not connectable</span>');
+      }
+      row.push("</div>");
+      return row.join("");
+    }).join("");
+    parts.push('<div class="list">' + rows + "</div>");
+    parts.push('<div class="sub">Tokens live in the external secret manager; the database holds an opaque locator only. No token, secret, locator, or authorization code is ever shown here (Rule 17).</div>');
+    host.innerHTML = '<div class="stack">' + parts.join("") + "</div>";
+    syncSocialButtons();
+  }
+
+  async function startSocialOauth() {
+    const errorEl = $("social-error");
+    const agentId = $("conn-agent").value;
+    const providerKey = $("social-provider").value;
+    errorEl.textContent = "";
+    if (!agentId || !providerKey) {
+      errorEl.textContent = "Pick a director and a platform first.";
+      return;
+    }
+    const button = $("social-connect");
+    button.disabled = true;
+    try {
+      const result = await api(
+        "/api/social/directors/" + encodeURIComponent(agentId) + "/" + encodeURIComponent(providerKey) + "/oauth/start",
+        { method: "POST" },
+      );
+      if (!result || typeof result.authorizationUrl !== "string" || !result.authorizationUrl.startsWith("https://")) {
+        errorEl.textContent = "Server returned no usable authorization URL.";
+        button.disabled = false;
+        return;
+      }
+      // Full-page navigation to the official provider. The single-use state
+      // travels in the URL; the owner's session completes the flow on return.
+      window.location.assign(result.authorizationUrl);
+    } catch (err) {
+      errorEl.textContent = storageErrorMessage(err);
+      button.disabled = false;
+    }
+  }
+
+  async function revokeSocial() {
+    const errorEl = $("social-error");
+    const agentId = $("conn-agent").value;
+    const providerKey = $("social-provider").value;
+    errorEl.textContent = "";
+    if (!agentId || !providerKey) return;
+    const button = $("social-revoke");
+    button.disabled = true;
+    try {
+      const result = await api(
+        "/api/social/directors/" + encodeURIComponent(agentId) + "/" + encodeURIComponent(providerKey) + "/revoke",
+        { method: "POST" },
+      );
+      await loadSocialStatus();
+      const notice = document.createElement("div");
+      notice.className = "empty";
+      notice.textContent = "Revoke result: status " + (result.status || "unknown") +
+        " · provider revoked: " + (result.providerRevoked === true ? "yes" : "no") +
+        (result.alreadyDisconnected ? " · was already disconnected" : "") +
+        (result.secretCleanupFailed ? " · secret cleanup FAILED" : "") +
+        (result.errorCode ? " · " + result.errorCode : "");
+      $("social-status").prepend(notice);
+    } catch (err) {
+      errorEl.textContent = storageErrorMessage(err);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Publishing accounts
+  // ------------------------------------------------------------------
+  function destinationRow(d) {
+    return '<div class="row-item">' +
+      pill(d.platform, "info") +
+      '<span class="title">' + esc(d.handle) + "</span>" +
+      (d.isPrimary ? pill("primary", "ok") : "") +
+      '<span class="sub">attribution: ' + esc(d.publicAttribution) + "</span>" +
+      '<span class="spacer"></span>' +
+      '<span class="sub">' + esc(fmtDate(d.createdAt)) + "</span>" +
+      "</div>";
+  }
+
+  async function loadPublishing() {
+    const host = $("publishing-list");
+    if (state.channels.length === 0) {
+      host.innerHTML = '<div class="empty">No channels yet — destinations attach to channels.</div>';
+      return;
+    }
+    host.innerHTML = '<div class="loading">Loading destinations…</div>';
+    try {
+      const details = await Promise.allSettled(
+        state.channels.map(function (c) { return api("/api/channels/" + encodeURIComponent(c.id)); })
+      );
+      const groups = [];
+      for (let i = 0; i < details.length; i++) {
+        if (details[i].status !== "fulfilled") continue;
+        const detail = details[i].value;
+        const destinations = detail.destinations || [];
+        groups.push(
+          "<h2>" + esc(detail.displayName) + "</h2>" +
+          (destinations.length === 0
+            ? '<div class="empty">No destinations for this channel yet.</div>'
+            : '<div class="list">' + destinations.map(destinationRow).join("") + "</div>")
+        );
+      }
+      host.innerHTML = groups.join("") || '<div class="empty">Destination data unavailable.</div>';
+    } catch (err) {
+      host.innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Approvals / analytics / alerts
+  // ------------------------------------------------------------------
+  async function loadApprovals() {
+    const host = $("approvals-body");
+    host.innerHTML = '<div class="loading">Loading approval queue…</div>';
+    try {
+      const data = await api("/api/control/approvals");
+      const approvals = data.approvals || [];
+      host.innerHTML = approvals.length === 0
+        ? '<div class="empty">Approval queue is empty — nothing is waiting on the owner right now.</div>'
+        : '<div class="list">' + approvals.map(function (a) {
+            return '<div class="row-item">' +
+              pill(a.status || "pending", "info") +
+              '<span class="title">' + esc(a.destination || "—") + "</span>" +
+              '<span class="sub">' + esc(a.artifactKind || "artifact") + " · " + esc(shortHash(a.artifactSha256)) + "</span>" +
+              '<span class="sub">' + esc(a.captionSnapshot || "") + "</span>" +
+              '<span class="spacer"></span>' +
+              '<span class="sub">expires ' + esc(fmtDate(a.approvalExpiresAt)) + "</span>" +
+              "</div>";
+          }).join("") + "</div>";
+    } catch (err) {
+      host.innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  async function loadAnalytics() {
+    const host = $("analytics-body");
+    renderMetricsStrip();
+    const jobs = (state.metrics && state.metrics.jobsByStatus) || {};
+    const keys = Object.keys(jobs);
+    host.innerHTML =
+      "<h2>Operational counters (live from /api/metrics)</h2>" +
+      '<div class="metrics-strip" style="margin-bottom:12px;">' + $("metrics-strip").innerHTML + "</div>" +
+      "<h2>Jobs by status</h2>" +
+      (keys.length === 0
+        ? '<div class="empty">No jobs recorded yet.</div>'
+        : '<div class="chips">' + keys.map(function (k) { return pill(k + " · " + jobs[k], "info"); }).join("") + "</div>") +
+      '<p class="muted">Platform performance analytics (full-precision records, sql/027) are ingested and read through the owner-operations service; this control-plane server exposes operational counters only. Nothing is extrapolated.</p>';
+  }
+
+  async function loadAlerts() {
+    $("alerts-body").innerHTML =
+      '<div class="empty">No alert feed is mounted on this control-plane server yet. The durable alert queue lives in the resilience layer and is not exposed over HTTP here — when the route ships, this panel reads it directly. No alerts are invented in the meantime.</div>';
+  }
+
+  // ------------------------------------------------------------------
+  // Hermes
+  // ------------------------------------------------------------------
+  async function loadHermes() {
+    const overviewHost = $("hermes-overview");
+    const authorityHost = $("hermes-authority");
+    const decisionsHost = $("hermes-decisions");
+    overviewHost.innerHTML = '<div class="loading">Loading decision layer…</div>';
+    try {
+      const overview = await api("/api/hermes/overview");
+      const tiles = [
+        ["Last decision #", overview.lastDecisionNumber ?? 0, ""],
+        ["Blocked refusals", overview.blockedRefusals ?? 0, (overview.blockedRefusals ?? 0) > 0 ? "bad" : ""],
+        ["Pending owner approval", overview.pendingOwnerApproval ?? 0, (overview.pendingOwnerApproval ?? 0) > 0 ? "warn" : ""],
+      ];
+      const outcomes = Object.entries(overview.decisions || {});
+      for (const pair of outcomes) tiles.push(["Outcome · " + pair[0], pair[1], ""]);
+      overviewHost.innerHTML = tiles.map(function (t) {
+        return '<div class="metric"><div class="label">' + esc(t[0]) + '</div><div class="value ' + t[2] + '">' + esc(String(t[1])) + "</div></div>";
+      }).join("") +
+      (Object.keys(overview.byCategory || {}).length === 0 ? "" :
+        '<div class="chips" style="grid-column:1/-1;">' +
+        Object.entries(overview.byCategory).map(function (pair) { return pill(pair[0] + " · " + pair[1], "info"); }).join("") + "</div>");
+    } catch (err) {
+      overviewHost.innerHTML = errorBox(storageErrorMessage(err));
+    }
+
+    try {
+      const authority = await api("/api/hermes/authority");
+      const matrix = authority.matrix || {};
+      authorityHost.innerHTML = Object.keys(matrix).length === 0
+        ? '<div class="empty">Authority matrix is empty.</div>'
+        : Object.entries(matrix).map(function (pair) {
+            return pill(pair[0] + " → " + pair[1], pair[1] === "PROHIBITED" ? "bad" : pair[1] === "AUTONOMOUS" ? "ok" : "warn");
+          }).join("") +
+          '<p class="muted" style="width:100%;">' + esc(authority.note || "") + "</p>";
+    } catch (err) {
+      authorityHost.innerHTML = errorBox(storageErrorMessage(err));
+    }
+
+    try {
+      const decisions = await api("/api/hermes/decisions?limit=20");
+      const list = decisions.decisions || [];
+      decisionsHost.innerHTML = list.length === 0
+        ? '<div class="empty">No decisions recorded yet — the manager records every action, refusal and escalation here.</div>'
+        : list.map(function (d) {
+            return '<div class="bubble"><div class="head">' +
+              '<span class="who">#' + esc(d.decisionNumber) + " " + esc(d.action) + "</span>" +
+              pill(d.outcome) + pill(d.authority, "info") + pill(d.category || "—", "") +
+              '<span class="when">' + esc(fmtDate(d.createdAt)) + "</span></div>" +
+              '<div class="body">' + esc(d.reason || "") +
+              (d.reasonCode ? "\nreasonCode: " + esc(d.reasonCode) : "") +
+              (d.errorCode ? "\nerrorCode: " + esc(d.errorCode) : "") + "</div></div>";
+          }).join("");
+    } catch (err) {
+      decisionsHost.innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Evidence
+  // ------------------------------------------------------------------
+  async function loadEvidence() {
+    const host = $("evidence-list");
+    host.innerHTML = '<div class="loading">Loading evidence ledger…</div>';
+    try {
+      const events = await api("/api/evidence");
+      const list = Array.isArray(events) ? events : [];
+      const latest = list.slice(-100).reverse();
+      host.innerHTML = list.length === 0
+        ? '<div class="empty">Ledger is empty — every verified action will append a hash-chained row here.</div>'
+        : '<p class="muted">Showing latest ' + latest.length + " of " + list.length + " events (append-only, hash-chained).</p>" +
+          '<div class="thread">' + latest.map(function (event) {
+            return '<div class="bubble"><div class="head">' +
+              '<span class="who">' + esc(event.kind) + "</span>" + pill(event.classification, "info") +
+              '<span class="when">' + esc(fmtDate(event.occurredAt)) + "</span></div>" +
+              '<div class="body">subject ' + esc(event.subjectId) +
+              '\n<span class="sha">prev ' + esc(shortHash(event.previousHash, 10)) + " ← event " + esc(shortHash(event.eventHash, 10)) + "</span>" +
+              (Object.keys(event.payload || {}).length > 0 ? "\n" + esc(jsonPretty(event.payload)) : "") +
+              "</div></div>";
+          }).join("") + "</div>";
+    } catch (err) {
+      host.innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Settings
+  // ------------------------------------------------------------------
+  async function loadSettings() {
+    const ownerHost = $("settings-owner");
+    const sessionsHost = $("sessions-list");
+    try {
+      const me = await api("/api/auth/me");
+      state.me = me;
+      ownerHost.innerHTML =
+        '<div class="cards"><div class="card"><h3>Owner</h3>' +
+        '<div class="row"><span>email</span><b>' + esc(me.email) + "</b></div>" +
+        '<div class="row"><span>role</span><b>' + esc(me.role) + "</b></div>" +
+        '<div class="row"><span>status</span><b>' + pill(me.status) + "</b></div>" +
+        '<div class="row"><span>MFA</span><b>' + pill(me.mfaEnabled ? "enabled" : "not enrolled", me.mfaEnabled ? "ok" : "warn") + "</b></div>" +
+        "</div></div>";
+    } catch (err) {
+      ownerHost.innerHTML = errorBox(storageErrorMessage(err));
+    }
+    try {
+      const sessions = await api("/api/auth/sessions");
+      const list = Array.isArray(sessions) ? sessions : [];
+      sessionsHost.innerHTML = list.length === 0
+        ? '<div class="empty">No other active sessions.</div>'
+        : '<div class="list">' + list.map(function (s) {
+            return '<div class="row-item">' +
+              '<span class="title">' + esc(shortHash(s.id, 14)) + "</span>" +
+              pill(s.mfaAssuranceLevel || "basic", "info") +
+              '<span class="sub">created ' + esc(fmtDate(s.createdAt)) + "</span>" +
+              '<span class="sub">last seen ' + esc(fmtDate(s.lastSeenAt)) + "</span>" +
+              '<span class="spacer"></span>' +
+              '<button data-revoke="' + esc(s.id) + '">Revoke</button>' +
+              "</div>";
+          }).join("") + "</div>";
+      for (const button of sessionsHost.querySelectorAll("button[data-revoke]")) {
+        button.addEventListener("click", async function () {
+          button.disabled = true;
+          try {
+            await api("/api/auth/sessions/" + encodeURIComponent(button.getAttribute("data-revoke")), { method: "DELETE" });
+            await loadSettings();
+          } catch (err) {
+            sessionsHost.insertAdjacentHTML("afterbegin", errorBox(storageErrorMessage(err)));
+          }
+        });
+      }
+    } catch (err) {
+      sessionsHost.innerHTML = errorBox(storageErrorMessage(err));
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Form bindings
+  // ------------------------------------------------------------------
+  function bindForms() {
+    $("comm-load").addEventListener("click", loadConversation);
+    $("sched-load").addEventListener("click", loadDirectorSchedule);
+    $("sched-agent").addEventListener("change", loadDirectorSchedule);
+    $("sched-preset-every").addEventListener("click", function () {
+      for (const day of [1, 2, 3, 4, 5, 6, 7]) $("sched-day-" + day).checked = true;
+    });
+    $("sched-preset-five").addEventListener("click", function () {
+      for (const day of [1, 2, 3, 4, 5, 6, 7]) $("sched-day-" + day).checked = day <= 5;
+    });
+    $("sched-dry-run").addEventListener("click", function () { runScheduler(true); });
+    $("sched-run").addEventListener("click", function () { runScheduler(false); });
+
+    $("sched-form").addEventListener("submit", async function (event) {
+      event.preventDefault();
+      const agentId = $("sched-agent").value;
+      const errorEl = $("sched-error");
+      errorEl.textContent = "";
+      if (!agentId) { errorEl.textContent = "Select a director first."; return; }
+      const days = collectProductionDays();
+      if (days.length === 0) { errorEl.textContent = "Select at least one production day."; return; }
+      const submit = $("sched-form").querySelector('button[type="submit"]');
+      submit.disabled = true;
+      try {
+        await api("/api/scheduling/directors/" + encodeURIComponent(agentId), {
+          method: "PUT",
+          body: JSON.stringify({
+            episodeDurationSeconds: Number($("sched-duration").value),
+            episodesPerDay: Number($("sched-per-day").value),
+            productionDays: days,
+            productionStartTime: $("sched-start-time").value,
+            timezone: $("sched-timezone").value.trim(),
+            scheduleEnabled: $("sched-enabled").checked,
+          }),
+        });
+        await loadDirectorSchedule();
+      } catch (err) {
+        errorEl.textContent = storageErrorMessage(err);
+      } finally {
+        submit.disabled = false;
+      }
+    });
+    $("memory-load").addEventListener("click", loadMemory);
+    $("conn-load").addEventListener("click", function () { loadConnections(); loadYouTubeStatus(); loadSocialStatus(); });
+    $("conn-agent").addEventListener("change", function () { loadConnections(); loadYouTubeStatus(); loadSocialStatus(); });
+    $("conn-provider").addEventListener("change", renderConnectionFields);
+    $("youtube-connect").addEventListener("click", startYouTubeOauth);
+    $("youtube-revoke").addEventListener("click", revokeYouTube);
+    $("social-provider").addEventListener("change", syncSocialButtons);
+    $("social-connect").addEventListener("click", startSocialOauth);
+    $("social-revoke").addEventListener("click", revokeSocial);
+
+    $("connection-form").addEventListener("submit", async function (event) {
+      event.preventDefault();
+      const errorEl = $("connection-error");
+      const provider = state.providers.find(function (item) { return item.providerKey === $("conn-provider").value; });
+      errorEl.textContent = "";
+      if (!provider || !$("conn-agent").value) {
+        errorEl.textContent = "Select a director and an available provider.";
+        return;
+      }
+      const secretFields = {};
+      const configFields = {};
+      for (const field of $("connection-fields").querySelectorAll("[data-connection-field]")) {
+        const value = field.value.trim();
+        if (!value) continue;
+        const key = field.getAttribute("data-connection-field");
+        if (field.getAttribute("data-connection-kind") === "secret") {
+          if (!/^(?:vault|opaque):\/\/[^\s]+$/.test(value)) {
+            errorEl.textContent = "Secret fields accept opaque vault:// or opaque:// locators only.";
+            return;
+          }
+          secretFields[key] = value;
+        } else {
+          configFields[key] = value;
+        }
+      }
+      const submit = $("connection-form").querySelector('button[type="submit"]');
+      submit.disabled = true;
+      try {
+        await api("/api/connections/directors/" + encodeURIComponent($("conn-agent").value), {
+          method: "POST",
+          body: JSON.stringify({
+            providerKey: provider.providerKey,
+            kind: provider.category,
+            secretFields,
+            configFields,
+            credentialLabel: $("conn-label").value.trim(),
+          }),
+        });
+        $("connection-form").reset();
+        fillConnectionProviderSelect();
+        await loadConnections();
+      } catch (err) {
+        errorEl.textContent = storageErrorMessage(err);
+      } finally {
+        submit.disabled = false;
+      }
+    });
+
+    $("comm-form").addEventListener("submit", async function (event) {
+      event.preventDefault();
+      const agentId = $("comm-agent").value;
+      const errorEl = $("comm-error");
+      errorEl.textContent = "";
+      try {
+        await api("/api/directors/" + encodeURIComponent(agentId) + "/conversation", {
+          method: "POST",
+          body: JSON.stringify({
+            sender: $("comm-sender").value,
+            kind: $("comm-kind").value,
+            body: $("comm-body").value,
+          }),
+        });
+        $("comm-body").value = "";
+        await loadConversation();
+      } catch (err) {
+        errorEl.textContent = storageErrorMessage(err);
+      }
+    });
+
+    $("production-form").addEventListener("submit", async function (event) {
+      event.preventDefault();
+      const errorEl = $("production-error");
+      errorEl.textContent = "";
+      try {
+        await api("/api/productions", {
+          method: "POST",
+          body: JSON.stringify({
+            channelId: $("prod-channel").value,
+            title: $("prod-title").value,
+            season: Number($("prod-season").value),
+            episode: Number($("prod-episode").value),
+          }),
+        });
+        $("prod-title").value = "";
+        await loadProductionView();
+      } catch (err) {
+        errorEl.textContent = storageErrorMessage(err);
+      }
+    });
+
+    $("destination-form").addEventListener("submit", async function (event) {
+      event.preventDefault();
+      const errorEl = $("destination-error");
+      errorEl.textContent = "";
+      try {
+        await api("/api/channels/" + encodeURIComponent($("dest-channel").value) + "/destinations", {
+          method: "POST",
+          body: JSON.stringify({
+            platform: $("dest-platform").value,
+            handle: $("dest-handle").value,
+            isPrimary: $("dest-primary").checked,
+            publicAttribution: $("dest-attribution").value,
+          }),
+        });
+        $("dest-handle").value = "";
+        $("dest-attribution").value = "";
+        $("dest-primary").checked = false;
+        await loadPublishing();
+      } catch (err) {
+        errorEl.textContent = storageErrorMessage(err);
+      }
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Boot
+  // ------------------------------------------------------------------
+  bindNav();
+  bindForms();
+  bindLogin();
+  (async function boot() {
+    try {
+      state.me = await api("/api/auth/me");
+      enterApp();
+    } catch {
+      showLogin();
+    }
+  })();
+  setInterval(function () {
+    if (state.me && document.getElementById("app-view") && !$("app-view").classList.contains("hidden")) {
+      refreshCore();
+    }
+  }, 30000);
+})();
