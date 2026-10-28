@@ -27,9 +27,13 @@ class ProductionHouseTest {
         repository.logout()
         assertNull(repository.currentOwner.value)
 
-        val success = repository.login("owner@stproduction.demo", "demo-production-house-2026")
+        val success = repository.login("owner@stproduction.demo", "any-demo-password")
         assertTrue(success)
         assertNotNull(repository.currentOwner.value)
+        // Issue #247 honesty: no demo password may be stored or shipped in app state.
+        assertEquals("", viewModel.loginPassword.value)
+        // Demo evidence must be labeled demo://, never presented as a provider receipt.
+        assertTrue(repository.evidenceEvents.value.first().verificationReceipt.startsWith("demo://"))
     }
 
     @Test
@@ -79,6 +83,7 @@ class ProductionHouseTest {
         val latestEvent = repository.evidenceEvents.value.first()
         assertEquals("CHANNEL_REGISTERED", latestEvent.eventType)
         assertTrue(latestEvent.artifactHash.startsWith("sha256:"))
+        assertTrue(latestEvent.verificationReceipt.startsWith("demo://"))
     }
 
     @Test
@@ -101,9 +106,12 @@ class ProductionHouseTest {
         val afterPackaging = repository.releases.value.find { it.id == relId }
         assertEquals("qc", afterPackaging?.currentStage)
 
-        // Verify approval item was created for Rule 7 gate
-        val approvals = repository.approvals.value
-        assertTrue(approvals.any { it.title.contains("QC Gate Cleared") })
+        // Honesty (issue #247): on-device stage advancement fabricates nothing — no Rule-7 approval
+        // may be auto-created from a demo stage change, and stage logs must not claim real renders.
+        val approvalsAfterAdvance = repository.approvals.value
+        assertFalse(approvalsAfterAdvance.any { it.title.contains("QC Gate Cleared") })
+        val advancedRelease = repository.releases.value.find { it.id == relId }
+        assertTrue(advancedRelease?.executionLog?.any { it.endsWith("no render, QC gate or provider execution occurred.") } == true)
     }
 
     @Test
@@ -118,6 +126,8 @@ class ProductionHouseTest {
         assertTrue(updatedMessages.size >= initialMessagesCount + 2)
         val directorReply = updatedMessages.last()
         assertEquals("director", directorReply.sender)
+        // Honesty (issue #247): simulated director replies must be labeled as demo.
+        assertTrue(directorReply.body.startsWith("[demo simulated reply]"))
         assertTrue(directorReply.body.contains("Confirmed"))
     }
 
@@ -136,6 +146,8 @@ class ProductionHouseTest {
         assertEquals(2400, repository.schedules.value["agent-01"]?.mainEpisodeDuration)
 
         val resultMsg = repository.runSchedulerNow("agent-01")
+        // Honesty (issue #247): scheduler feedback must say the tick is a demo simulation.
+        assertTrue(resultMsg.startsWith("[demo]"))
         assertTrue(resultMsg.contains("Slot queued successfully"))
         val latestRelease = repository.releases.value.first()
         assertTrue(latestRelease.title.contains("Midnight Horror Studios"))
@@ -146,5 +158,34 @@ class ProductionHouseTest {
         val hash = repository.computeSha256("test-integrity-payload")
         assertTrue(hash.startsWith("sha256:"))
         assertEquals(71, hash.length) // "sha256:" (7) + 64 hex chars = 71
+    }
+
+    @Test
+    fun testDemoEvidenceAndInspectionAreHonestlyLabeled() {
+        // Issue #247 honesty: seeded fixtures and the inspection modal may not claim
+        // rendered/verified provider facts — every evidence receipt is demo://, and the
+        // inspection modal never reports verified=true for demo media slots.
+        val seededReceipts = repository.evidenceEvents.value.map { it.verificationReceipt }
+        assertTrue(seededReceipts.isNotEmpty())
+        assertTrue(seededReceipts.all { it.startsWith("demo://") })
+
+        val seededEventTypes = repository.evidenceEvents.value.map { it.eventType }
+        assertFalse(seededEventTypes.contains("ASSEMBLY_RENDERED"))
+        assertFalse(seededEventTypes.contains("NARRATION_SYNTHESIZED"))
+
+        val slot = repository.channels.value.first().slots.first()
+        assertFalse(slot.verified)
+        val modal = repository.inspectArtifact(slot, "midnight-horror-hindi")
+        assertFalse(modal.isVerified)
+        assertTrue(modal.sha256.startsWith("sha256:"))
+
+        // Demo media slots declare plan-only state: no sha256, no measured LUFS/codec.
+        assertNull(slot.artifactHash)
+        assertEquals("demo plan", slot.lufsAudio)
+        assertEquals("demo plan", slot.codec)
+
+        // Provider and connection fixtures stay honestly unconfigured.
+        assertTrue(repository.providers.value.none { it.tier == "OAuth Verified" })
+        assertTrue(repository.platformConnections.value.all { it.status == "unconfigured" && it.lastVerified == "Not configured" })
     }
 }

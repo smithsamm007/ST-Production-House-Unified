@@ -82,7 +82,7 @@ class ProductionHouseRepository {
     fun login(email: String, pass: String): Boolean {
         if (email.isNotBlank() && pass.isNotBlank()) {
             _currentOwner.value = Owner(email = email, isAuthenticated = true)
-            recordEvidence("OWNER_AUTHENTICATED", "owner", "auth", "session", computeSha256(email + Date().time), "receipt://auth/session_created")
+            recordEvidence("OWNER_AUTHENTICATED", "owner", "auth", "session", computeSha256(email + Date().time), "demo://auth/session_created")
             return true
         }
         return false
@@ -91,7 +91,7 @@ class ProductionHouseRepository {
     fun logout() {
         val email = _currentOwner.value?.email ?: "owner"
         _currentOwner.value = null
-        recordEvidence("OWNER_LOGGED_OUT", "owner", "auth", "session", computeSha256(email + Date().time), "receipt://auth/session_destroyed")
+        recordEvidence("OWNER_LOGGED_OUT", "owner", "auth", "session", computeSha256(email + Date().time), "demo://auth/session_destroyed")
     }
 
     // Channel CRUD
@@ -105,7 +105,7 @@ class ProductionHouseRepository {
             launchTitle = launchTitle
         )
         _channels.value = _channels.value + newChan
-        recordEvidence("CHANNEL_REGISTERED", agentId, slug, "catalog", computeSha256(slug + displayName), "receipt://channel/registered?slug=$slug")
+        recordEvidence("CHANNEL_REGISTERED", agentId, slug, "catalog", computeSha256(slug + displayName), "demo://channel/registered?slug=$slug")
     }
 
     // Schedule actions
@@ -113,7 +113,7 @@ class ProductionHouseRepository {
         val current = _schedules.value.toMutableMap()
         current[schedule.agentId] = schedule
         _schedules.value = current
-        recordEvidence("SCHEDULE_CONFIGURED", schedule.agentId, "schedule", "config", computeSha256(schedule.agentId + schedule.preferredStartTime), "receipt://schedule/saved?agentId=${schedule.agentId}&enabled=${schedule.enabled}")
+        recordEvidence("SCHEDULE_CONFIGURED", schedule.agentId, "schedule", "config", computeSha256(schedule.agentId + schedule.preferredStartTime), "demo://schedule/saved?agentId=${schedule.agentId}&enabled=${schedule.enabled}")
     }
 
     fun runSchedulerNow(agentId: String): String {
@@ -132,7 +132,7 @@ class ProductionHouseRepository {
             currentStage = "story",
             stageProgress = 0.12f,
             createdAt = getCurrentTimestamp(),
-            executionLog = listOf("Scheduler tick claimed slot idempotently", "Story engine initiated for Episode $nextEpNumber")
+            executionLog = listOf("[demo] Simulated scheduler tick recorded in the in-memory plan", "[demo] No scheduler backend or provider work was executed")
         )
         _releases.value = listOf(release) + _releases.value
 
@@ -145,8 +145,8 @@ class ProductionHouseRepository {
         )
         _jobs.value = listOf(newJob) + _jobs.value
 
-        recordEvidence("SCHEDULER_SLOT_TRIGGERED", agentId, channel?.slug ?: "unknown", "story", computeSha256(release.id + release.title), "receipt://scheduler/tick-success?duration=${sched.mainEpisodeDuration}s")
-        return "Slot queued successfully for ${channel?.displayName ?: agentId}: 1 episode scheduled (${sched.mainEpisodeDuration / 60}m duration, timezone: ${sched.timezone})."
+        recordEvidence("SCHEDULER_SLOT_TRIGGERED", agentId, channel?.slug ?: "unknown", "story", computeSha256(release.id + release.title), "demo://scheduler/tick-simulated?duration=${sched.mainEpisodeDuration}s")
+        return "[demo] Slot queued successfully in this in-memory scheduler for ${channel?.displayName ?: agentId}: 1 episode simulated (${sched.mainEpisodeDuration / 60}m duration, timezone: ${sched.timezone}). No backend scheduler was contacted."
     }
 
     // Communication actions
@@ -159,15 +159,15 @@ class ProductionHouseRepository {
             timestamp = getCurrentTimeSimple()
         )
         _messages.value = _messages.value + msg
-        recordEvidence("COMMUNICATION_RECORDED", agentId, "studio", kind, computeSha256(msg.id + body), "receipt://communication/logged?sender=$sender&kind=$kind")
+        recordEvidence("COMMUNICATION_RECORDED", agentId, "studio", kind, computeSha256(msg.id + body), "demo://communication/logged?sender=$sender&kind=$kind")
 
         // If the owner instructed or proposed, the director can generate a realistic contextual reply!
         if (sender == "owner" && (kind == "instruction" || kind == "proposal")) {
             val charter = _charters.value[agentId]
             val replyKind = if (kind == "instruction") "decision" else "proposal"
             val replyBody = when (kind) {
-                "instruction" -> "Confirmed. Aligning scene pacing and audio loudness to charter guidelines (${charter?.pacing ?: "cinematic rhythm"}). Updating timeline."
-                else -> "Evaluated proposal against continuity rules. Ready to generate 3 alternative visual scene variations for review."
+                "instruction" -> "[demo simulated reply] Confirmed. Aligning scene pacing and audio loudness to charter guidelines (${charter?.pacing ?: "cinematic rhythm"})."
+                else -> "[demo simulated reply] Evaluated proposal against continuity rules. Ready to generate 3 alternative visual scene variations for review."
             }
             val replyMsg = DirectorMessage(
                 agentId = agentId,
@@ -177,7 +177,7 @@ class ProductionHouseRepository {
                 timestamp = getCurrentTimeSimple()
             )
             _messages.value = _messages.value + replyMsg
-            recordEvidence("DIRECTOR_REPLY_RECORDED", agentId, "studio", replyKind, computeSha256(replyMsg.id + replyBody), "receipt://communication/director_reply")
+            recordEvidence("DIRECTOR_REPLY_RECORDED", agentId, "studio", replyKind, computeSha256(replyMsg.id + replyBody), "demo://communication/simulated_reply")
         }
     }
 
@@ -194,7 +194,7 @@ class ProductionHouseRepository {
             currentStage = "story",
             stageProgress = 0.12f,
             createdAt = getCurrentTimestamp(),
-            executionLog = listOf("Production release registered", "Script beats locked")
+            executionLog = listOf("[demo] Release registered in the in-memory plan", "[demo] No provider or pipeline work was executed")
         )
         _releases.value = listOf(release) + _releases.value
 
@@ -207,7 +207,7 @@ class ProductionHouseRepository {
         )
         _jobs.value = listOf(job) + _jobs.value
 
-        recordEvidence("PRODUCTION_RELEASE_STARTED", channel?.agentId ?: "agent-01", channel?.slug ?: "slug", "story", computeSha256(release.id + title), "receipt://pipeline/start?season=$season&episode=$episode")
+        recordEvidence("PRODUCTION_RELEASE_STARTED", channel?.agentId ?: "agent-01", channel?.slug ?: "slug", "story", computeSha256(release.id + title), "demo://pipeline/start?season=$season&episode=$episode")
     }
 
     fun advancePipelineStage(releaseId: String) {
@@ -226,16 +226,8 @@ class ProductionHouseRepository {
                 }
                 val progress = (currentIdx + 2).toFloat() / stages.size.toFloat()
 
-                val newLogEntry = when (nextStage) {
-                    "visual" -> "Visual: Scene layout and character keyframes synthesized"
-                    "audio" -> "Audio: Multitrack mix generated with dialogue and soundtrack (-14.0 LUFS)"
-                    "assembly" -> "Assembly: FFmpeg video encoding rendered 1080p60 H.264"
-                    "reels" -> "Reels: Standalone brand reel and 2 content reels cut (Rule 8)"
-                    "packaging" -> "Packaging: Canonical media package manifest assembled"
-                    "qc" -> "QC Gate: Verified audio normalization, black frames check, and aspect ratios"
-                    "complete" -> "Complete: Release verified and added to approvals queue"
-                    else -> "Stage $nextStage executed"
-                }
+                // Issue #247 honesty: on-device stage advancement fabricates no renders, QC gates or provider facts.
+                val newLogEntry = "[demo] Stage advanced to $nextStage in the in-memory plan; no render, QC gate or provider execution occurred."
 
                 currentList[index] = rel.copy(
                     currentStage = nextStage,
@@ -246,23 +238,10 @@ class ProductionHouseRepository {
                 _releases.value = currentList
 
                 val stageHash = computeSha256(rel.id + nextStage + System.currentTimeMillis())
-                recordEvidence("STAGE_ADVANCED", "director", rel.channelName, nextStage, stageHash, "receipt://pipeline/$nextStage?status=$nextStatus")
+                recordEvidence("STAGE_ADVANCED", "director", rel.channelName, nextStage, stageHash, "demo://pipeline/stage-advanced?stage=$nextStage&status=$nextStatus")
 
-                // When QC stage is passed, auto-create approval gate item (Rule 7)
-                if (nextStage == "qc") {
-                    val approvalItem = ApprovalItem(
-                        artifactHash = stageHash,
-                        channelName = rel.channelName,
-                        title = "${rel.title} — QC Gate Cleared",
-                        destination = "YouTube & Instagram",
-                        caption = "New episode of ${rel.title} out now! Check out the full breakdown in comments.",
-                        disclosure = "AI-assisted production by ST Production House.",
-                        affiliateLinks = "None",
-                        status = "pending",
-                        createdAt = getCurrentTimeSimple()
-                    )
-                    _approvals.value = listOf(approvalItem) + _approvals.value
-                }
+                // Issue #247 honesty: no approval items are auto-fabricated from on-device stage advancement.
+                // Rule-7 approvals exist only when a real, QC-passed artifact exists (backend owner route).
             }
         }
     }
@@ -275,7 +254,7 @@ class ProductionHouseRepository {
             val job = currentList[index]
             currentList[index] = job.copy(status = newStatus)
             _jobs.value = currentList
-            recordEvidence("JOB_STATUS_UPDATED", job.agentId, "jobs", job.capability, computeSha256(job.id + newStatus), "receipt://job/$newStatus?id=$jobId")
+            recordEvidence("JOB_STATUS_UPDATED", job.agentId, "jobs", job.capability, computeSha256(job.id + newStatus), "demo://job/$newStatus?id=$jobId")
         }
     }
 
@@ -293,9 +272,7 @@ class ProductionHouseRepository {
                 "owner",
                 item.channelName,
                 "publishing",
-                item.artifactHash,
-                "receipt://approval/$newStatus?dest=${item.destination}"
-            )
+                item.artifactHash,"demo://approval/$newStatus-on-demo-fixture?dest=${item.destination}")
         }
     }
 
@@ -306,7 +283,7 @@ class ProductionHouseRepository {
         if (idx != -1) {
             current[idx] = current[idx].copy(status = status, locator = locator, lastVerified = getCurrentTimestamp())
             _platformConnections.value = current
-            recordEvidence("CONNECTION_SLOT_CONFIGURED", current[idx].agentId, current[idx].platform, "credentials", computeSha256(connectionId + locator), "receipt://vault/locator_saved")
+            recordEvidence("CONNECTION_SLOT_CONFIGURED", current[idx].agentId, current[idx].platform, "credentials", computeSha256(connectionId + locator), "demo://connections/locator_saved")
         }
     }
 
@@ -319,7 +296,7 @@ class ProductionHouseRepository {
             channelSlug,
             "qc",
             computedHash,
-            "receipt://inspection/ffprobe?codec=${slot.codec}&resolution=${slot.resolution}&lufs=${slot.lufsAudio}&verified=true"
+            "demo://inspection?note=in-memory demo slot; no FFprobe was executed"
         )
         return InspectionModalData(
             title = slot.artifactTitle ?: slot.label,
@@ -330,7 +307,7 @@ class ProductionHouseRepository {
             lufs = slot.lufsAudio,
             codec = slot.codec,
             sha256 = computedHash,
-            isVerified = true
+            isVerified = slot.verified
         )
     }
 
@@ -345,7 +322,7 @@ class ProductionHouseRepository {
         _providers.value = getInitialProviders()
         _approvals.value = getInitialApprovals()
         _evidenceEvents.value = getInitialEvidence()
-        recordEvidence("SYSTEM_RESET_TO_CANONICAL", "owner", "system", "catalog", computeSha256(UUID.randomUUID().toString()), "receipt://system/reset_canonical")
+        recordEvidence("SYSTEM_RESET_TO_CANONICAL", "owner", "system", "catalog", computeSha256(UUID.randomUUID().toString()), "demo://system/reset_canonical")
     }
 
     private fun recordEvidence(type: String, agentId: String, channel: String, stage: String, hash: String, receipt: String) {
@@ -553,7 +530,7 @@ class ProductionHouseRepository {
             capability = "visual_scene_plan",
             status = "running",
             progressPercent = 65,
-            note = "Generating scene visuals for Ward 7 Corridors"
+            note = "[demo fixture] simulated visual job; no images have generated"
         ),
         ProductionJob(
             id = "job-102",
@@ -569,7 +546,7 @@ class ProductionHouseRepository {
             capability = "narration_plan",
             status = "succeeded",
             progressPercent = 100,
-            note = "Narration voice synthesis complete"
+            note = "[demo fixture] simulated narration job; no TTS has executed"
         ),
         ProductionJob(
             id = "job-104",
@@ -577,7 +554,7 @@ class ProductionHouseRepository {
             capability = "ffmpeg_assembly",
             status = "running",
             progressPercent = 42,
-            note = "Rendering episode cut 1080p60"
+            note = "[demo fixture] simulated assembly job; no render has executed"
         ),
         ProductionJob(
             id = "job-105",
@@ -585,7 +562,7 @@ class ProductionHouseRepository {
             capability = "reel_generation",
             status = "waiting_for_quota",
             progressPercent = 15,
-            note = "Short 1 render waiting for GPU quota slot"
+            note = "[demo fixture] simulated reel job; no real quota provider exists"
         ),
         ProductionJob(
             id = "job-106",
@@ -593,7 +570,7 @@ class ProductionHouseRepository {
             capability = "packaging_qc",
             status = "waiting_for_approval",
             progressPercent = 90,
-            note = "QC pass succeeded; owner publish approval pending"
+            note = "[demo fixture] simulated QC job; no QC gate has executed"
         )
     )
 
@@ -609,25 +586,25 @@ class ProductionHouseRepository {
         ProviderSlot("p-08", "Local Piper TTS Node", "Narration", "Local Emergency", "healthy", 450, 0),
 
         ProviderSlot("p-09", "FFmpeg Native Video Engine", "Assembly", "Local Core", "healthy", 110, 52),
-        ProviderSlot("p-10", "YouTube Official API Publisher", "Publisher", "OAuth Verified", "healthy", 250, 12),
-        ProviderSlot("p-11", "Meta Graph API (Instagram/FB)", "Publisher", "OAuth Verified", "healthy", 310, 20),
-        ProviderSlot("p-12", "Snapchat Creative Kit", "Publisher", "OAuth Verified", "healthy", 290, 8)
+        ProviderSlot("p-10", "YouTube Official API Publisher", "Publisher", "Demo · unconfigured", "healthy", 250, 12),
+        ProviderSlot("p-11", "Meta Graph API (Instagram/FB)", "Publisher", "Demo · unconfigured", "healthy", 310, 20),
+        ProviderSlot("p-12", "Snapchat Creative Kit", "Publisher", "Demo · unconfigured", "healthy", 290, 8)
     )
 
     private fun getInitialConnections(): List<PlatformConnection> = listOf(
-        PlatformConnection(agentId = "agent-01", platform = "YouTube", status = "sandbox_verified", locator = "vault://stph-secrets/agent-01/youtube-oauth", lastVerified = "2026-10-17 06:00 UTC"),
-        PlatformConnection(agentId = "agent-01", platform = "Instagram", status = "sandbox_verified", locator = "vault://stph-secrets/agent-01/meta-graph", lastVerified = "2026-10-17 06:00 UTC"),
+        PlatformConnection(agentId = "agent-01", platform = "YouTube", status = "unconfigured", locator = "vault://stph-secrets/agent-01/youtube-oauth", lastVerified = "Not configured"),
+        PlatformConnection(agentId = "agent-01", platform = "Instagram", status = "unconfigured", locator = "vault://stph-secrets/agent-01/meta-graph", lastVerified = "Not configured"),
         PlatformConnection(agentId = "agent-01", platform = "Snapchat", status = "unconfigured", locator = "vault://stph-secrets/agent-01/snap-public-profile", lastVerified = "Not configured"),
-        PlatformConnection(agentId = "agent-03", platform = "YouTube", status = "sandbox_verified", locator = "vault://stph-secrets/agent-03/youtube-oauth", lastVerified = "2026-10-17 07:15 UTC"),
+        PlatformConnection(agentId = "agent-03", platform = "YouTube", status = "unconfigured", locator = "vault://stph-secrets/agent-03/youtube-oauth", lastVerified = "Not configured"),
         PlatformConnection(agentId = "agent-03", platform = "Instagram", status = "unconfigured", locator = "vault://stph-secrets/agent-03/meta-graph", lastVerified = "Not configured"),
-        PlatformConnection(agentId = "agent-02", platform = "YouTube", status = "sandbox_verified", locator = "vault://stph-secrets/agent-02/youtube-oauth", lastVerified = "2026-10-17 07:30 UTC"),
-        PlatformConnection(agentId = "agent-21", platform = "YouTube", status = "sandbox_verified", locator = "vault://stph-secrets/agent-21/youtube-oauth", lastVerified = "2026-10-17 07:45 UTC")
+        PlatformConnection(agentId = "agent-02", platform = "YouTube", status = "unconfigured", locator = "vault://stph-secrets/agent-02/youtube-oauth", lastVerified = "Not configured"),
+        PlatformConnection(agentId = "agent-21", platform = "YouTube", status = "unconfigured", locator = "vault://stph-secrets/agent-21/youtube-oauth", lastVerified = "Not configured")
     )
 
     private fun getInitialApprovals(): List<ApprovalItem> = listOf(
         ApprovalItem(
             id = "appr-01",
-            artifactHash = "sha256:7f83b1657ff1a20b8e73491d90c88bc1142e0915672ab",
+            artifactHash = computeSha256("demo-fixture-appr-01"),
             channelName = "Epic Mythology Labs",
             title = "Samay Ke Paar: The Cosmic Wheel — Premiere",
             destination = "YouTube Channel (@EpicMythologyLabs)",
@@ -639,7 +616,7 @@ class ProductionHouseRepository {
         ),
         ApprovalItem(
             id = "appr-02",
-            artifactHash = "sha256:39a1c89012cd89410ea2b9187fc88bc1142e0919934fc",
+            artifactHash = computeSha256("demo-fixture-appr-02"),
             channelName = "Midnight Horror Studios",
             title = "Nightfall Ward 7 — Corridor Echo (Short 1)",
             destination = "Instagram Reels & YouTube Shorts",
@@ -653,30 +630,30 @@ class ProductionHouseRepository {
 
     private fun getInitialEvidence(): List<EvidenceEvent> = listOf(
         EvidenceEvent(
-            eventType = "ARTIFACT_INSPECTED",
+            eventType = "DEMO_FIXTURE_QC",
             agentId = "agent-03",
             channelSlug = "mythology-epics",
             stage = "qc",
-            artifactHash = "sha256:7f83b1657ff1a20b8e73491d90c88bc1142e0915672ab",
-            verificationReceipt = "receipt://qc-gate/pass?audio_integrated=true&lufs=-14.2&ffprobe=1080p60",
+            artifactHash = computeSha256("demo-fixture-epic-qc"),
+            verificationReceipt = "demo://fixture?note=seeded demo row; no real QC gate was executed",
             timestamp = "2026-10-17 08:25:04 UTC"
         ),
         EvidenceEvent(
-            eventType = "ASSEMBLY_RENDERED",
+            eventType = "DEMO_FIXTURE_ASSEMBLY",
             agentId = "agent-02",
             channelSlug = "detective-anime",
             stage = "assembly",
-            artifactHash = "sha256:88bc1142e09199a0b127cc9011f39a1c89012cd5567aa",
-            verificationReceipt = "receipt://ffmpeg/exit0?duration=1800s&vcodec=h264&acodec=aac",
+            artifactHash = computeSha256("demo-fixture-anime-assembly"),
+            verificationReceipt = "demo://fixture?note=seeded demo row; no real render was executed",
             timestamp = "2026-10-17 08:18:22 UTC"
         ),
         EvidenceEvent(
-            eventType = "NARRATION_SYNTHESIZED",
+            eventType = "DEMO_FIXTURE_NARRATION",
             agentId = "agent-01",
             channelSlug = "midnight-horror-hindi",
             stage = "audio",
-            artifactHash = "sha256:a194bc0231ff7f83b1657ff139a1c89012cd8899ee",
-            verificationReceipt = "receipt://audio-transport/48khz?snr=38db&format=wav",
+            artifactHash = computeSha256("demo-fixture-horror-narration"),
+            verificationReceipt = "demo://fixture?note=seeded demo row; no real TTS was executed",
             timestamp = "2026-10-17 07:55:12 UTC"
         )
     )

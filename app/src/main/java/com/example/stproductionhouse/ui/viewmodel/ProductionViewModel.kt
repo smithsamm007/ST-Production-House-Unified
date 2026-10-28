@@ -53,7 +53,7 @@ class ProductionViewModel(
     private val _loginEmail = MutableStateFlow("owner@stproduction.demo")
     val loginEmail: StateFlow<String> = _loginEmail.asStateFlow()
 
-    private val _loginPassword = MutableStateFlow("demo-production-house-2026")
+    private val _loginPassword = MutableStateFlow("")
     val loginPassword: StateFlow<String> = _loginPassword.asStateFlow()
 
     private val _loginError = MutableStateFlow<String?>(null)

@@ -27,8 +27,8 @@ data class MediaSlot(
     val verified: Boolean = false,
     val resolution: String = "1920x1080",
     val aspectRatio: String = "16:9",
-    val lufsAudio: String = "-14.2 LUFS",
-    val codec: String = "H.264 / AAC"
+    val lufsAudio: String = "demo plan",
+    val codec: String = "demo plan"
 )
 
 data class Channel(
@@ -42,10 +42,11 @@ data class Channel(
     val launchTitle: String,
     val activePlatforms: List<String> = listOf("YouTube", "Instagram", "Snapchat"),
     val slots: List<MediaSlot> = listOf(
-        MediaSlot("main_video", "Main Video", "longform episode", "verified", launchTitle, 1800, "sha256:7f83b1657ff1a20b8e73491d90c", true, "1920x1080", "16:9", "-14.2 LUFS", "H.264 / AAC"),
-        MediaSlot("content_reel_1", "Short 1", "content reel", "verified", "$launchTitle (Highlight A)", 45, "sha256:39a1c89012cd89410ea2b9187fc", true, "1080x1920", "9:16", "-14.0 LUFS", "H.264 / AAC"),
-        MediaSlot("content_reel_2", "Short 2", "content reel", "planned", "$launchTitle (Highlight B)", 50, null, false, "1080x1920", "9:16", "-14.0 LUFS", "H.264 / AAC"),
-        MediaSlot("brand_reel", "Brand Reel", "standalone brand promo", "verified", "Studio Identity Promo", 30, "sha256:88bc1142e09199a0b127cc9011f", true, "1080x1920", "9:16", "-13.8 LUFS", "H.264 / AAC")
+        // Issue #247 honesty: seeded slots describe the plan only — nothing is rendered, verified or hashed.
+        MediaSlot("main_video", "Main Video", "longform episode", "planned", launchTitle, 1800, null, false, "1920x1080", "16:9", "demo plan", "demo plan"),
+        MediaSlot("content_reel_1", "Short 1", "content reel", "planned", "$launchTitle (Highlight A)", 45, null, false, "1080x1920", "9:16", "demo plan", "demo plan"),
+        MediaSlot("content_reel_2", "Short 2", "content reel", "planned", "$launchTitle (Highlight B)", 50, null, false, "1080x1920", "9:16", "demo plan", "demo plan"),
+        MediaSlot("brand_reel", "Brand Reel", "standalone brand promo", "planned", "Studio Identity Promo", 30, null, false, "1080x1920", "9:16", "demo plan", "demo plan")
     )
 )
 
@@ -60,10 +61,10 @@ data class ProductionRelease(
     val currentStage: String = "story", // story, visual, audio, assembly, reels, packaging, qc, complete
     val stageProgress: Float = 0.45f,
     val createdAt: String = "2026-10-17 08:30",
+    // Issue #247 honesty: seeded demo releases may not claim provider work that never ran.
     val executionLog: List<String> = listOf(
-        "Story: Beats and character arcs locked",
-        "Visual: 12 keyframe scenes synthesized via Pollinations",
-        "Audio: Kokoro TTS narration track generated (-14.2 LUFS)"
+        "[demo fixture] Story beats listed as a production plan",
+        "[demo fixture] No visual, TTS, render or QC work has executed"
     )
 )
 
