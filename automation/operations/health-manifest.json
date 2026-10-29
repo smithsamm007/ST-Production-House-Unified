@@ -18,6 +18,13 @@
       "description": "Lint, security audit, unit/policy tests, PostgreSQL 15 integration tests, and consolidated PR reporting."
     },
     {
+      "workflowId": "android",
+      "path": ".github/workflows/android.yml",
+      "requiredSecrets": [],
+      "critical": true,
+      "description": "Owner-console verification: JDK 21 + Android SDK 36 + Gradle 9.3.1 build, :app:assembleDebug and :app:testDebugUnitTest on Android-side changes. Needs no external credential (runner-provided GITHUB_TOKEN only)."
+    },
+    {
       "workflowId": "pr-gate",
       "path": ".github/workflows/pr-gate.yml",
       "requiredSecrets": [],
