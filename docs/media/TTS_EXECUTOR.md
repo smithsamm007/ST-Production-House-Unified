@@ -75,6 +75,19 @@ production transport resolves locator → credential outside this boundary.
   text is scanned against secret-shaped content and internal agent names
   (R15/R17). Nothing is ever interpolated into a shell string.
 
+## Narration input bound (30 / 40 / 50-minute scripts)
+
+`validateNarrationText` accepts up to `MAX_TEXT_LENGTH` (**64 000** characters,
+exported and asserted by `tests/ttsExecutor.test.js`). The bound is sized for
+the LONGEST Director-configured episode: a complete 50-minute (3000 s)
+narration planned at 2.2 words/second is ≈ 6 600 words ≈ 30 000 characters.
+The previous 20 000-character bound made a 40- or 50-minute script
+unrepresentable, so the audio stage could only ever pass a title-length line
+— which the S-M41-01 completeness gate then correctly rejected.
+
+The bound still rejects runaway input, secret-shaped text and internal agent
+names (R15/R17); raising it changed no rejection class, only the size ceiling.
+
 ## Honesty matrix (nothing is ever fabricated)
 
 | Condition | Result |

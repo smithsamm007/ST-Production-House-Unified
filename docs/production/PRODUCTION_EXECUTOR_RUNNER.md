@@ -45,6 +45,38 @@ Per stage:
 | `assembly` | `executeAssemblyPlan` (#175) via `buildLongformAssemblyPlan` | honest failure on unresolvable bindings |
 | `qc` | returns the binding's policy checks | optional; gate stays authoritative |
 
+## Narration ⇄ duration alignment (audio stage)
+
+The audio stage narrates the **complete script** built for the run's
+configured duration — never the episode title alone.
+
+```bash
+# pipeline builds it once per run, from the resolved target:
+stageInputs.narrationScript = buildNarrationScript({ title, season, episode,
+                                                      targetDurationSeconds })
+# the runner hands that text to the executor:
+scriptText = stageInputs.narrationScript.text
+```
+
+- `src/pipeline/narrationScript.js` plans five beat segments (hook →
+  discovery → escalation → reversal → cliffhanger) that sum **exactly** to
+  1800 / 2400 / 3000 s (30 / 40 / 50 minutes). Any other target fails closed
+  with `NARRATION_TARGET_UNSUPPORTED`; an omitted target means the documented
+  2400 s default, matching `resolveEpisodeTargetDuration`.
+- The word budget is sized at a documented **2.2 words/second** planning rate
+  and aimed inside the completeness gate's own acceptance window
+  (`[target − tolerance, video + 1]`), so plan and QC describe the same
+  program length.
+- `generationMode: "deterministic_local"`, `editorialStatus:
+  "deterministic_planning_text"` — this is deterministic planning narration,
+  never a claim of editorial or provider output. An approved script can
+  replace it without touching this module.
+- The only authority on a RENDERED duration remains the post-render FFprobe
+  inspection consumed by `evaluateEpisodeCompleteness` (S-M41-01).
+- Regression coverage: `tests/narrationDurationAlignment.test.js` binds
+  builder → `stageInputs` → runner → executor → completeness gate, and proves
+  the legacy title-only line still fails `QC_AUDIO_COVERAGE_INSUFFICIENT`.
+
 ## 30–50 minute long-form policy (Director-configured target)
 
 `buildLongformAssemblyPlan` renders `main_longform` at the episode duration the

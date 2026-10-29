@@ -24,6 +24,7 @@ import {
   DEFAULT_EPISODE_DURATION_SECONDS,
   EPISODE_DURATION_OPTIONS_SECONDS,
 } from "../scheduling/directorSchedule.js";
+import { buildNarrationScript } from "./narrationScript.js";
 
 export const PIPELINE_STAGES = Object.freeze(["story", "visual", "audio", "assembly"]);
 
@@ -149,22 +150,52 @@ export function renderStageContent(stage, stageInputsEl = {}) {
         null,
         2
       );
-    case "audio":
+    case "audio": {
+      // When the run resolved a narration script (always true for pipeline
+      // runs), the artifact IS that complete script: the same text the audio
+      // executor narrates. Ad-hoc calls without one keep the historical stub
+      // so callers that only plan metadata never claim a full program.
+      const script = stageInputsEl?.narrationScript ?? null;
+      if (script === null) {
+        return JSON.stringify(
+          {
+            generationMode: "deterministic_local",
+            schema: "st.audio.narration.v1",
+            title,
+            episode,
+            narrationLines: [
+              { line: 1, text: `Previously on ${title}...`, estimatedSeconds: 3 },
+              { line: 2, text: "The story continues where it left off.", estimatedSeconds: 4 },
+              { line: 3, text: "And this is only the beginning.", estimatedSeconds: 3 },
+            ],
+          },
+          null,
+          2
+        );
+      }
       return JSON.stringify(
         {
-          generationMode: "deterministic_local",
+          generationMode: script.generationMode,
           schema: "st.audio.narration.v1",
+          scriptType: script.scriptType,
+          editorialStatus: script.editorialStatus,
           title,
           episode,
-          narrationLines: [
-            { line: 1, text: `Previously on ${title}...`, estimatedSeconds: 3 },
-            { line: 2, text: "The story continues where it left off.", estimatedSeconds: 4 },
-            { line: 3, text: "And this is only the beginning.", estimatedSeconds: 3 },
-          ],
+          targetSeconds: script.targetSeconds,
+          plannedSeconds: script.plannedSeconds,
+          estimatedSeconds: script.estimatedSeconds,
+          wordCount: script.wordCount,
+          narrationLines: script.segments.map((segment) => ({
+            line: segment.segment,
+            beat: segment.beat,
+            text: segment.text,
+            estimatedSeconds: segment.plannedSeconds,
+          })),
         },
         null,
         2
       );
+    }
     case "assembly": {
       // The planned episode duration the run must honour (Director schedule →
       // job → documented default). The deterministic manifest reports the
@@ -234,6 +265,16 @@ export async function runEpisodePipeline({
     episode: release.episode,
     targetDurationSeconds: targetDuration.seconds,
     targetDurationSource: targetDuration.source,
+    // The COMPLETE narration script for this run's configured duration. The
+    // audio stage narrates this text end to end (never the title alone), so
+    // the planned narration and the S-M41-01 audio-coverage gate describe the
+    // same program length. Built deterministically from the run's own inputs.
+    narrationScript: buildNarrationScript({
+      title: release.title,
+      season: release.season ?? null,
+      episode: release.episode ?? null,
+      targetDurationSeconds: targetDuration.seconds,
+    }),
   };
 
   const artifacts = [];

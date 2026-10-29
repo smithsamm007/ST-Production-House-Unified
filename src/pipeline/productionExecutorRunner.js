@@ -292,7 +292,16 @@ export function bindProductionRunner(binding = {}) {
         return waitingResult("CREDENTIAL_MISSING");
       }
       return executeTtsGeneration(voiceProfile, {
-        scriptText: `यह कहानी अब शुरू होती है: ${stageInputs?.title ?? release.title ?? "यह एपिसोड"}.`,
+        // COMPLETE script, never the title alone (narration ⇄ duration
+        // alignment): the pipeline resolves the run's configured 1800/2400/
+        // 3000 s target and hands over the full narration built for it, so
+        // the S-M41-01 coverage gate measures a program that was planned to
+        // its length. A caller that supplies no script keeps the historical
+        // title-derived line (contract tests and ad-hoc probes).
+        scriptText: typeof stageInputs?.narrationScript?.text === "string" &&
+          stageInputs.narrationScript.text.length > 0
+          ? stageInputs.narrationScript.text
+          : `यह कहानी अब शुरू होती है: ${stageInputs?.title ?? release.title ?? "यह एपिसोड"}.`,
         // File naming honesty: the extension is the SELECTED provider's real
         // output container (espeak-ng → .wav), never a hardcoded claim.
         outputPath: `${paths.audio}/${productionRunId}${ttsProviderOutputExtension(voiceProfile.provider.providerId)}`,

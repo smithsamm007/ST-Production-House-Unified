@@ -26,6 +26,7 @@ import {
   executeTtsGeneration,
   runTtsProvider,
   selectTtsProvider,
+  MAX_TEXT_LENGTH,
   validateNarrationText,
   validateTtsOutputPath,
 } from "../src/media/ttsExecutor.js";
@@ -188,7 +189,10 @@ test("validateNarrationText applies R15/R17 rules and bounds", () => {
   assert.equal(validateNarrationText("  यह एक   परीक्षण है।  "), "यह एक परीक्षण है।");
   assert.throws(() => validateNarrationText(""), /TTS_SCRIPT_INVALID/);
   assert.throws(() => validateNarrationText(null), /TTS_SCRIPT_INVALID/);
-  assert.throws(() => validateNarrationText("x".repeat(20001)), /TTS_SCRIPT_INVALID/);
+  // The bound admits a COMPLETE 50-minute script (≈ 6 600 words) and still
+  // rejects runaway input; asserted against the exported real bound.
+  assert.equal(validateNarrationText("x".repeat(MAX_TEXT_LENGTH)), "x".repeat(MAX_TEXT_LENGTH));
+  assert.throws(() => validateNarrationText("x".repeat(MAX_TEXT_LENGTH + 1)), /TTS_SCRIPT_INVALID/);
   assert.throws(() => validateNarrationText("the api key is here"), /TTS_SCRIPT_INVALID/);
   assert.throws(() => validateNarrationText("a story about JARVIS"), /TTS_SCRIPT_INVALID/);
 });

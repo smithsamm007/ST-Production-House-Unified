@@ -128,7 +128,14 @@ export function ttsProviderOutputExtension(providerId) {
 
 const DEFAULT_TTS_TIMEOUT_MS = 120_000;
 const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
-const MAX_TEXT_LENGTH = 20_000;
+/**
+ * Narration input bound. Sized for the LONGEST Director-configured episode:
+ * a 50-minute (3000 s) script at the documented 2.2 words/second planning
+ * rate is ≈ 6 600 words ≈ 43 000 characters, so the bound has to admit a
+ * complete 30/40/50-minute script while still rejecting runaway input.
+ * Exported so the contract test asserts against the real bound.
+ */
+export const MAX_TEXT_LENGTH = 64_000;
 const MAX_STDERR_TAIL = 2000;
 
 function fail(code) {
