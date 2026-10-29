@@ -84,7 +84,7 @@ fun LoginScreen(
                 }
 
                 Text(
-                    text = "Sign in to the unified control plane. Every value on this console reflects real system responses — zero simulated mock data.",
+                    text = "UI prototype backed by in-memory demo fixtures. No backend is connected: every value on this console is simulated until this app binds to the ST Production House control plane.",
                     color = TextMuted,
                     fontSize = 12.5.sp,
                     lineHeight = 18.sp
@@ -155,7 +155,7 @@ fun LoginScreen(
                 }
 
                 Text(
-                    text = "Demo Credentials: owner@stproduction.demo (password pre-filled)",
+                    text = "Demo mode: any non-blank email and password opens this console. Data resets when the app closes.",
                     color = TextMuted,
                     fontSize = 11.sp
                 )

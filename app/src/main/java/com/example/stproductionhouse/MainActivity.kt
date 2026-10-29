@@ -188,6 +188,21 @@ fun AppShell(
                         storageStatus = viewModel.storageStatus,
                         onLogout = viewModel::logout
                     )
+                    // Issue #247 honesty banner: every screen shows demo data until a backend binds.
+                    Surface(
+                        color = StatusBad.copy(alpha = 0.15f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, StatusBad)
+                    ) {
+                        Text(
+                            text = "DEMO DATA — in-memory fixtures only; nothing here is connected to a live backend, provider or platform.",
+                            color = StatusBad,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
                     // Sub-navigation bar with menu icon and current section indicator
                     Surface(
                         color = PanelDarkVariant,
