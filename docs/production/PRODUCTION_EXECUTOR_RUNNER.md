@@ -39,7 +39,7 @@ Per stage:
 
 | Stage | Executor | Honesty behavior without capacity |
 |---|---|---|
-| `audio` | `executeTtsGeneration` (#179) | `WAITING_FOR_QUOTA` / `CREDENTIAL_MISSING` |
+| `audio` | `executeTtsGeneration` (#179) + measured rate calibration (Issue #257, see below) | `WAITING_FOR_QUOTA` / `CREDENTIAL_MISSING` |
 | `visual` | `executeVisualGeneration` (#181) | durable wait, never a fake still |
 | `packaging` | visual chain (thumbnail key art) | durable wait |
 | `assembly` | `executeAssemblyPlan` (#175) via `buildLongformAssemblyPlan` | honest failure on unresolvable bindings |
@@ -76,6 +76,38 @@ scriptText = stageInputs.narrationScript.text
 - Regression coverage: `tests/narrationDurationAlignment.test.js` binds
   builder → `stageInputs` → runner → executor → completeness gate, and proves
   the legacy title-only line still fails `QC_AUDIO_COVERAGE_INSUFFICIENT`.
+
+### Measured narration-rate calibration (audio stage)
+
+The audio stage consumes MEASURED durations, not planning assumptions:
+
+1. It requests synthesis at the narration plan's declared words-per-minute
+   (`stageInputs.narrationScript.wordsPerMinute`), or at the provider default
+   when no plan is supplied. No rate argument is invented elsewhere.
+2. It reads the REAL post-render inspection's audio duration and compares it
+   against EXACTLY the window the S-M41-01 completeness gate enforces for this
+   run's target: `[target − audioCoverageToleranceSeconds(target), target + 1]`.
+3. While the measurement sits outside that window and the selected provider
+   accepts a documented absolute-rate argument (espeak-ng `-s <wpm>`), it
+   re-requests synthesis with `rate × measured/target`, bounded to
+   `MAX_AUDIO_CALIBRATION_ATTEMPTS` (3) — every attempt recorded in
+   `result.calibration.attempts` as evidence, and the settled request
+   re-measured. The proportional rule converges from the measured rehearsal
+   physics (175 → 114 → 117) and never trusts a hardcoded answer.
+4. Honest exits:
+      - out-of-window measurement on a provider without rate control →
+        `NARRATION_RATE_UNCONTROLLED` — fail closed BEFORE spending an
+        assembly render the gate would mathematically reject;
+      - window unreachable within the bound (or the adjusted rate outside
+        the provider's supported range) → `NARRATION_CALIBRATION_EXHAUSTED`;
+      - executor failure or durable wait → returned UNCHANGED, never retried
+        blindly (quota/credential resumption stays the scheduler's job);
+      - no target or unmeasurable inspection → behave exactly as before;
+        the completeness gate remains the only duration authority.
+
+Offline, injected-transport tests: `tests/audioRateCalibration.test.js`.
+Executed measured rehearsal for all three targets: `npm run real-media-rehearsal`
+(`docs/media/REAL_MEDIA_REHEARSAL.md`).
 
 ## 30–50 minute long-form policy (Director-configured target)
 

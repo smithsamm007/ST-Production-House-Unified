@@ -53,6 +53,7 @@ import {
   DEFAULT_EPISODE_DURATION_SECONDS,
   EPISODE_DURATION_OPTIONS_SECONDS,
 } from "../scheduling/directorSchedule.js";
+import { audioCoverageToleranceSeconds } from "../media/episodeCompleteness.js";
 
 export const PRODUCTION_RUNNER_VERSION = "production_executor_runner_v1";
 
@@ -63,6 +64,64 @@ export const PRODUCTION_RUNNER_ERROR_CODES = Object.freeze([
   "RUNNER_REGISTRY_INVALID",
   "RUNNER_PLAN_UNBUILDABLE",
 ]);
+
+/**
+ * Measured audio-rate calibration (Issue #257).
+ *
+ * The narration plan is word-sized for a 2.2 words/second planning rate, but
+ * a real synthesizer's rate is a property of ITS configuration, not of the
+ * plan. Since rendered duration scales ≈ 1/rate, the audio stage measures
+ * what was actually produced and — while audio sits outside the SAME window
+ * the S-M41-01 completeness gate will enforce — re-requests synthesis with
+ * the rate scaled by measured/target, bounded, and always ending on a FRESH
+ * measurement. No constant is trusted: the settled number is written to the
+ * result's `calibration` record as evidence.
+ */
+export const MAX_AUDIO_CALIBRATION_ATTEMPTS = 3;
+
+/** The local emergency slot's documented default (espeak-ng `-s` default). */
+export const DEFAULT_NARRATION_WPM = 175;
+
+/** Honest failure codes raised by the bounded calibration loop itself. */
+export const AUDIO_CALIBRATION_ERROR_CODES = Object.freeze([
+  "NARRATION_CALIBRATION_EXHAUSTED",
+  "NARRATION_RATE_UNCONTROLLED",
+]);
+
+/** A rate-capable provider: the ONLY provider given a `-s <wpm>` request. */
+const RATE_CONTROLLED_PROVIDERS = Object.freeze(["espeak-ng"]);
+
+function calibrationFailure(code, calibration) {
+  const error = new Error(code);
+  error.code = code;
+  return deepFreeze({
+    success: false,
+    failureCode: code,
+    quotaState: null,
+    mediaStatus: "unverified",
+    generationMode: "not_evidenced",
+    descriptor: null,
+    outcome: null,
+    inspection: null,
+    outputPath: null,
+    calibration,
+  });
+}
+
+/** The audio duration the executor's REAL post-render inspection measured. */
+function measuredAudioSeconds(executorResult) {
+  const inspection = executorResult?.inspection;
+  if (!inspection || inspection.success !== true || !Array.isArray(inspection.streams)) return null;
+  const audio = inspection.streams.find((stream) => stream?.codec_type === "audio");
+  if (!audio) return null;
+  const parsed =
+    typeof audio.duration === "number"
+      ? audio.duration
+      : typeof audio.duration === "string" && audio.duration.trim() !== ""
+        ? Number(audio.duration)
+        : Number.NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
 
 function runnerError(code) {
   const error = new Error(code);
@@ -291,27 +350,111 @@ export function bindProductionRunner(binding = {}) {
         // truthful durable wait (credential onboarding is owner-gated).
         return waitingResult("CREDENTIAL_MISSING");
       }
-      return executeTtsGeneration(voiceProfile, {
-        // COMPLETE script, never the title alone (narration ⇄ duration
-        // alignment): the pipeline resolves the run's configured 1800/2400/
-        // 3000 s target and hands over the full narration built for it, so
-        // the S-M41-01 coverage gate measures a program that was planned to
-        // its length. A caller that supplies no script keeps the historical
-        // title-derived line (contract tests and ad-hoc probes).
-        scriptText: typeof stageInputs?.narrationScript?.text === "string" &&
-          stageInputs.narrationScript.text.length > 0
-          ? stageInputs.narrationScript.text
-          : `यह कहानी अब शुरू होती है: ${stageInputs?.title ?? release.title ?? "यह एपिसोड"}.`,
-        // File naming honesty: the extension is the SELECTED provider's real
-        // output container (espeak-ng → .wav), never a hardcoded claim.
-        outputPath: `${paths.audio}/${productionRunId}${ttsProviderOutputExtension(voiceProfile.provider.providerId)}`,
-        registry,
-        spawnImpl: binding.spawnImpl,
-        readFileImpl: binding.readFileImpl,
-        now: binding.now,
-        timeoutMs: binding.timeoutMs,
-        probeTimeoutMs: binding.probeTimeoutMs,
-        productionRunId,
+
+      // Measured calibration inputs (Issue #257). The window is EXACTLY the
+      // one the S-M41-01 completeness gate enforces for this run's target —
+      // plan and gate describe the same program length. Without a target or
+      // without a measurable inspection the stage behaves exactly as before:
+      // the gate, not the runner, is the authority.
+      const narrationText = typeof stageInputs?.narrationScript?.text === "string" &&
+        stageInputs.narrationScript.text.length > 0
+        ? stageInputs.narrationScript.text
+        : `यह कहानी अब शुरू होती है: ${stageInputs?.title ?? release.title ?? "यह एपिसोड"}.`;
+      const targetSeconds = Number.isFinite(request.targetDurationSeconds) && request.targetDurationSeconds > 0
+        ? request.targetDurationSeconds
+        : null;
+      const toleranceSeconds = targetSeconds === null ? null : audioCoverageToleranceSeconds(targetSeconds);
+      const planWpm = stageInputs?.narrationScript?.wordsPerMinute;
+      let requestedRate = Number.isInteger(planWpm) && planWpm >= 8 && planWpm <= 450 ? planWpm : null;
+      const calibrationAttempts = [];
+
+      for (let attempt = 1; attempt <= MAX_AUDIO_CALIBRATION_ATTEMPTS; attempt += 1) {
+        const result = await executeTtsGeneration(voiceProfile, {
+          scriptText: narrationText,
+          // File naming honesty: the extension is the SELECTED provider's
+          // real output container (espeak-ng → .wav), never a hardcoded claim.
+          outputPath: `${paths.audio}/${productionRunId}${ttsProviderOutputExtension(voiceProfile.provider.providerId)}`,
+          registry,
+          // Measured calibration (Issue #257): the requested words-per-minute
+          // is INPUT; the measured duration is the ONLY authority on what
+          // was actually produced.
+          wordsPerMinute: requestedRate,
+          spawnImpl: binding.spawnImpl,
+          readFileImpl: binding.readFileImpl,
+          now: binding.now,
+          timeoutMs: binding.timeoutMs,
+          probeTimeoutMs: binding.probeTimeoutMs,
+          productionRunId,
+        });
+
+        // An honest wait / provider failure is NEVER retried blindly — the
+        // scheduler owns resumption and the owner owns credentials (Rules 1–3).
+        if (result.success !== true) return result;
+
+        const measured = measuredAudioSeconds(result);
+        if (targetSeconds === null || measured === null) {
+          // Nothing to calibrate against: behave exactly as before and let
+          // the completeness gate (the only duration authority) decide.
+          return result;
+        }
+        calibrationAttempts.push({
+          attempt,
+          wordsPerMinute: requestedRate ?? "provider_default",
+          measuredDurationSeconds: Math.round(measured * 1000) / 1000,
+        });
+        const minSeconds = targetSeconds - toleranceSeconds;
+        if (measured >= minSeconds && measured <= targetSeconds + 1) {
+          return deepFreeze({
+            ...result,
+            calibration: {
+              attempts: calibrationAttempts,
+              settled: true,
+              targetSeconds,
+              targetWindowSeconds: [minSeconds, targetSeconds + 1],
+            },
+          });
+        }
+
+        const providerId = result.providerCall?.providerId ?? null;
+        if (!RATE_CONTROLLED_PROVIDERS.includes(providerId)) {
+          // This provider cannot be honestly rate-controlled (no documented
+          // absolute-rate argument). A MEASURED out-of-window narration is
+          // reported fail-closed NOW instead of assembling a render the
+          // completeness gate is mathematically certain to reject.
+          return calibrationFailure("NARRATION_RATE_UNCONTROLLED", {
+            attempts: calibrationAttempts,
+            settled: false,
+            targetSeconds,
+            targetWindowSeconds: [minSeconds, targetSeconds + 1],
+            providerId,
+          });
+        }
+        if (attempt === MAX_AUDIO_CALIBRATION_ATTEMPTS) {
+          return calibrationFailure("NARRATION_CALIBRATION_EXHAUSTED", {
+            attempts: calibrationAttempts,
+            settled: false,
+            targetSeconds,
+            targetWindowSeconds: [minSeconds, targetSeconds + 1],
+            providerId,
+          });
+        }
+        // duration scales ≈ 1/rate; scale the measured ratio onto the rate.
+        const nextRate = Math.round((requestedRate ?? DEFAULT_NARRATION_WPM) * (measured / targetSeconds));
+        if (!Number.isInteger(nextRate) || nextRate < 8 || nextRate > 450) {
+          return calibrationFailure("NARRATION_CALIBRATION_EXHAUSTED", {
+            attempts: calibrationAttempts,
+            settled: false,
+            targetSeconds,
+            targetWindowSeconds: [minSeconds, targetSeconds + 1],
+            providerId,
+          });
+        }
+        requestedRate = nextRate;
+      }
+      return calibrationFailure("NARRATION_CALIBRATION_EXHAUSTED", {
+        attempts: calibrationAttempts,
+        settled: false,
+        targetSeconds,
       });
     }
 
