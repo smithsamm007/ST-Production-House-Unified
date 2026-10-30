@@ -1,5 +1,46 @@
 # ST Production House Architecture
 
+## The Governing Principle: One House, Many Independent Directors
+
+ST Production House is **one production house containing multiple independent
+production systems — not one shared production team or pipeline**.
+
+> One Production House. Multiple Independent Directors. Multiple Production
+> Systems. Multiple Universes. Separate Publishing Platforms. One Owner.
+
+- **Every Director is independent** (JARVIS, COSMOS, CHRONOS, LAKME,
+  SHERLOCK, …): each owns a separate universe.
+- **Each Director owns their own production system**: own agents, workflow,
+  memory, queues, content pipeline, and production schedule.
+- **Each Director owns their own publishing accounts**: separate YouTube,
+  Instagram, Facebook, Snapchat, Bilibili and other platform connections.
+  There is no shared publishing identity between Directors.
+- **Each Director manages their own content and audience**: no forced shared
+  production pipeline.
+- **The Owner controls the entire house**: add up to 50 Directors, configure
+  permissions, review output, approve publishing (Rule 7), and guide the
+  overall vision.
+
+**The Hermes boundary.** Hermes is the production-house manager between the
+Owner and the Directors. It coordinates — decides what happens next, where
+work runs, in what order — and it must **never turn independent Directors
+into departments or workers in a single shared pipeline**.
+
+These are not aspirations; each clause is enforced in code and schema:
+
+| Principle clause | Enforcing code / schema |
+|---|---|
+| Hermes has decision authority only, within a closed matrix | `src/manager/authorityMatrix.js` — frozen `AUTONOMOUS` / `OWNER_POLICY_CONTROLLED` / `PROHIBITED` classes; unknown/prohibited actions fail closed, Hermes can never "discover a new power" |
+| Hermes coordinates, never consolidates | `src/manager/hermesJobBridge.js` — queueing for one channel fails closed with `DIRECTOR_CHANNEL_MISMATCH`; planning uses THAT Director's own `sql/029` schedule, never a house-wide one |
+| Hermes holds decisions, not secrets | credential REFERENCES only ("agent-01 / gemini / production"); the broker resolves and hands the credential to the adapter (Rules 4/5/17) |
+| Up to 50 independent Directors | `agents` table cap — the 51st insert fails with `AGENT_CAP_REACHED` |
+| Own accounts per Director | `sql/022` seeds an unconfigured email + social slot per agent; tokens are never shared across agents (Rule 5) |
+| Own memory & workspace per Director | `sql/021` + `src/catalog/directorWorkspaceRepository.js` — every read scoped by BOTH `owner_id` AND `agent_id`; cross-owner reads are generic 404s |
+| Own schedule per Director | `sql/029` + `src/scheduling/directorSchedule.js` — duration/frequency limits are per-Director declared, never invented |
+| One Owner above Hermes | authority hierarchy in `authorityMatrix.js`; publishing stays owner-policy controlled (Rules 7/9) |
+
+Everything below details the boundaries that make this structure real.
+
 ## Boundary
 
 ST owns the control plane, policies, identity, credentials, jobs, evidence, approvals, affiliate links, and publishing intent. Specialized media systems run behind versioned worker contracts and cannot write ST's database directly.
