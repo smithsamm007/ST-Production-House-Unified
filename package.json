@@ -21,7 +21,8 @@
     "release:certify": "node scripts/release_certify.mjs",
     "migrate": "node -e \"import('./src/db/index.js').then(m => m.runMigrations(m.createPostgresAdapter())).then(r => console.log(JSON.stringify({code:'MIGRATIONS_COMPLETE',appliedCount:r.appliedCount}))).catch(e => {console.error(e); process.exit(1)})\"",
     "migrate:status": "node -e \"import('./src/db/index.js').then(m => m.getMigrationStatus(m.createPostgresAdapter())).then(s => console.log(JSON.stringify({code:'MIGRATION_STATUS',migrations:s}))).catch(e => {console.error(e); process.exit(1)})\"",
-    "verify": "node --check server.js && node --check src/catalog/agents.js && node --check src/catalog/ownerAuthentication.js && node --check src/catalog/repositories.js && node --check src/catalog/server.js && node --check src/db/index.js"
+    "verify": "node --check server.js && node --check src/catalog/agents.js && node --check src/catalog/ownerAuthentication.js && node --check src/catalog/repositories.js && node --check src/catalog/server.js && node --check src/db/index.js",
+    "real-media-rehearsal": "node scripts/real_media_rehearsal.mjs"
   },
   "dependencies": {
     "argon2": "^0.45.1",
