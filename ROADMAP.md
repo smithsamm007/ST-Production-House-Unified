@@ -8,6 +8,11 @@ The repository contains the Phase 1 policy foundation, PostgreSQL migrations thr
 
 ## Tasks
 
+Delivered since (2026-10-30, Issue #257): the real audio stage now uses
+MEASURED narration-rate calibration (bounded, deterministic) alongside the
+duration-aligned narration plan (#250), docs/media/REAL_MEDIA_REHEARSAL.md
+records executed evidence for all three 30/40/50-minute targets.
+
 Status mapping (updated 2026-10-14): items PLAN-2..MEDIA-1 are delivered and
 superseded by the Phase 1/2 completion matrix below and the shipped
 implementation (`src/orchestration/**`, `src/api/**`, leased workers in

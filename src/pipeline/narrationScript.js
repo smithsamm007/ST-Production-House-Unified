@@ -234,6 +234,11 @@ export function buildNarrationScript({
   const wordCount = text.split(" ").length;
   const estimatedSeconds = wordCount / NARRATION_PLANNING_WORDS_PER_SECOND;
 
+  // The planning rate, in the units the synthesis stack can actually execute
+  // (Issue #257): the audio stage passes this WORDS-PER-MINUTE request to the
+  // executor, and measured calibration corrects the delta against reality.
+  const wordsPerMinute = Math.round(NARRATION_PLANNING_WORDS_PER_SECOND * 60);
+
   return Object.freeze({
     scriptType: NARRATION_SCRIPT_TYPE,
     scriptVersion: NARRATION_SCRIPT_VERSION,
@@ -245,6 +250,7 @@ export function buildNarrationScript({
     episode,
     targetSeconds,
     plannedSeconds: targetSeconds,
+    wordsPerMinute,
     wordCount,
     estimatedSeconds,
     acceptanceWindow: Object.freeze({

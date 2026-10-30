@@ -65,6 +65,7 @@ export const TTS_EXECUTOR_ERROR_CODES = Object.freeze([
   "TTS_PROFILE_TAMPERED",
   "TTS_SCRIPT_INVALID",
   "TTS_OUTPUT_PATH_UNSAFE",
+  "TTS_RATE_INVALID",
   "LANGUAGE_UNSUPPORTED",
   "VOICE_UNSUPPORTED",
   "CREDENTIAL_MISSING",
@@ -161,6 +162,27 @@ export function validateTtsOutputPath(path) {
   if (path.startsWith("-")) throw fail("TTS_OUTPUT_PATH_UNSAFE");
   if (path.split("/").some((segment) => segment === "..")) throw fail("TTS_OUTPUT_PATH_UNSAFE");
   return path;
+}
+
+/**
+ * Requested speech rate in WORDS PER MINUTE (Synchronization target, Issue #257).
+ *
+ * undefined/null → run at the provider's own default rate. espeak-ng accepts
+ * `-s <wpm>` (its documented range is 8–450 wpm); providers that cannot be
+ * honestly rate-controlled are never given a rate argument, and a measured
+ * out-of-window narration is then reported truthfully — never silently
+ * accepted. The requested rate is INPUT, never a duration claim: the only
+ * authority on a rendered duration is the real post-render inspection.
+ */
+export const TTS_RATE_MIN_WPM = 8;
+export const TTS_RATE_MAX_WPM = 450;
+
+function normalizeWordsPerMinute(wordsPerMinute) {
+  if (wordsPerMinute === undefined || wordsPerMinute === null) return null;
+  if (!Number.isInteger(wordsPerMinute) || wordsPerMinute < TTS_RATE_MIN_WPM || wordsPerMinute > TTS_RATE_MAX_WPM) {
+    throw fail("TTS_RATE_INVALID");
+  }
+  return wordsPerMinute;
 }
 
 /**
@@ -292,10 +314,15 @@ export function buildEspeakArgs({ voiceId, outputPath }) {
  * Build the spawn request for a selected provider. Pure; array args only;
  * the output path is validated before any argv is derived.
  */
-export function buildTtsSpawnRequest({ providerId, voiceId, text, outputPath, registry }) {
+export function buildTtsSpawnRequest({ providerId, voiceId, text, outputPath, registry, wordsPerMinute }) {
   validateTtsOutputPath(outputPath);
   const narration = validateNarrationText(text);
+  const rate = normalizeWordsPerMinute(wordsPerMinute);
   if (providerId === "edge-tts") {
+    // No rate argument: edge-tts rate percentages are relative to an
+    // unverified baseline; giving it a rate would be a guess, and this
+    // executor never guesses. Callers that need duration-control use the
+    // local emergency slot (espeak-ng `-s <wpm>`, a documented ABSOLUTE rate).
     const slot = registry && typeof registry === "object" ? registry["edge-tts"] : undefined;
     const argvPrefix = Array.isArray(slot?.argvPrefix) ? slot.argvPrefix.filter((arg) => typeof arg === "string" && arg.length > 0) : [];
     const command = typeof slot?.command === "string" && slot.command.length > 0 ? slot.command : "edge-tts";
@@ -311,7 +338,7 @@ export function buildTtsSpawnRequest({ providerId, voiceId, text, outputPath, re
     const command = typeof slot?.command === "string" && slot.command.length > 0 ? slot.command : "espeak-ng";
     return Object.freeze({
       command,
-      args: Object.freeze([...argvPrefix, ...buildEspeakArgs({ voiceId, outputPath })]),
+      args: Object.freeze([...argvPrefix, ...(rate === null ? [] : ["-s", String(rate)]), ...buildEspeakArgs({ voiceId, outputPath })]),
       stdin: narration,
     });
   }
@@ -488,6 +515,7 @@ export async function executeTtsGeneration(voiceProfile, options = {}) {
       text: opts.scriptText,
       outputPath: opts.outputPath,
       registry: opts.registry,
+      wordsPerMinute: opts.wordsPerMinute,
     });
     const effectiveSpawn = typeof selection.command === "string" && selection.command.length > 0 && selection.command !== request.command
       ? (spawnOpts) => opts.spawnImpl({ ...spawnOpts, command: selection.command })

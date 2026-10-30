@@ -273,6 +273,7 @@ test("error codes are exported and closed", () => {
     "TTS_OUTPUT_PATH_UNSAFE",
     "TTS_PROFILE_INVALID",
     "TTS_PROFILE_TAMPERED",
+    "TTS_RATE_INVALID",
     "TTS_SCRIPT_INVALID",
     "TTS_SPAWN_FAILED",
     "TTS_TIMEOUT",

@@ -75,6 +75,23 @@ production transport resolves locator → credential outside this boundary.
   text is scanned against secret-shaped content and internal agent names
   (R15/R17). Nothing is ever interpolated into a shell string.
 
+## Requested speech rate (`wordsPerMinute`, Issue #257)
+
+`executeTtsGeneration`/`buildTtsSpawnRequest` accept an optional
+`wordsPerMinute` (integer, 8–450) — a REQUEST to the synthesizer, never a
+claim about the rendered duration.
+
+- **espeak-ng** receives a documented ABSOLUTE rate: args gain `-s <wpm>`.
+  Omitting it runs at the provider's own default; no rate argument is invented.
+- **edge-tts** receives NO rate argument: its `--rate` is relative to an
+  unverified baseline, so this executor never guesses. A provider whose rate
+  cannot be honestly controlled is treated as not rate-controlled by the
+  calibrated audio stage (`NARRATION_RATE_UNCONTROLLED` on a meassured
+  out-of-window narration — see the production executor runner doc).
+- Out-of-range input fails closed with `TTS_RATE_INVALID` BEFORE any provider
+  call; the rate is INPUT only, the real post-render ffprobe inspection stays
+  the sole authority on a rendered duration.
+
 ## Narration input bound (30 / 40 / 50-minute scripts)
 
 `validateNarrationText` accepts up to `MAX_TEXT_LENGTH` (**64 000** characters,
