@@ -10,3 +10,6 @@ artifacts/
 *.db
 .DS_Store
 .aider*
+
+# generated JARVIS package dumps (workspace artifacts)
+out/
