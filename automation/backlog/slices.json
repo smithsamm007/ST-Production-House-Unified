@@ -396,6 +396,55 @@
       "dependsOn": [
         "S-M33-01"
       ]
+    },
+    {
+      "sliceId": "S-M42-01",
+      "module": 42,
+      "lane": "lane-1",
+      "ownerGated": false,
+      "title": "Unify the JARVIS content-package orchestrator with the full-script 30/40/50-minute pipeline",
+      "brief": "Source inspection found the jarvis content-package path still caps its deterministic narration plan at 30 minutes and requires owner/agent-supplied timed narration segments for subtitles, while the production pipeline plans and executes 30/40/50-minute episodes. Establish one narration runtime: raise the plan bounds honestly to the three planning targets, derive timed narration segments deterministically from the full buildNarrationScript output, and route the jarvis orchestrator's narration/text stages through the same measured, calibrated audio contracts (TTS executor plus episode completeness gate) the production runner uses. Stages that cannot run keep reporting truthful skipped-pending-input states; no invented timings, no placeholder media presented as real, no provider calls, no publishing.",
+      "acceptance": [
+        "deterministic narration plan accepts 30-, 40- and 50-minute targets and still fails closed on invalid inputs with stable error codes",
+        "timed narration segments are derived deterministically from the full narration script with strictly ordered, bounded timings; genuinely missing input keeps the existing NARRATION_SEGMENTS_REQUIRED honest state and never invents text or timings",
+        "the jarvis narration/text stage exercises the same measured audio contracts as the production runner (rate-requested synthesis validated against real post-render measurements in tests)",
+        "cross-module regression tests cover all three targets and preserve unchanged honest states for missing input; npm test, npm run lint, npm run verify and npm run plan:check pass",
+        "documentation updated for the module (R7) with no new dependencies"
+      ],
+      "dependsOn": [
+        "S-M41-01"
+      ]
+    },
+    {
+      "sliceId": "S-M43-01",
+      "module": 43,
+      "lane": "lane-2",
+      "ownerGated": false,
+      "title": "Raise rehearsal/output QC to measured technical conformance (loudness, true peak, frames, 9:16 Reel)",
+      "brief": "The real-media rehearsal and smoke scripts measure only codec identity, streams and durations: integrated loudness, true peak and clipping are not measured, no loudnorm pass exists, and the brand Reel path tests a square aspect where the canonical requirement is a 9:16 standalone promo. Make technical conformance measured: an ebur128/loudnorm analysis pass records integrated LUFS, true peak dBTP and clipping count per artifact from the real render; a real normalization pass re-renders and re-measures; ffprobe asserts sample rate, codec properties, frame rate and resolution per rendered artifact (long-form 1920x1080, brand Reel 9:16). Placeholder visuals remain explicitly labelled placeholder and are never presented as finished creative output.",
+      "acceptance": [
+        "rehearsal QC output records measured input LUFS, true peak and clipping count per artifact derived from the real render; unmeasurable audio fails closed with a stable code instead of substituting constants",
+        "loudness normalization is executed as a real pass and both the pre- and post-normalization measurements appear in the evidence",
+        "ffprobe-based conformance assertions cover sample rate, codecs, frame rate and resolution; the 1+2+1 smoke proves the brand Reel at 9:16 and the long-form at 1920x1080",
+        "gate and rehearsal documentation updated with the new accept criteria; local rehearsal passes the measured QC in the sandbox; npm test, npm run lint and npm run verify pass"
+      ],
+      "dependsOn": [
+        "S-M41-01"
+      ]
+    },
+    {
+      "sliceId": "S-M44-01",
+      "module": 44,
+      "lane": "lane-1",
+      "ownerGated": false,
+      "title": "Retain sanitized rehearsal evidence as a durable CI artifact and correct stale calibration documentation",
+      "brief": "Raw rehearsal evidence files are git-ignored and no CI artifact retains them, so documented measurements cannot be re-inspected from CI and remain author-side local claims. Add a sanitized evidence bundle workflow step: the bundle must be derived from the real evidence files (never hand-typed or pasted numbers), redact absolute paths, environment identifiers and secret-adjacent keys, upload as a retained artifact, and refuse to upload anything when evidence is absent (no fabricated summaries). The rehearsal doc must mirror the shipped measured narration-rate calibration and delete the stale pre-calibration follow-up note.",
+      "acceptance": [
+        "the sanitization/redaction step is unit-tested: a fixture evidence bundle produces asserted clean output and the step refuses when required evidence fields are missing",
+        "a CI workflow uploads the sanitized retained artifact from a real rehearsal run; when no evidence exists the job reports skipped without uploading fabricated summaries",
+        "documentation records the measurements (per-target audio coverage, settled rate, calibration attempts) as artifact-backed and the stale note is removed; npm test, npm run lint, npm run verify and npm run plan:check pass"
+      ],
+      "dependsOn": []
     }
   ]
 }
