@@ -42,8 +42,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${GEMINI_API_KEY:-}" ] && [ -z "${JULES_API_KEY:-}" ]; then
-            echo "::warning::Night Shift paused: no governed coding credential (GEMINI_API_KEY or JULES_API_KEY) is configured. No implementation, PR, or progress is claimed."
+          # The configured coding model (aider --model gemini/gemini-2.5-flash)
+          # authenticates with GEMINI_API_KEY. JULES_API_KEY authenticates the
+          # separate jules.googleapis.com sessions bridge and cannot drive the
+          # model, so its presence alone must not be treated as a credential.
+          if [ -z "${GEMINI_API_KEY:-}" ]; then
+            echo "::warning::Night Shift paused: GEMINI_API_KEY is not configured. The configured coding model (gemini/gemini-2.5-flash) cannot authenticate without it; JULES_API_KEY serves the jules.googleapis.com bridge only. No implementation, PR, or progress is claimed."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
