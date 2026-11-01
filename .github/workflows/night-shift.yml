@@ -17,8 +17,11 @@ jobs:
       fail-fast: false
       matrix:
         lane: [lane-1, lane-2, lane-3]
+    # One implementation PR in flight at a time (AGENTS.md post-merge
+    # amendment #3). A single repo-wide concurrency group serializes the
+    # lane matrix so two lanes can never implement concurrently.
     concurrency:
-      group: night-shift-${{ matrix.lane }}
+      group: st-night-shift-implementation
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -42,12 +45,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # The configured coding model (aider --model gemini/gemini-2.5-flash)
+          # The configured coding model (aider --model gemini/gemini-3.8-flash)
           # authenticates with GEMINI_API_KEY. JULES_API_KEY authenticates the
           # separate jules.googleapis.com sessions bridge and cannot drive the
           # model, so its presence alone must not be treated as a credential.
           if [ -z "${GEMINI_API_KEY:-}" ]; then
-            echo "::warning::Night Shift paused: GEMINI_API_KEY is not configured. The configured coding model (gemini/gemini-2.5-flash) cannot authenticate without it; JULES_API_KEY serves the jules.googleapis.com bridge only. No implementation, PR, or progress is claimed."
+            echo "::warning::Night Shift paused: GEMINI_API_KEY is not configured. The configured coding model (gemini/gemini-3.8-flash) cannot authenticate without it; JULES_API_KEY serves the jules.googleapis.com bridge only. No implementation, PR, or progress is claimed."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -71,10 +74,17 @@ jobs:
         run: |
           set -euo pipefail
           lane="${{ matrix.lane }}"
-          open_count="$(gh pr list --state open --label "$lane" --limit 1 --json number --jq 'length')"
+          # ONE implementation PR in flight at a time (AGENTS.md post-merge
+          # amendment #3): count open autonomous PRs across ALL lanes, not
+          # just this lane's, before taking more work.
+          open_count="0"
+          for l in lane-1 lane-2 lane-3; do
+            c="$(gh pr list --state open --label "$l" --limit 5 --json number --jq 'length' || echo 0)"
+            open_count=$((open_count + c))
+          done
           if [ "$open_count" != "0" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::$lane already has its canonical PR; lane busy."
+            echo "::notice::$open_count open autonomous implementation PR(s) across the governed lanes; ONE-PR rule holds $lane."
           fi
 
       - name: Resolve next ready issue
@@ -121,7 +131,7 @@ jobs:
           git config user.name "night-shift-agent"
           git config user.email "actions@users.noreply.github.com"
 
-          aider             --model gemini/gemini-2.5-flash             --yes-always             --no-auto-commits             --message-file /tmp/task.md             AGENTS.md CONVENTIONS.md
+          aider             --model gemini/gemini-3.8-flash             --yes-always             --no-auto-commits             --message-file /tmp/task.md             AGENTS.md CONVENTIONS.md
 
           if [ -z "$(git status --porcelain)" ]; then
             echo "::error::Coding agent produced no repository change."
