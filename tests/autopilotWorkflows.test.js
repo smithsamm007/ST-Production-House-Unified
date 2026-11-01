@@ -4,10 +4,20 @@ import { readFileSync } from 'node:fs';
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
-test('night shift exposes exactly three governed lanes and dispatches every exact-head gate', () => {
+test('night shift exposes exactly three governed lanes serialized under the ONE-PR rule (AGENTS.md amendment #3)', () => {
   const workflow = read('.github/workflows/night-shift.yml');
   assert.match(workflow, /lane: \[lane-1, lane-2, lane-3\]/);
-  assert.match(workflow, /group: night-shift-\$\{\{ matrix\.lane \}\}/);
+  // ONE implementation PR in flight at a time: a single repo-wide
+  // concurrency group serializes the lane matrix, and the capacity gate
+  // counts open autonomous PRs across EVERY governed lane before taking
+  // more work. Owner/maintenance PRs carry no lane label and never block.
+  assert.match(workflow, /group: st-night-shift-implementation/);
+  assert.doesNotMatch(workflow, /group: night-shift-\$\{\{ matrix\.lane \}\}/);
+  assert.match(workflow, /for l in lane-1 lane-2 lane-3; do/);
+  assert.match(workflow, /ONE-PR rule holds/);
+  // The configured coding model is policy-pinned so a retirement of the
+  // identifier fails CI loudly instead of failing lanes after 404s.
+  assert.match(workflow, /aider\s+--model gemini\/gemini-3\.8-flash/);
   assert.match(workflow, /workflow run ci\.yml/);
   assert.match(workflow, /workflow run pr-gate\.yml/);
   assert.match(workflow, /workflow run autonomous-merge\.yml/);
