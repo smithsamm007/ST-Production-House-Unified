@@ -222,3 +222,53 @@ Drives the production `createRealMediaRunnerFactory` for ONE Director
   publishing) — owner-gated (Rule 16); the worker never contacts them.
 - **PostgreSQL 15+** and **the first deployment** — owner actions (Phase 4).
 - **Publishing** — zero uploads; no platform receipt exists or was claimed.
+
+---
+
+# 2026-11-07 Issue #262 — JARVIS 30/40/50-minute unification (offline)
+
+Environment: Freebuff cloud worktree · Node v26.13.0 · ffmpeg/ffprobe: NOT
+installed · PostgreSQL: not used by this change · Live providers contacted:
+none · Media generated: none · Publishing: none
+
+## What changed
+
+- `src/jarvis/targetDuration.js` — the ONE planning-duration contract, derived
+  from `EPISODE_DURATION_OPTIONS_SECONDS` (1800 / 2400 / 3000 s = 30/40/50 min).
+- All eight JARVIS validators (outline, narration, continuity, script plan,
+  script dispatch, audio dispatch, shorts, metadata/thumbnail) now fail closed
+  through that contract. The old 25–30 range — and the 27-minute plans it
+  allowed — is gone.
+- `src/jarvis/jarvisNarrationScript.js` — builds the SAME duration-aligned
+  script the production pipeline uses and derives subtitle segments from it
+  (contiguous script words, `narration_script_planned_seconds` timings).
+- `src/jarvis/measuredNarration.js` — narrates that script through the real
+  `executeTtsGeneration` executor and judges the result with
+  `evaluateEpisodeCompleteness`; no second executor, no second gate.
+- `src/jarvis/contentPackageOrchestrator.js` — exposes `narrationScript`,
+  `narrationAudio`, derived Hindi subtitles, `OWNER_SCOPE_REQUIRED` when owner
+  scope is missing, and a `narrationStage` injection point whose
+  `measured_verified` result is reused from the durable checkpoint.
+- `deterministicSubtitlePlan.js` — total duration cap 1800 → 3000 s (50 min).
+
+## Commands and results (this tree, this branch)
+
+- `npm test` — 1497 tests, 1497 passed, 0 failed, 0 skipped (offline: no
+  database, no ffmpeg, no provider contacted).
+- `npm run lint` — PASSED (311 JS/ESM files, 31 SQL migrations).
+- `npm run verify` — exit 0.
+- `npm run plan:check` — `DEVELOPMENT_PLAN_VALID`, 11 tasks.
+- Staged diff vs `main` (1cc5a5c) — 28 files changed, +1145/−60, of which four
+  files are new.
+
+## Not verified (stated, not implied)
+
+- **No real narration audio was generated or measured.** This sandbox has no
+  ffmpeg/ffprobe and no `espeak-ng`, and the PR is offline by scope. The
+  measured-narration tests inject the executor's RECORD, so they prove the gate
+  wiring and its fail-closed verdicts — not a real render.
+- **No CI has run on this head.** The branch must be pushed and a PR opened for
+  `pr-gate` to report.
+- **Hinglish packages still require owner-supplied timed segments.** The
+  repository ships no Hinglish narration-script builder, and Hindi cues are
+  never mislabelled as Hinglish.

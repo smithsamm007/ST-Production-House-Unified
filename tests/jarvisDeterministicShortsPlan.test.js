@@ -14,7 +14,7 @@ function outline(overrides = {}) {
     generationMode: "deterministic_local",
     publicBrand: "Raat Ki Awaaz",
     language: "hinglish",
-    targetMinutes: 27,
+    targetMinutes: 30,
     suppliedConcept: "Ek sunsaan pahadi hostel mein band kamre ki ghanti har raat apne aap bajti hai.",
     storyOutline: [
       { beat: "hook", purpose: "Open with an immediate unsettling event grounded in the supplied concept." },

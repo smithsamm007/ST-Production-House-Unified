@@ -6,7 +6,9 @@ const JOB_TYPE = "jarvis.content.subtitle-plan.v1";
 const ALLOWED_LANGUAGES = new Set(["hindi", "hinglish"]);
 const MAX_CUE_CHARS = 42;
 const MAX_CUE_DURATION_SECONDS = 7.0;
-const MAX_TOTAL_DURATION_SECONDS = 1800; // 30 minutes
+// Issue #262: the subtitle contract must span the LONGEST canonical target
+// (50 minutes = 3000 s), not just the old 30-minute JARVIS bound.
+const MAX_TOTAL_DURATION_SECONDS = 3000;
 
 const SHORTS_ROLES = Object.freeze([
   { role: "opening_hook", sourceBeat: "hook", targetSeconds: 30 },

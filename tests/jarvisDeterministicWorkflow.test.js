@@ -12,7 +12,7 @@ class TestStore {
 
 function envelope(overrides={}) {
   return { taskId:"jarvis-local-1", jobType:"jarvis.content.outline.v1", agentId:"agent-01",
-    payload:{publicBrand:"Raat Ki Awaaz",concept:"Ek sunsaan pahadi hostel mein har raat band kamre se kisi bachche ki ghanti sunai deti hai.",language:"hinglish",targetMinutes:27,...overrides},
+    payload:{publicBrand:"Raat Ki Awaaz",concept:"Ek sunsaan pahadi hostel mein har raat band kamre se kisi bachche ki ghanti sunai deti hai.",language:"hinglish",targetMinutes:30,...overrides},
     context:{ownerId:"owner-test"} };
 }
 

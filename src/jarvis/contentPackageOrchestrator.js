@@ -27,6 +27,12 @@ import { createDeterministicVisualScenePlan } from "./deterministicVisualScenePl
 import { deterministicShortsPlanHandler } from "./deterministicShortsPlan.js";
 import { deterministicMetadataThumbnailPlanHandler } from "./deterministicMetadataThumbnailPlan.js";
 import { deterministicSubtitlePlanHandler } from "./deterministicSubtitlePlan.js";
+import {
+  buildJarvisNarrationScript,
+  deriveTimedNarrationSegments,
+  supportsJarvisNarrationScriptLanguage
+} from "./jarvisNarrationScript.js";
+import { assertNarrationAudioRecord, createSkippedNarrationAudio } from "./measuredNarration.js";
 
 const JARVIS_AGENT_ID = "agent-01";
 
@@ -93,8 +99,11 @@ export class JarvisContentPackageOrchestrator {
    * @param {object} options.runtime - WorkerRuntime instance (required).
    * @param {object} options.checkpointStore - CheckpointStore instance (required).
    * @param {object} [options.evidenceLedger] - Optional EvidenceLedger for stage receipts.
+   * @param {Function} [options.narrationStage] - Optional measured narration stage
+   *   bound to the production TTS executor + completeness gate. Receives
+   *   `{ script, packageTaskId, targetSeconds }`; without it no audio is generated.
    */
-  constructor({ runtime, checkpointStore, evidenceLedger } = {}) {
+  constructor({ runtime, checkpointStore, evidenceLedger, narrationStage } = {}) {
     if (!runtime || typeof runtime.run !== "function") {
       throw new Error("JARVIS_PACKAGE_ORCHESTRATOR_RUNTIME_REQUIRED");
     }
@@ -104,9 +113,13 @@ export class JarvisContentPackageOrchestrator {
     if (evidenceLedger && typeof evidenceLedger.append !== "function") {
       throw new Error("JARVIS_PACKAGE_ORCHESTRATOR_EVIDENCE_LEDGER_INVALID");
     }
+    if (narrationStage !== undefined && narrationStage !== null && typeof narrationStage !== "function") {
+      throw new Error("JARVIS_PACKAGE_ORCHESTRATOR_NARRATION_STAGE_INVALID");
+    }
     this.runtime = runtime;
     this.checkpointStore = checkpointStore;
     this.evidenceLedger = evidenceLedger || null;
+    this.narrationStage = narrationStage ?? null;
   }
 
   #recordEvidence(subjectId, classification, payload) {
@@ -221,6 +234,61 @@ export class JarvisContentPackageOrchestrator {
       // 2. Narration plan (structure/timing only; no audio generated).
       await runStage(STAGES[1], { outlinePackage: outline });
 
+      // 2b. One narration script for this package (Issue #262). The same
+      // duration-aligned builder the production pipeline hands to its audio
+      // stage sizes the script to this package's 30/40/50-minute target, so the
+      // plan and the measured completeness gate describe ONE program length.
+      // The builder emits Hindi planning text only; a Hinglish package keeps
+      // requiring owner-supplied timed narration (no Hinglish builder exists).
+      const narrationScript = supportsJarvisNarrationScriptLanguage(outline.language)
+        ? buildJarvisNarrationScript(outline)
+        : null;
+
+      // 2c. Measured narration audio (Issue #262). When the caller binds the
+      // production measured-narration stage, the complete script is narrated by
+      // the real TTS executor and judged by the measured completeness gate.
+      // Without a bound stage NOTHING is generated, and that is stated.
+      let narrationAudio;
+      if (narrationScript === null) {
+        narrationAudio = createSkippedNarrationAudio("skipped_pending_input", "NARRATION_SCRIPT_LANGUAGE_UNSUPPORTED");
+      } else if (this.narrationStage === null) {
+        narrationAudio = createSkippedNarrationAudio("skipped_pending_runtime", "NARRATION_AUDIO_RUNTIME_REQUIRED");
+      } else {
+        // Restart safety: a MEASURED verification is reused from the durable
+        // checkpoint instead of re-calling a provider. Unverified attempts are
+        // never cached, so an honest wait/failure is re-attempted by whoever
+        // owns resumption (Rules 1–3), not silently treated as settled.
+        const cached = await this.checkpointStore.read(`${packageTaskId}#narration_audio`);
+        const cachedRecord = cached?.data?.record ?? null;
+        if (cachedRecord !== null && cachedRecord.status === "measured_verified") {
+          narrationAudio = assertNarrationAudioRecord(cachedRecord);
+        } else {
+          narrationAudio = assertNarrationAudioRecord(
+            await this.narrationStage({
+              script: narrationScript,
+              packageTaskId,
+              targetSeconds: outline.targetMinutes * 60
+            })
+          );
+          await this.checkpointStore.write(`${packageTaskId}#narration_audio`, {
+            step: "narration_audio_stage_completed",
+            progress: narrationAudio.status === "measured_verified" ? 90 : 60,
+            data: {
+              record: narrationAudio,
+              status: narrationAudio.status,
+              reasonCode: narrationAudio.reasonCode,
+              providerId: narrationAudio.providerId,
+              measuredSeconds: narrationAudio.measuredSeconds
+            }
+          });
+          this.#recordEvidence(packageTaskId, "jarvis_content_narration_audio_stage", {
+            status: narrationAudio.status,
+            reasonCode: narrationAudio.reasonCode,
+            measuredSeconds: narrationAudio.measuredSeconds
+          });
+        }
+      }
+
       // 3. Continuity plan.
       await runStage(STAGES[2], { outlinePackage: outline });
 
@@ -236,16 +304,28 @@ export class JarvisContentPackageOrchestrator {
       // 7. Metadata + thumbnail plan (drafts only).
       await runStage(STAGES[6], { outlinePackage: outline });
 
-      // 8. Subtitle plan — requires owner/agent-supplied timed narration.
-      // Owner scope is mandatory for this stage (scope-isolated cue planning).
+      // 8. Subtitle plan — cue text bound to the script that will be narrated.
+      // Issue #262: when the owner supplies no segments, segments are DERIVED
+      // from the same complete narration script the audio stage narrates. Their
+      // timings are the script's PLANNED beat seconds (labelled), never a
+      // measurement; the text is a slice of the script, never invented. Owner
+      // scope is still mandatory for this stage (scope-isolated cue planning).
       let subtitlePlan = null;
       let subtitleStatus = "skipped_pending_input";
       let subtitleReasonCode = "NARRATION_SEGMENTS_REQUIRED";
-      if (input.timedNarrationSegments !== undefined) {
-        if (typeof input.ownerId !== "string" || !/^[a-zA-Z0-9_-]{3,80}$/.test(input.ownerId)) {
+      const ownerScopeValid = typeof input.ownerId === "string" && /^[a-zA-Z0-9_-]{3,80}$/.test(input.ownerId);
+      const ownerSuppliedSegments = input.timedNarrationSegments !== undefined
+        ? validateTimedNarrationSegments(input.timedNarrationSegments)
+        : null;
+      const segments = ownerSuppliedSegments
+        ?? (narrationScript === null ? null : deriveTimedNarrationSegments(narrationScript));
+
+      if (segments !== null && !ownerScopeValid) {
+        if (ownerSuppliedSegments !== null) {
           throw new Error("JARVIS_PACKAGE_OWNER_ID_REQUIRED_FOR_SUBTITLES");
         }
-        const segments = validateTimedNarrationSegments(input.timedNarrationSegments);
+        subtitleReasonCode = "OWNER_SCOPE_REQUIRED";
+      } else if (segments !== null) {
         subtitlePlan = await runStage(
           STAGES[7],
           {
@@ -259,7 +339,9 @@ export class JarvisContentPackageOrchestrator {
         );
         subtitleStatus = "completed";
         subtitleReasonCode = null;
-      } else {
+      }
+
+      if (subtitlePlan === null) {
         await this.checkpointStore.write(`${packageTaskId}#subtitle_plan`, {
           step: "subtitle_waiting_for_narration_input",
           progress: 0,
@@ -304,14 +386,18 @@ export class JarvisContentPackageOrchestrator {
         shortsPlan: outputs.shorts_plan,
         metadataThumbnailPlan: outputs.metadata_thumbnail_plan,
         subtitlePlan,
+        narrationScript,
+        narrationScriptStatus: narrationScript === null ? "unavailable_for_language" : "planned",
+        narrationAudio,
         stages: stageRecords,
         provenance: {
           generationMode: "deterministic_local",
-          providerCalls: 0,
+          providerCalls: narrationAudio.providerExecuted ? 1 : 0,
           networkCalls: 0,
-          generatedMediaCount: 0,
-          mediaStatus: "not_generated",
-          note: "Deterministic plans only. Narration text, audio, images, and rendering require owner-approved providers or owner-supplied input and are NOT produced by this orchestrator."
+          generatedMediaCount: narrationAudio.status === "measured_verified" ? 1 : 0,
+          mediaStatus: narrationAudio.status === "measured_verified" ? "verified" : "not_generated",
+          narrationAudioStatus: narrationAudio.status,
+          note: "Deterministic plans only; this orchestrator itself renders nothing. When a measured narration stage is bound, the narration audio it produced is reported with the executor's real FFprobe measurements and the completeness gate's verdict — never as a claim."
         },
         publication: { requested: false, status: "not_requested" }
       };
@@ -323,8 +409,9 @@ export class JarvisContentPackageOrchestrator {
           readiness,
           outlinePackageId: outline.packageId,
           stagesCompleted: stageRecords.filter((record) => record.status === "completed").length,
-          providerCalls: 0,
-          generatedMediaCount: 0
+          narrationAudioStatus: narrationAudio.status,
+          providerCalls: narrationAudio.providerExecuted ? 1 : 0,
+          generatedMediaCount: narrationAudio.status === "measured_verified" ? 1 : 0
         }
       });
       this.#recordEvidence(packageTaskId, "jarvis_content_package_completed", {

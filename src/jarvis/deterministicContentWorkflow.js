@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { assertJarvisTargetMinutes } from "./targetDuration.js";
 
 const JARVIS_AGENT_ID = "agent-01";
 const ALLOWED_LANGUAGES = new Set(["hindi", "hinglish"]);
@@ -24,9 +25,8 @@ export async function deterministicJarvisContentHandler(ctx) {
   const language = String(ctx.payload.language || "").toLowerCase();
   if (!ALLOWED_LANGUAGES.has(language)) throw new Error("JARVIS_LANGUAGE_UNSUPPORTED");
   const targetMinutes = Number(ctx.payload.targetMinutes);
-  if (!Number.isInteger(targetMinutes) || targetMinutes < 25 || targetMinutes > 30) {
-    throw new Error("JARVIS_TARGET_DURATION_INVALID");
-  }
+  // Issue #262: one canonical planning duration (30 / 40 / 50 minutes).
+  assertJarvisTargetMinutes(targetMinutes, "JARVIS_TARGET_DURATION_INVALID");
 
   ctx.heartbeat("brief_validated", 10, { generationMode: "deterministic_local" });
   await ctx.checkpoint("brief_validated", 10, { generationMode: "deterministic_local", language, targetMinutes });

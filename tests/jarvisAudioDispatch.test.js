@@ -17,7 +17,7 @@ async function narrationPlan() {
       publicBrand: "Raat Ki Awaaz",
       concept: "Ek sunsaan pahadi hostel mein band kamre se har raat kisi bachche ki ghanti sunai deti hai.",
       language: "hinglish",
-      targetMinutes: 27,
+      targetMinutes: 30,
     },
     heartbeat() {},
     checkpoint: async () => {},
@@ -83,7 +83,13 @@ test("rejects malformed contracts, names, secrets, durations, cues and side-effe
   assert.throws(() => createDeterministicAudioDispatch({ ...source, readiness: "audio_ready" }, { ownerId: "owner-test" }), /SOURCE_CONTRACT_MISMATCH/);
   assert.throws(() => createDeterministicAudioDispatch({ ...source, publicBrand: "NISHA Audio" }, { ownerId: "owner-test" }), /INTERNAL_NAME_REJECTED/);
   assert.throws(() => createDeterministicAudioDispatch({ ...source, publicBrand: "api_key=unsafe-value" }, { ownerId: "owner-test" }), /SECRET_REJECTED/);
-  assert.throws(() => createDeterministicAudioDispatch({ ...source, targetMinutes: 26 }, { ownerId: "owner-test" }), /TOTAL_DURATION_MISMATCH/);
+  assert.throws(() => createDeterministicAudioDispatch({ ...source, targetMinutes: 27 }, { ownerId: "owner-test" }), /DURATION_INVALID/);
+  const mismatchedSegments = source.narrationSegments.map((segment, index) =>
+    index === 0 ? { ...segment, plannedDurationSeconds: segment.plannedDurationSeconds + 1 } : segment);
+  assert.throws(
+    () => createDeterministicAudioDispatch({ ...source, narrationSegments: mismatchedSegments }, { ownerId: "owner-test" }),
+    /TOTAL_DURATION_MISMATCH/
+  );
   assert.throws(() => createDeterministicAudioDispatch({ ...source, cuePlan: source.cuePlan.slice(1) }, { ownerId: "owner-test" }), /CUES_INVALID/);
   assert.throws(() => createDeterministicAudioDispatch({ ...source, generatedAudio: [{ fake: true }] }, { ownerId: "owner-test" }), /SIDE_EFFECT_CLAIMED/);
   assert.throws(() => createDeterministicAudioDispatch(source, { ownerId: "owner-test", agentId: "agent-02" }), /SCOPE_MISMATCH/);
