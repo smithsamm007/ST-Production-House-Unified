@@ -21,6 +21,7 @@ Chain, with REAL binaries at every step:
 | Inspection | **ffprobe** on the rendered file | real measured per-stream durations |
 | Gate | `evaluateEpisodeCompleteness` (S-M41-01) | the ONLY authority on whether the render is a complete episode |
 | Evidence | `artifacts/rehearsal/<target>/rehearsal-evidence.json` | git-ignored: evidence is produced by running tools, never committed as a claim |
+| CI evidence | `Rehearsal Evidence` workflow → artifact `rehearsal-evidence-<target>` (Issue #264) | sanitized bundle only; the raw record stays git-ignored |
 
 ## Rate auto-calibration (measured, not assumed)
 
@@ -60,6 +61,9 @@ with `QC_DURATION_OUT_OF_RANGE`.
   receipts. Nothing is published; the owner approval gate (Rule 7) is untouched.
 - `ffmpeg`, `ffprobe` and `espeak-ng` must exist on the host; a missing binary
   fails with `REHEARSAL_DEPENDENCY_MISSING` instead of being skipped silently.
-- Rate auto-calibration lives in this runner today; wiring the measured loop
-  into the production audio stage is the governed follow-up so scheduled
-  episodes land in-window without operator calibration.
+- Rate auto-calibration is not runner-only: the production executor carries the
+  measured audio-rate calibration loop (Issue #257,
+  `src/pipeline/productionExecutorRunner.js`), and this runner drives the same
+  measured approach for rehearsal evidence. An earlier revision of this
+  document described the production wiring as a pending follow-up; that was
+  out of date and is corrected here (Issue #264).

@@ -1,0 +1,95 @@
+name: Rehearsal Evidence
+
+# Issue #264: durable, sanitized rehearsal evidence.
+#
+# Opt-in only (`workflow_dispatch`): a real rehearsal needs FFmpeg, FFprobe and
+# espeak-ng plus several minutes of encoding, so it must never run on every
+# push. The raw evidence directory stays git-ignored; only the sanitized bundle
+# (allowlisted fields, no absolute paths) is retained as an artifact.
+#
+# If the rehearsal produces no evidence, the sanitizer reports
+# EVIDENCE_SKIPPED_NO_EVIDENCE and the upload step is skipped: the job never
+# publishes a summary for a run that did not happen.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_seconds:
+        description: Episode target length in seconds (30/40/50 minutes)
+        required: true
+        default: "1800"
+        type: choice
+        options:
+          - "1800"
+          - "2400"
+          - "3000"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rehearsal-evidence-${{ github.ref }}-${{ inputs.target_seconds }}
+  cancel-in-progress: false
+
+jobs:
+  rehearsal:
+    name: Real rehearsal + sanitized evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install media tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg espeak-ng
+          ffmpeg -version | head -1
+          espeak-ng --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run real media rehearsal
+        run: node scripts/real_media_rehearsal.mjs --target=${{ inputs.target_seconds }}
+
+      # Runs even when the rehearsal failed, so a partially written evidence
+      # file is still sanitized (or honestly reported as absent).
+      - name: Sanitize rehearsal evidence
+        if: always()
+        run: node scripts/sanitize_rehearsal_evidence.mjs
+
+      - name: Detect sanitized bundle
+        id: bundle
+        if: always()
+        run: |
+          if [ -f artifacts/rehearsal/sanitized/rehearsal-evidence-bundle.json ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::EVIDENCE_SKIPPED_NO_EVIDENCE — no rehearsal evidence was produced, so nothing is uploaded."
+          fi
+
+      - name: Upload sanitized evidence bundle
+        if: always() && steps.bundle.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rehearsal-evidence-${{ inputs.target_seconds }}
+          path: artifacts/rehearsal/sanitized/rehearsal-evidence-bundle.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summarize evidence availability
+        if: always()
+        run: |
+          if [ "${{ steps.bundle.outputs.present }}" = "true" ]; then
+            echo "Artifact: rehearsal-evidence-${{ inputs.target_seconds }} (sanitized, 30 days)"
+          else
+            echo "EVIDENCE_SKIPPED_NO_EVIDENCE: no artifact was produced or uploaded."
+          fi

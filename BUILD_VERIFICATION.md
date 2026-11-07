@@ -222,3 +222,19 @@ Drives the production `createRealMediaRunnerFactory` for ONE Director
   publishing) — owner-gated (Rule 16); the worker never contacts them.
 - **PostgreSQL 15+** and **the first deployment** — owner actions (Phase 4).
 - **Publishing** — zero uploads; no platform receipt exists or was claimed.
+
+## Issue #264 — durable sanitized rehearsal evidence (offline verification)
+
+- `npm test` — **1490 tests, 1490 passed, 0 failed** (5 new evidence-bundle
+  tests: allowlist copy, path/URL/token scrubbing, required-measurement
+  refusal, invalid-shape codes, and the post-build leak assertion).
+- `npm run lint` — PASSED · `npm run verify` — exit 0 · `npm run plan:check` —
+  `DEVELOPMENT_PLAN_VALID`.
+- The new workflow is registered in `automation/operations/health-manifest.json`,
+  so the repository health coverage test still proves every workflow file is
+  represented.
+- **Not run: the `Rehearsal Evidence` workflow itself.** It needs GitHub Actions
+  plus `ffmpeg`/`ffprobe`/`espeak-ng`; this worktree has neither the tooling nor
+  dispatch credentials, so no CI artifact, retention check or real evidence
+  bundle exists yet. What is proven is the sanitizer: it is exercised offline
+  against a realistic evidence record and against deliberately leaky input.
