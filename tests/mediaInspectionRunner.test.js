@@ -1,12 +1,12 @@
 /**
- * FFprobe media inspection runner tests (Issue #170).
+ * FFprobe media inspection runner tests (Issue #170, #263).
  *
  * Honest-evidence scope (Rule 1): the transports (file reads, spawn) are
  * injected, so the suite proves the runner's CONTRACT offline — array-arg
  * construction, path safety, real hashing of supplied bytes, every failure
- * code, the tamper-detection path, and descriptor promotion. No ffprobe
- * binary, no real media, no network. Production binds the same contract to
- * node:fs + node:child_process.
+ * code, the tamper-detection path, descriptor promotion, and loudness
+ * measurement via loudnorm/ebur128 parsing. No ffprobe binary, no real media,
+ * no network. Production binds the same contract to node:fs + node:child_process.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -14,9 +14,12 @@ import { createHash } from "node:crypto";
 
 import {
   buildFfprobeArgs,
+  buildLoudnormArgs,
   hashArtifactFile,
   inspectAndVerifyArtifact,
   inspectMediaFile,
+  measureAudioLoudness,
+  parseLoudnormOutput,
   runFfprobe,
   validateArtifactPath,
   MEDIA_INSPECTION_ERROR_CODES,
@@ -66,13 +69,13 @@ const GOOD_FFPROBE_PAYLOAD = Object.freeze({
   ],
 });
 
-function makeSpawnImpl({ payload = GOOD_FFPROBE_PAYLOAD, exitCode = 0, timedOut = false, stdout } = {}) {
+function makeSpawnImpl({ payload = GOOD_FFPROBE_PAYLOAD, exitCode = 0, timedOut = false, stdout, stderr = "" } = {}) {
   return async ({ args }) => {
     if (timedOut) return { exitCode: null, stdout: "", stderr: "", timedOut: true };
     return {
       exitCode,
       stdout: stdout ?? JSON.stringify(payload),
-      stderr: exitCode === 0 ? "" : "mock error",
+      stderr: exitCode === 0 ? stderr : (stderr || "mock error"),
       timedOut: false,
     };
   };
@@ -96,6 +99,21 @@ test("args are a frozen array with the path LAST — never a shell string", () =
   assert.ok(Object.isFrozen(args));
   assert.equal(args[args.length - 1], "/media/a/main.mp4");
   assert.deepEqual(args.slice(0, -1), ["-v", "error", "-print_format", "json", "-show_format", "-show_streams"]);
+});
+
+test("buildLoudnormArgs derives frozen array args for loudnorm analysis", () => {
+  const args = buildLoudnormArgs("/media/a/main.mp4");
+  assert.ok(Array.isArray(args));
+  assert.ok(Object.isFrozen(args));
+  assert.deepEqual(args, [
+    "-hide_banner",
+    "-nostdin",
+    "-i", "/media/a/main.mp4",
+    "-vn",
+    "-af", "loudnorm=print_format=json",
+    "-f", "null",
+    "-",
+  ]);
 });
 
 test("path validation rejects hostile shapes", () => {
@@ -163,6 +181,88 @@ test("runFfprobe failure matrix is honest", async () => {
   await assert.rejects(() => runFfprobe("/media/a.mp4", { spawnImpl: async () => null }), /FFPROBE_SPAWN_FAILED/);
   await assert.rejects(() => runFfprobe("/media/a.mp4", {}), /FFPROBE_SPAWN_FAILED/);
   await assert.rejects(() => runFfprobe("-danger", { spawnImpl: makeSpawnImpl() }), /PATH_UNSAFE/);
+});
+
+// ---------------------------------------------------------------------------
+// Loudness measurement & output parsing (Issue #263)
+// ---------------------------------------------------------------------------
+
+test("parseLoudnormOutput extracts measured values from JSON block in stderr", () => {
+  const stderr = `
+[Parsed_loudnorm_0 @ 0x55d78a9c] 
+{
+	"input_i" : "-14.02",
+	"input_tp" : "-1.05",
+	"input_lra" : "6.20",
+	"input_thresh" : "-24.11",
+	"output_i" : "-14.02",
+	"output_tp" : "-1.05",
+	"output_lra" : "6.20",
+	"output_thresh" : "-24.11",
+	"normalization_type" : "dynamic",
+	"target_offset" : "0.00"
+}
+`;
+  const result = parseLoudnormOutput(stderr);
+  assert.equal(result.integratedLufs, -14.02);
+  assert.equal(result.truePeakDbtp, -1.05);
+  assert.equal(result.loudnessRangeLu, 6.2);
+  assert.equal(result.thresholdLufs, -24.11);
+  assert.equal(result.clippingCount, 0);
+  assert.equal(result.raw.input_i, "-14.02");
+});
+
+test("parseLoudnormOutput flags clipping when true peak exceeds 0 dBTP", () => {
+  const stderr = `
+{
+	"input_i" : "-10.00",
+	"input_tp" : "1.25",
+	"input_lra" : "8.00",
+	"input_thresh" : "-20.00"
+}`;
+  const result = parseLoudnormOutput(stderr);
+  assert.equal(result.clippingCount, 1);
+  assert.equal(result.truePeakDbtp, 1.25);
+});
+
+test("parseLoudnormOutput parses ebur128 text fallback", () => {
+  const stderr = `
+  Integrated loudness:
+    I:         -14.5 LUFS
+    Threshold: -24.8 LUFS
+
+  Loudness range:
+    LRA:         5.3 LU
+    Threshold: -34.9 LUFS
+
+  True peak:
+    Peak:       -1.2 dBFS
+`;
+  const result = parseLoudnormOutput(stderr);
+  assert.equal(result.integratedLufs, -14.5);
+  assert.equal(result.truePeakDbtp, -1.2);
+  assert.equal(result.loudnessRangeLu, 5.3);
+  assert.equal(result.clippingCount, 0);
+});
+
+test("parseLoudnormOutput rejects invalid output", () => {
+  assert.throws(() => parseLoudnormOutput(""), /FFPROBE_OUTPUT_UNPARSEABLE/);
+  assert.throws(() => parseLoudnormOutput("just random logs"), /FFPROBE_OUTPUT_UNPARSEABLE/);
+});
+
+test("measureAudioLoudness runs through spawn transport", async () => {
+  const stderr = `
+{
+	"input_i" : "-14.00",
+	"input_tp" : "-1.00",
+	"input_lra" : "5.00",
+	"input_thresh" : "-24.00"
+}`;
+  const result = await measureAudioLoudness("/media/test.mp4", {
+    spawnImpl: makeSpawnImpl({ stderr }),
+  });
+  assert.equal(result.integratedLufs, -14.0);
+  assert.equal(result.truePeakDbtp, -1.0);
 });
 
 // ---------------------------------------------------------------------------

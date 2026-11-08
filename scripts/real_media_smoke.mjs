@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * ST Production House — REAL media smoke verification (Phase 2 evidence).
+ * ST Production House — REAL media smoke verification (Phase 2 evidence, Issue #263).
  *
  * WHAT THIS SCRIPT PROVES (and what it does not):
  *   It runs the SHIPPED production executors against the REAL binaries and
@@ -13,7 +13,10 @@
  *           → executeAssemblyPlan  (real ffmpeg argv, array args, no shell)
  *             → real ffprobe inspection of the RENDERED file
  *               → real QC duration gate ([1800,3000] s longform / [3,90] s short)
- *                 → VERIFIED artifact descriptor
+ *                 → VERIFIED artifact descriptor + technical conformance
+ *
+ *   Package geometry: 1 long-form (16:9, 1920x1080) + 2 content Shorts (9:16,
+ *   1080x1920) + 1 brand promo Reel (9:16, 1080x1920) = canonical 1+2+1 package.
  *
  *   It does NOT contact a provider, does NOT upload anything, does NOT
  *   synthesize speech, and does NOT claim any media as provider-generated.
@@ -51,9 +54,10 @@ import {
   evaluateMainVideoRuntimeGate,
   verifyAssemblyPlanIntegrity,
 } from "../src/media/assemblyPlan.js";
+import { parseStreamTechnicalProperties } from "../src/media/episodeCompleteness.js";
 import { createNodeMediaTransports } from "../src/media/nodeMediaTransport.js";
 import { executeAssemblyPlan } from "../src/media/ffmpegAssemblyExecutor.js";
-import { inspectMediaFile } from "../src/media/mediaInspectionRunner.js";
+import { inspectMediaFile, parseLoudnormOutput } from "../src/media/mediaInspectionRunner.js";
 import { createVoiceProfile, declareTtsProviderCapabilities } from "../src/media/ttsAdapter.js";
 import { executeTtsGeneration } from "../src/media/ttsExecutor.js";
 import {
@@ -76,10 +80,11 @@ const PRODUCER_NOTE = "real local placeholder signal (silent/flat) used only for
 const transports = createNodeMediaTransports();
 const { spawnImpl, readFileImpl } = transports;
 
+// Canonical 1+2+1 package: 1 long-form + 2 content Shorts (9:16) + 1 brand promo Reel (9:16)
 const REEL_TARGETS = Object.freeze([
   Object.freeze({ target: "content_reel_1", aspectRatio: "9:16" }),
   Object.freeze({ target: "content_reel_2", aspectRatio: "9:16" }),
-  Object.freeze({ target: "brand_reel", aspectRatio: "1:1" }),
+  Object.freeze({ target: "brand_reel", aspectRatio: "9:16" }),
 ]);
 
 function fail(code, detail) {
@@ -141,6 +146,20 @@ function measuredSeconds(inspection) {
   const raw = inspection?.format?.duration;
   const value = typeof raw === "number" ? raw : Number(raw);
   return Number.isFinite(value) ? value : null;
+}
+
+/** Measure audio loudness of a media file via ffmpeg loudnorm analysis. */
+async function inspectLoudness(filePath) {
+  try {
+    const res = await spawnImpl({
+      command: "ffmpeg",
+      args: ["-hide_banner", "-nostdin", "-i", filePath, "-vn", "-af", "loudnorm=print_format=json", "-f", "null", "-"],
+      timeoutMs: 60_000,
+    });
+    return parseLoudnormOutput(res.stderr || "");
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +283,9 @@ async function stageLongform() {
     probeTimeoutMs: 60_000,
   });
 
+  const technical = parseStreamTechnicalProperties(result.inspection);
+  const loudness = await inspectLoudness(outputPath);
+
   return {
     stage: "longform",
     planId: plan.id,
@@ -282,6 +304,19 @@ async function stageLongform() {
     measuredDurationSeconds: result.qc?.measuredDurationSeconds ?? measuredSeconds(result.inspection),
     renderedSha256: result.descriptor?.contentSha256 ?? result.inspection?.contentSha256 ?? null,
     descriptorVerificationState: result.descriptor?.verification?.state ?? null,
+    technicalConformance: {
+      resolution: technical?.video ? `${technical.video.width}x${technical.video.height}` : null,
+      aspectRatio: technical?.video?.aspectRatio ?? null,
+      videoCodec: technical?.video?.codec ?? null,
+      audioCodec: technical?.audio?.codec ?? null,
+      sampleRate: technical?.audio?.sampleRate ?? null,
+      loudness: loudness ? {
+        integratedLufs: loudness.integratedLufs,
+        truePeakDbtp: loudness.truePeakDbtp,
+        clippingCount: loudness.clippingCount,
+      } : null,
+      resolutionConforms: technical?.video?.width === 1920 && technical?.video?.height === 1080,
+    },
     success: result.success,
   };
 }
@@ -331,6 +366,8 @@ async function stageReels(onlyTarget = null) {
       timeoutMs: 8 * 60_000,
       probeTimeoutMs: 60_000,
     });
+    const technical = parseStreamTechnicalProperties(result.inspection);
+    const loudness = await inspectLoudness(outputPath);
     results.push({
       target,
       aspectRatio,
@@ -347,6 +384,19 @@ async function stageReels(onlyTarget = null) {
       measuredDurationSeconds: result.qc?.measuredDurationSeconds ?? measuredSeconds(result.inspection),
       renderedSha256: result.descriptor?.contentSha256 ?? result.inspection?.contentSha256 ?? null,
       descriptorVerificationState: result.descriptor?.verification?.state ?? null,
+      technicalConformance: {
+        resolution: technical?.video ? `${technical.video.width}x${technical.video.height}` : null,
+        aspectRatio: technical?.video?.aspectRatio ?? null,
+        videoCodec: technical?.video?.codec ?? null,
+        audioCodec: technical?.audio?.codec ?? null,
+        sampleRate: technical?.audio?.sampleRate ?? null,
+        loudness: loudness ? {
+          integratedLufs: loudness.integratedLufs,
+          truePeakDbtp: loudness.truePeakDbtp,
+          clippingCount: loudness.clippingCount,
+        } : null,
+        resolutionConforms: technical?.video?.width === 1080 && technical?.video?.height === 1920,
+      },
       success: result.success,
     });
   }
