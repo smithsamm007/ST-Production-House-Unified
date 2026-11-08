@@ -17,8 +17,11 @@ Chain, with REAL binaries at every step:
 |---|---|---|
 | Narration script | `src/pipeline/narrationScript.js` (1800/2400/3000 s) | `generationMode: deterministic_local`, `editorialStatus: deterministic_planning_text` |
 | Speech synthesis | **espeak-ng** — the local open-source emergency slot; zero credentials | real audio; rate auto-calibrated against real measurements |
-| Assembly | **ffmpeg** (libx264 veryfast crf20, aac 128k, 16:9) | real rendered bytes; the visual is a LABELLED flat-colour placeholder, never story footage |
-| Inspection | **ffprobe** on the rendered file | real measured per-stream durations |
+| Assembly | **ffmpeg** (libx264 veryfast crf20, aac 128k, 16:9) | real rendered bytes; the visual is an explicitly LABELLED `placeholder`, never story footage |
+| Inspection | **ffprobe** on the rendered file | real measured per-stream durations, sample rate, frame rate, and resolution |
+| Conformance | `evaluateTechnicalConformance` (S-M43-01) | asserts 1920x1080 16:9 for longform (1080x1920 9:16 for Reels) and valid sample/frame rates |
+| Loudness Analysis | **ffmpeg ebur128/loudnorm** pass | real measured input LUFS, true peak dBTP, and clipping count (never assumed constants) |
+| Normalization Pass | **ffmpeg loudnorm** pass | real post-render normalization (target -14 LUFS, TP -1.5 dBTP) and measured gate verification |
 | Gate | `evaluateEpisodeCompleteness` (S-M41-01) | the ONLY authority on whether the render is a complete episode |
 | Evidence | `artifacts/rehearsal/<target>/rehearsal-evidence.json` | git-ignored: evidence is produced by running tools, never committed as a claim |
 
@@ -55,9 +58,8 @@ with `QC_DURATION_OUT_OF_RANGE`.
 
 ## Honest limits
 
-- The placeholder visual and the planning narration prove the **pipeline**
-  (assembly, inspection, coverage, QC) — never editorial quality or provider
-  receipts. Nothing is published; the owner approval gate (Rule 7) is untouched.
+- The placeholder visual is explicitly labelled `placeholder` (Rule 3) and rendered at a bounded 2 fps rate; it proves the **pipeline** (assembly, inspection, coverage, technical conformance, loudness QC) — never editorial quality or creative visual fidelity.
+- Loudness is measured honestly via FFmpeg's ebur128/loudnorm analysis; real values are recorded per artifact rather than assumed constants. Normalization is a real FFmpeg pass verified by post-render measurement.
 - `ffmpeg`, `ffprobe` and `espeak-ng` must exist on the host; a missing binary
   fails with `REHEARSAL_DEPENDENCY_MISSING` instead of being skipped silently.
 - Rate auto-calibration lives in this runner today; wiring the measured loop

@@ -100,6 +100,41 @@ test("a missing measured stream duration cannot pass by default", () => {
   }
 });
 
+test("conformanceSpec in evaluateEpisodeCompleteness: enforces sample rate and resolution", () => {
+  const goodInspection = {
+    success: true,
+    streams: [
+      { codec_type: "video", codec_name: "h264", width: 1920, height: 1080, r_frame_rate: "30/1", duration: "30" },
+      { codec_type: "audio", codec_name: "aac", sample_rate: "48000", duration: "30" },
+    ],
+  };
+  const passed = evaluateEpisodeCompleteness({
+    inspection: goodInspection,
+    conformanceSpec: { requireSampleRate: true, requireFrameRate: true, expectedResolution: { width: 1920, height: 1080 } },
+  });
+  assert.equal(passed.passed, true);
+
+  const badRes = evaluateEpisodeCompleteness({
+    inspection: goodInspection,
+    conformanceSpec: { expectedResolution: { width: 1080, height: 1920 } },
+  });
+  assert.equal(badRes.passed, false);
+  assert.equal(badRes.reasonCode, "QC_VIDEO_RESOLUTION_MISMATCH");
+
+  const badSampleRate = evaluateEpisodeCompleteness({
+    inspection: {
+      success: true,
+      streams: [
+        { codec_type: "video", width: 1920, height: 1080, duration: "30" },
+        { codec_type: "audio", sample_rate: "0", duration: "30" },
+      ],
+    },
+    conformanceSpec: { requireSampleRate: true },
+  });
+  assert.equal(badSampleRate.passed, false);
+  assert.equal(badSampleRate.reasonCode, "QC_AUDIO_SAMPLE_RATE_MISSING");
+});
+
 test("the measured 30 s / 1 s render is rejected: 29 s of silence is not coverage", () => {
   const verdict = evaluateEpisodeCompleteness({ inspection: inspection({ video: "30", audio: "1" }) });
   assert.equal(verdict.passed, false);

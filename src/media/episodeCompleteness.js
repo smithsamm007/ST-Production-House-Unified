@@ -38,6 +38,13 @@ export const COMPLETENESS_ERROR_CODES = Object.freeze([
   "QC_STREAM_DURATION_MISSING",
   "QC_AUDIO_COVERAGE_INSUFFICIENT",
   "QC_AUDIO_EXTENDS_BEYOND_VIDEO",
+  "QC_TECHNICAL_CONFORMANCE_FAILED",
+  "QC_AUDIO_SAMPLE_RATE_MISSING",
+  "QC_VIDEO_RESOLUTION_MISMATCH",
+  "QC_VIDEO_ASPECT_RATIO_MISMATCH",
+  "QC_VIDEO_FRAME_RATE_MISSING",
+  "QC_AUDIO_CODEC_MISMATCH",
+  "QC_VIDEO_CODEC_MISMATCH",
 ]);
 
 export const REQUIRED_STREAMS = Object.freeze(["video", "audio"]);
@@ -86,6 +93,7 @@ function baseVerdict() {
     referenceSeconds: null,
     coverageToleranceSeconds: null,
     audioCoverageRatio: null,
+    conformance: null,
   };
 }
 
@@ -96,16 +104,18 @@ function baseVerdict() {
  *   targetSeconds  — optional configured main-video target (Director schedule
  *                    / job payload); ignored for short-form renders, where the
  *                    measured video duration is the reference.
+ *   conformanceSpec — optional object specifying technical conformance criteria
+ *                    e.g. { requireSampleRate: true, targetKind: "main_longform", expectedResolution: { width: 1920, height: 1080 } }
  *
  * Returns a frozen verdict:
  *   { completenessVersion, passed, reasonCode, requiredStreams,
  *     videoSeconds, audioSeconds, referenceSeconds,
- *     coverageToleranceSeconds, audioCoverageRatio }
+ *     coverageToleranceSeconds, audioCoverageRatio, conformance }
  *
  * `passed: true` is the ONLY success shape; every rejection carries one of
  * COMPLETENESS_ERROR_CODES plus whatever measurements were real.
  */
-export function evaluateEpisodeCompleteness({ inspection, targetSeconds = null } = {}) {
+export function evaluateEpisodeCompleteness({ inspection, targetSeconds = null, conformanceSpec = null } = {}) {
   const verdict = baseVerdict();
 
   if (inspection === null || typeof inspection !== "object" || inspection.success !== true) {
@@ -160,6 +170,39 @@ export function evaluateEpisodeCompleteness({ inspection, targetSeconds = null }
   }
   if (audioSeconds > videoSeconds + AUDIO_OVERRUN_TOLERANCE_SECONDS) {
     return deepFreeze({ ...measured, reasonCode: "QC_AUDIO_EXTENDS_BEYOND_VIDEO" });
+  }
+
+  // Optional technical conformance check (sample rate, frame rate, resolution)
+  if (conformanceSpec !== null && typeof conformanceSpec === "object") {
+    // 1. Audio sample rate
+    if (conformanceSpec.requireSampleRate === true) {
+      const sampleRate = Number(audio.sample_rate);
+      if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
+        return deepFreeze({ ...measured, reasonCode: "QC_AUDIO_SAMPLE_RATE_MISSING" });
+      }
+    }
+    // 2. Video resolution
+    if (conformanceSpec.expectedResolution) {
+      const width = Number(video.width);
+      const height = Number(video.height);
+      const expW = conformanceSpec.expectedResolution.width;
+      const expH = conformanceSpec.expectedResolution.height;
+      if (width !== expW || height !== expH) {
+        return deepFreeze({ ...measured, reasonCode: "QC_VIDEO_RESOLUTION_MISMATCH" });
+      }
+    }
+    // 3. Video frame rate
+    if (conformanceSpec.requireFrameRate === true) {
+      const frameRateStr = video.avg_frame_rate || video.r_frame_rate;
+      if (!frameRateStr || typeof frameRateStr !== "string") {
+        return deepFreeze({ ...measured, reasonCode: "QC_VIDEO_FRAME_RATE_MISSING" });
+      }
+      const [num, den] = frameRateStr.split("/").map(Number);
+      const frameRate = den ? num / den : num;
+      if (!Number.isFinite(frameRate) || frameRate <= 0) {
+        return deepFreeze({ ...measured, reasonCode: "QC_VIDEO_FRAME_RATE_MISSING" });
+      }
+    }
   }
 
   return deepFreeze({ ...measured, passed: true, reasonCode: null });

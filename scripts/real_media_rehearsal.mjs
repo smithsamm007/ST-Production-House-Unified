@@ -9,7 +9,10 @@
  *       provider — no credentials needed)
  *     → rate auto-calibration against REAL measured durations
  *     → REAL ffmpeg assembly (video + narration audio, real libx264/aac bytes)
- *     → REAL ffprobe inspection of the rendered file
+ *     → REAL ffprobe inspection of the rendered file (sample rate, frame rate, resolution)
+ *     → REAL ebur128/loudnorm loudness analysis (measured LUFS, true peak dBTP, clipping)
+ *     → REAL post-render loudness normalization pass (measured input -> normalized output)
+ *     → REAL post-normalization verification & gate on measured result
  *       → evaluateEpisodeCompleteness (S-M41-01 audio-coverage gate)
  *         → PASS verdict + durable evidence JSON in artifacts/rehearsal/
  *
@@ -17,11 +20,14 @@
  *   - Narration text is `generationMode: deterministic_local`
  *     (`editorialStatus: deterministic_planning_text`) — it is PLANNING
  *     narration, never a claim of editorial quality.
- *   - The visual is a flat solid-colour placeholder, labelled. It exists to
- *     exercise assembly/QC/coverage with real bytes — never story footage.
- *   - Every duration reported is a REAL ffprobe measurement of the on-disk
- *     bytes. No motion, no BGM/SFX, no publishing, no receipts. Publishing
- *     stays behind the owner approval gate (Rule 7).
+ *   - The visual is a flat solid-colour placeholder, explicitly LABELED
+ *     `placeholder`. It exists to exercise assembly/QC/coverage with real bytes
+ *     at a bounded 2 fps placeholder rate — NEVER presented as finished creative
+ *     output or story footage.
+ *   - Every duration, loudness value, sample rate, frame rate, and resolution
+ *     reported is a REAL ffprobe / ffmpeg measurement of the on-disk bytes.
+ *     No constants are assumed. No motion, no BGM/SFX, no publishing, no receipts.
+ *     Publishing stays behind the owner approval gate (Rule 7).
  *
  * Usage:
  *   node scripts/real_media_rehearsal.mjs --target=1800   (or 2400 / 3000)
@@ -41,6 +47,11 @@ import {
   audioCoverageToleranceSeconds,
   evaluateEpisodeCompleteness,
 } from "../src/media/episodeCompleteness.js";
+import {
+  measureLoudness,
+  normalizeLoudness,
+  evaluateTechnicalConformance,
+} from "../src/media/loudnessQc.js";
 
 const OUT_ROOT = "artifacts/rehearsal";
 const MAX_CALIBRATION_ATTEMPTS = 4;
@@ -91,7 +102,7 @@ function calibrateNarration({ textPath, outputPath, targetSeconds, tolerance }) 
   fail("REHEARSAL_CALIBRATION_FAILED", `narration stayed outside [${targetSeconds - tolerance}, ${targetSeconds + 1}] after ${MAX_CALIBRATION_ATTEMPTS} attempts (last: ${measured}s)`);
 }
 
-function main() {
+async function main() {
   const argTarget = process.argv.find((arg) => arg.startsWith("--target="));
   const targetSeconds = argTarget ? Number(argTarget.split("=")[1]) : 2400;
   if (![1800, 2400, 3000].includes(targetSeconds)) {
@@ -107,10 +118,12 @@ function main() {
   const textPath = path.join(dir, "narration.txt");
   const audioPath = path.join(dir, "narration.wav");
   const videoPath = path.join(dir, "episode.mp4");
+  const normalizedVideoPath = path.join(dir, "episode-normalized.mp4");
 
   writeFileSync(textPath, script.text);
   const calibration = calibrateNarration({ textPath, outputPath: audioPath, targetSeconds, tolerance });
 
+  // Render initial assembled artifact (video + speech)
   execFileSync(
     "ffmpeg",
     [
@@ -125,7 +138,15 @@ function main() {
     { stdio: ["ignore", "ignore", "inherit"] },
   );
 
-  const streamsJson = execFileSync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type,codec_name,duration", "-show_entries", "format=duration,size", "-of", "json", videoPath], { encoding: "utf8" });
+  // Full real ffprobe inspection of the initial rendered file
+  const probeArgs = [
+    "-v", "error",
+    "-show_entries", "stream=codec_type,codec_name,sample_rate,channels,width,height,r_frame_rate,avg_frame_rate,duration",
+    "-show_entries", "format=duration,size",
+    "-of", "json",
+    videoPath,
+  ];
+  const streamsJson = execFileSync("ffprobe", probeArgs, { encoding: "utf8" });
   const parsed = JSON.parse(streamsJson);
   const bytes = readFileSync(videoPath);
   const inspection = {
@@ -133,9 +154,46 @@ function main() {
     format: { ...parsed.format, filename: path.basename(videoPath) },
     streams: parsed.streams,
   };
+
+  // Evaluate technical conformance on the real inspection
+  const conformanceVerdict = evaluateTechnicalConformance(inspection, {
+    targetKind: "main_longform",
+    expectedAspectRatio: "16:9",
+    expectedResolution: { width: 1920, height: 1080 },
+  });
+  if (conformanceVerdict.passed !== true) {
+    fail(`REHEARSAL_CONFORMANCE_FAILED_${conformanceVerdict.reasonCode}`, JSON.stringify(conformanceVerdict));
+  }
+
+  // Completeness gate evaluation
   const verdict = evaluateEpisodeCompleteness({ inspection, targetSeconds });
   if (verdict.passed !== true) {
     fail(`REHEARSAL_GATE_FAILED_${verdict.reasonCode}`, JSON.stringify(verdict));
+  }
+
+  // Real loudness measurement on initial render (ebur128 / loudnorm / astats)
+  const initialLoudness = await measureLoudness(videoPath);
+
+  // Real loudness normalization pass (measured input -> normalized output)
+  const normResult = await normalizeLoudness(videoPath, normalizedVideoPath, {
+    targetI: -14.0,
+    targetTp: -1.5,
+    targetLra: 11.0,
+    tolerance: 2.0,
+  });
+
+  // Verify post-normalization artifact with ffprobe
+  const normProbeJson = execFileSync("ffprobe", probeArgs.slice(0, -1).concat(normalizedVideoPath), { encoding: "utf8" });
+  const normParsed = JSON.parse(normProbeJson);
+  const normBytes = readFileSync(normalizedVideoPath);
+  const normInspection = {
+    success: true,
+    format: { ...normParsed.format, filename: path.basename(normalizedVideoPath) },
+    streams: normParsed.streams,
+  };
+  const normCompleteness = evaluateEpisodeCompleteness({ inspection: normInspection, targetSeconds });
+  if (normCompleteness.passed !== true) {
+    fail(`REHEARSAL_NORMALIZED_GATE_FAILED_${normCompleteness.reasonCode}`, JSON.stringify(normCompleteness));
   }
 
   const evidence = {
@@ -161,10 +219,38 @@ function main() {
     },
     assembly: {
       tool: "real ffmpeg (libx264 veryfast crf20, aac 128k, 16:9 1920x1080)",
-      visualProvenance: "flat solid-colour placeholder — LABELLED; validates assembly/QC/coverage, never presented as story footage",
+      visualProvenance: "flat solid-colour placeholder — LABELLED `placeholder`; 2 fps placeholder rate validates assembly/QC/coverage/loudness with real bytes, never presented as finished creative output or story footage",
       streams: parsed.streams,
       outputSha256: createHash("sha256").update(bytes).digest("hex"),
       outputSizeBytes: bytes.length,
+      measuredProperties: {
+        width: conformanceVerdict.video.width,
+        height: conformanceVerdict.video.height,
+        aspectRatio: conformanceVerdict.video.aspectRatio,
+        videoCodec: conformanceVerdict.video.codec,
+        frameRate: conformanceVerdict.video.frameRate,
+        frameRateString: conformanceVerdict.video.frameRateString,
+        audioCodec: conformanceVerdict.audio.codec,
+        sampleRate: conformanceVerdict.audio.sampleRate,
+      },
+    },
+    loudness: {
+      preNormalization: {
+        integratedLufs: initialLoudness.integratedLufs,
+        truePeakDbtp: initialLoudness.truePeakDbtp,
+        lraLu: initialLoudness.lraLu,
+        clippingCount: initialLoudness.clippingCount,
+      },
+      postNormalization: {
+        integratedLufs: normResult.normalized.integratedLufs,
+        truePeakDbtp: normResult.normalized.truePeakDbtp,
+        lraLu: normResult.normalized.lraLu,
+        clippingCount: normResult.normalized.clippingCount,
+        targetLufs: normResult.target.targetI,
+        targetTruePeakDbtp: normResult.target.targetTp,
+        normalizedSha256: createHash("sha256").update(normBytes).digest("hex"),
+        normalizedSizeBytes: normBytes.length,
+      },
     },
     completenessGate: {
       gate: "evaluateEpisodeCompleteness (S-M41-01, real post-render inspection)",
@@ -175,15 +261,19 @@ function main() {
       referenceSeconds: verdict.referenceSeconds,
       coverageToleranceSeconds: verdict.coverageToleranceSeconds,
       audioCoverageRatio: verdict.audioCoverageRatio,
+      normalizedPassed: normCompleteness.passed,
     },
     honestLimits: [
-      "Placeholder visual and planning narration prove the pipeline, not editorial quality.",
+      "Placeholder visual explicitly labelled placeholder; proves assembly, QC, and technical conformance, not creative visual fidelity.",
+      "Loudness is measured honestly with real ebur128/loudnorm and normalized via a real FFmpeg pass.",
       "No publishing, no receipts, no analytics: the owner approval gate (Rule 7) is untouched.",
       "Rate auto-calibration currently lives in THIS rehearsal runner; wiring it into the production audio stage is the governed follow-up.",
     ],
   };
+
   const evidencePath = path.join(dir, "rehearsal-evidence.json");
   writeFileSync(evidencePath, JSON.stringify(evidence, null, 2));
+
   console.log(JSON.stringify({
     code: "REHEARSAL_COMPLETE",
     targetSeconds,
@@ -191,14 +281,28 @@ function main() {
     audioCoverageRatio: verdict.audioCoverageRatio,
     settledSynthesisRate: calibration.rate,
     iterations: calibration.iterations,
+    measuredTechnicalConformance: {
+      resolution: `${conformanceVerdict.video.width}x${conformanceVerdict.video.height}`,
+      aspectRatio: conformanceVerdict.video.aspectRatio,
+      frameRate: conformanceVerdict.video.frameRateString,
+      sampleRate: `${conformanceVerdict.audio.sampleRate}Hz`,
+      audioCodec: conformanceVerdict.audio.codec,
+    },
+    measuredLoudness: {
+      preNormalizedLufs: initialLoudness.integratedLufs,
+      preNormalizedTruePeakDbtp: initialLoudness.truePeakDbtp,
+      preNormalizedClippingCount: initialLoudness.clippingCount,
+      normalizedLufs: normResult.normalized.integratedLufs,
+      normalizedTruePeakDbtp: normResult.normalized.truePeakDbtp,
+      normalizedClippingCount: normResult.normalized.clippingCount,
+    },
     outputSha256: evidence.assembly.outputSha256,
+    normalizedSha256: evidence.loudness.postNormalization.normalizedSha256,
     evidencePath,
   }, null, 2));
 }
 
-try {
-  main();
-} catch (error) {
+main().catch((error) => {
   console.error(JSON.stringify({ code: error.code ?? "REHEARSAL_FAILED", message: error.message }));
   process.exit(1);
-}
+});
