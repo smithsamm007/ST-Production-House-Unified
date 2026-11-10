@@ -69,6 +69,8 @@ backlog-feeder (cron 3h / issue closed)
   → night-shift lane claims a ready issue (credential preflight first)
   → aider implements → npm test + npm run verify on the exact tree
   → draft PR opened ready, lane + autopilot labels
+  → slice-delivery.yml picks one canonical branch per slice and opens its PR
+    (one PR in flight; competing branches are reported, never tie-broken)
   → ci.yml + pr-gate.yml + autonomous-merge.yml (exact-head)
   → merge referee merges after all gates pass
   → issue auto-closes (Closes #N) → issue-closed event re-triggers feeder
