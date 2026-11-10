@@ -221,25 +221,40 @@ function openPullRequest(action) {
   const body = pullRequestBodyFor(action, title);
   fs.writeFileSync(BODY_PATH, `${body}\n`, "utf8");
 
-  gh([
-    "pr", "create", "--repo", REPO,
-    "--base", BASE_BRANCH,
-    "--head", action.branch,
-    "--title", title,
-    "--body-file", BODY_PATH
-  ]);
+  try {
+    gh([
+      "pr", "create", "--repo", REPO,
+      "--base", BASE_BRANCH,
+      "--head", action.branch,
+      "--title", title,
+      "--body-file", BODY_PATH
+    ]);
+    log({ code: "SLICE_DELIVERY_PULL_REQUEST_OPENED", sliceId: action.sliceId, branch: action.branch });
+  } catch (error) {
+    // A human or another workflow may have opened it between observation and
+    // creation. Adopt that pull request loudly instead of failing or retrying.
+    const detail = String(error?.stderr ?? error?.message ?? error);
+    if (!/already exists/i.test(detail)) throw error;
+    log({ code: "SLICE_DELIVERY_PULL_REQUEST_EXISTS", sliceId: action.sliceId, branch: action.branch });
+  }
 
-  const number = gh(["pr", "view", action.branch, "--repo", REPO, "--json", "number", "--jq", ".number"]);
-  log({ code: "SLICE_DELIVERY_PULL_REQUEST_OPENED", sliceId: action.sliceId, branch: action.branch, pullRequest: Number(number) });
+  const pullRequest = JSON.parse(gh(["pr", "view", action.branch, "--repo", REPO, "--json", "number,headRefOid"]));
+  const number = pullRequest.number;
+  const head = pullRequest.headRefOid;
+  if (head !== action.headSha) {
+    // The branch moved between observation and creation: dispatch what the pull
+    // request actually points at, so a gate can never verify a different commit.
+    log({ code: "SLICE_DELIVERY_HEAD_MOVED", branch: action.branch, observed: action.headSha, actual: head });
+  }
 
-  // Hand the exact head to the existing governed gates; never merge here.
+  // Hand the pull request's own head to the governed gates; never merge here.
   for (const workflow of ["ci.yml", "pr-gate.yml", "autonomous-merge.yml"]) {
     gh([
       "workflow", "run", workflow, "--repo", REPO, "--ref", action.branch,
       "-f", `pr_number=${number}`,
-      "-f", `expected_head=${action.headSha}`
+      "-f", `expected_head=${head}`
     ]);
-    log({ code: "SLICE_DELIVERY_GATE_DISPATCHED", workflow, pullRequest: Number(number), head: action.headSha });
+    log({ code: "SLICE_DELIVERY_GATE_DISPATCHED", workflow, pullRequest: number, head });
   }
 }
 

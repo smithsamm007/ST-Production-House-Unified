@@ -160,6 +160,43 @@ test("slices without a branch await implementation or promotion", () => {
   assert.equal(withoutIssue.actions[0].action, SLICE_DELIVERY_ACTIONS.AWAIT_PROMOTION);
 });
 
+test("a branch with no commits ahead of main is never a delivery candidate", () => {
+  const choice = selectCanonicalCandidate([{ branch: "task/263-empty", headSha: "a".repeat(40), aheadBy: 0 }]);
+  assert.equal(choice.status, "NONE");
+  assert.equal(choice.reason, "NO_COMMITS_AHEAD");
+
+  const report = planSliceDelivery(
+    baseInput({
+      candidatesBySlice: { "S-M43-01": [{ branch: "task/263-empty", headSha: "a".repeat(40), aheadBy: 0 }] }
+    })
+  );
+  assert.equal(report.actions[0].action, SLICE_DELIVERY_ACTIONS.AWAIT_IMPLEMENTATION);
+});
+
+test("at most one pull request is opened per run, deterministically", () => {
+  const report = planSliceDelivery(
+    baseInput({
+      slices: [slice("S-M44-01"), slice("S-M42-01")],
+      issues: [
+        { number: 262, title: "[S-M42-01] duration", state: "OPEN" },
+        { number: 264, title: "[S-M44-01] evidence", state: "OPEN" }
+      ],
+      candidatesBySlice: {
+        "S-M42-01": [{ branch: "task/262-duration", headSha: "a".repeat(40), aheadBy: 2 }],
+        "S-M44-01": [{ branch: "task/264-evidence", headSha: "b".repeat(40), aheadBy: 3 }]
+      }
+    })
+  );
+
+  const opened = report.actions.filter((action) => action.action === SLICE_DELIVERY_ACTIONS.OPEN_PULL_REQUEST);
+  assert.equal(opened.length, 1, "a single run must never open two pull requests");
+  assert.equal(opened[0].sliceId, "S-M42-01", "the lowest slice id goes first");
+
+  const held = report.actions.find((action) => action.sliceId === "S-M44-01");
+  assert.equal(held.action, SLICE_DELIVERY_ACTIONS.HOLD_ONE_PULL_REQUEST_IN_FLIGHT);
+  assert.equal(held.reason, "ONE_PULL_REQUEST_PER_RUN");
+});
+
 test("merged slices are recorded as merged and stop counting as remaining", () => {
   const report = planSliceDelivery(baseInput({ promotedSliceIds: ["S-M43-01"] }));
   assert.equal(report.actions[0].action, SLICE_DELIVERY_ACTIONS.ALREADY_MERGED);
