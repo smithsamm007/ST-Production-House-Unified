@@ -18,9 +18,23 @@ Chain, with REAL binaries at every step:
 | Narration script | `src/pipeline/narrationScript.js` (1800/2400/3000 s) | `generationMode: deterministic_local`, `editorialStatus: deterministic_planning_text` |
 | Speech synthesis | **espeak-ng** — the local open-source emergency slot; zero credentials | real audio; rate auto-calibrated against real measurements |
 | Assembly | **ffmpeg** (libx264 veryfast crf20, aac 128k, 16:9) | real rendered bytes; the visual is a LABELLED flat-colour placeholder, never story footage |
-| Inspection | **ffprobe** on the rendered file | real measured per-stream durations |
+| Loudness | **ffmpeg ebur128 + astats** on the render (Issue #263) | measured LUFS / dBTP / LRA / peak samples; unmeasurable is a failure, never a default |
+| Normalization | **ffmpeg two-pass loudnorm** when the measured input is out of target | real remux; conformance is asserted only on the RE-MEASURED output |
+| Inspection | **ffprobe** on the FINAL file | real measured per-stream durations, resolution, frame rate, sample rate, codecs |
+| Technical gate | `evaluateTechnicalConformance` (Issue #263) | 1920×1080 long-form profile; the 2 fps colour plate is `placeholder_rehearsal`, `delivery: false` |
 | Gate | `evaluateEpisodeCompleteness` (S-M41-01) | the ONLY authority on whether the render is a complete episode |
 | Evidence | `artifacts/rehearsal/<target>/rehearsal-evidence.json` | git-ignored: evidence is produced by running tools, never committed as a claim |
+
+## Measured loudness and technical conformance (Issue #263)
+
+Each run now measures the rendered audio with real FFmpeg analysis passes and
+records, per artifact: integrated LUFS, LRA, true peak dBTP, sample peak, the
+peak sample count and the derived clipped-sample count, plus the FFprobe
+resolution, frame rate, sample rate and codec names. If the measured loudness
+is outside the house target (−14 LUFS ± 1 LU, true peak ≤ −1 dBTP, no clipped
+samples), the runner performs a real two-pass `loudnorm` remux and then
+re-measures the output before recording conformance. Full contract and the
+fail-closed matrix: `docs/media/LOUDNESS_AND_TECHNICAL_QC.md`.
 
 ## Rate auto-calibration (measured, not assumed)
 

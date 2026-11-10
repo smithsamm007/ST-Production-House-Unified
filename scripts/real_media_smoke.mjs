@@ -79,7 +79,8 @@ const { spawnImpl, readFileImpl } = transports;
 const REEL_TARGETS = Object.freeze([
   Object.freeze({ target: "content_reel_1", aspectRatio: "9:16" }),
   Object.freeze({ target: "content_reel_2", aspectRatio: "9:16" }),
-  Object.freeze({ target: "brand_reel", aspectRatio: "1:1" }),
+  // Issue #263: the canonical standalone brand promo Reel is 9:16, not 1:1.
+  Object.freeze({ target: "brand_reel", aspectRatio: "9:16" }),
 ]);
 
 function fail(code, detail) {

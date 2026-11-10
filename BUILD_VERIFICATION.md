@@ -272,3 +272,19 @@ none · Media generated: none · Publishing: none
 - **Hinglish packages still require owner-supplied timed segments.** The
   repository ships no Hinglish narration-script builder, and Hindi cues are
   never mislabelled as Hinglish.
+
+## Issue #263 — measured loudness & technical conformance (offline verification)
+
+- `npm test` — **1500 tests, 1500 passed, 0 failed** (includes 15 new offline
+  tests for ebur128/astats parsing, clipping basis, the loudnorm argv/filter
+  builders, the fail-closed paths, and the technical-conformance profiles).
+- `npm run lint` — PASSED · `npm run verify` — exit 0.
+- `node --test tests/loudnessMeasurement.test.js tests/technicalConformance.test.js`
+  — 15 passed.
+- **Not run: `npm run real-media-rehearsal`.** This worktree has no `ffmpeg`,
+  `ffprobe` or `espeak-ng`, and `sudo` is unavailable, so no real render,
+  loudness measurement, normalization or artifact-backed evidence exists for
+  this change. What is proven is the contract: parsers against real-shaped
+  FFmpeg stderr, the measured-value normalization filter, and gates that fail
+  closed on an unmeasurable artifact. No LUFS, dBTP, frame-rate or sample-rate
+  number is claimed for any file.

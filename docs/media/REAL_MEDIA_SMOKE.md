@@ -48,6 +48,7 @@ credentials, no network provider calls.
 |---|---|
 | Long-form assembly through `executeAssemblyPlan` (`main_longform`, 16:9, libx264 medium/crf20) | exit code 0; ffprobe measured **1890 s** (inside the [1800, 3000] s window); QC policy `main_video_runtime` **passed**; descriptor state **VERIFIED**; real SHA-256 `404970241788158568a95b74a7544bb1c50fb5f719655b9aed8b506391e51c18`; 905,917 bytes on disk; wall time ≈ 25 s |
 | Short-form renders through the same executor (`content_reel_1`, `content_reel_2`, `brand_reel`) | all exit 0; ffprobe measured **30 s** each (inside [3, 90] s); QC policy `short_form_runtime` **passed**; descriptors **VERIFIED**; no labelled degradations; wall time ≈ 37 s for all three |
+| Canonical brand promo Reel geometry (Issue #263) | the smoke plan's `brand_reel` now uses **9:16** (1080×1920), matching the canonical standalone brand Reel; it was 1:1 before. No new render is claimed by this row. |
 | Negative control: a real 30 s render bound to a `main_longform` plan | `success: false`, `failureCode: QC_DURATION_OUT_OF_RANGE`, measured 30 s — the gate is not a rubber stamp, and no descriptor is promoted |
 | Direct gate call on a real 30 s inspection | `evaluateMainVideoRuntimeGate` → `passed: false`, `QC_DURATION_OUT_OF_RANGE` |
 | Transport contract (`tests/nodeMediaTransport.test.js`, 14 tests) | 14/14 pass; includes real-subprocess proofs of stdin delivery, literal hostile arguments (no shell), non-zero exit, timeout kill, ENOENT, and hash-matching file reads |
