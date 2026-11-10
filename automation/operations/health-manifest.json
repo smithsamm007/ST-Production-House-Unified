@@ -53,6 +53,13 @@
       "description": "Governed backlog promotion loop: validates the slice manifest, promotes eligible slices to issues, and durably records completions in the lifecycle file."
     },
     {
+      "workflowId": "slice-delivery",
+      "path": ".github/workflows/slice-delivery.yml",
+      "requiredSecrets": [],
+      "critical": false,
+      "description": "Opens at most one canonical pull request for verified slice work and dispatches the exact-head gates. Never merges, never closes branches, and reports competing implementations for the owner to resolve."
+    },
+    {
       "workflowId": "post-merge-reverify",
       "path": ".github/workflows/post-merge-reverify.yml",
       "requiredSecrets": [],
