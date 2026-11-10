@@ -90,75 +90,56 @@
     {
       "workflowId": "awake-resume",
       "path": ".github/workflows/awake-resume.yml",
-      "requiredSecrets": [
-        "JULES_API_KEY",
-        "GEMINI_API_KEY"
-      ],
+      "requiredSecrets": ["JULES_API_KEY", "GEMINI_API_KEY"],
       "critical": false,
       "description": "Hourly wake/resume controller reconciling and reverifying autonomous pull requests; dispatches coding-agent sessions."
     },
     {
       "workflowId": "night-shift",
       "path": ".github/workflows/night-shift.yml",
-      "requiredSecrets": [
-        "JULES_API_KEY",
-        "GEMINI_API_KEY"
-      ],
+      "requiredSecrets": ["JULES_API_KEY", "GEMINI_API_KEY"],
       "critical": false,
       "description": "Night-shift autonomous implementation agent; requires coding-agent credentials."
     },
     {
       "workflowId": "autodev",
       "path": ".github/workflows/autodev.yml",
-      "requiredSecrets": [
-        "AUTODEV_TOKEN",
-        "OPENROUTER_API_KEY"
-      ],
+      "requiredSecrets": ["AUTODEV_TOKEN", "OPENROUTER_API_KEY"],
       "critical": false,
       "description": "Autonomous development bridge; requires its own token and an OpenRouter key."
     },
     {
       "workflowId": "jules-api-bridge",
       "path": ".github/workflows/jules-api-bridge.yml",
-      "requiredSecrets": [
-        "JULES_API_KEY"
-      ],
+      "requiredSecrets": ["JULES_API_KEY"],
       "critical": false,
       "description": "Jules API bridge for bounded coding-agent sessions."
     },
     {
       "workflowId": "jules-command-files",
       "path": ".github/workflows/jules-command-files.yml",
-      "requiredSecrets": [
-        "JULES_API_KEY"
-      ],
+      "requiredSecrets": ["JULES_API_KEY"],
       "critical": false,
       "description": "Jules command-file dispatch workflow."
     },
     {
       "workflowId": "jules-pr-command",
       "path": ".github/workflows/jules-pr-command.yml",
-      "requiredSecrets": [
-        "JULES_API_KEY"
-      ],
+      "requiredSecrets": ["JULES_API_KEY"],
       "critical": false,
       "description": "Jules PR command workflow for correction attempts."
     },
     {
       "workflowId": "jules-session-watchdog",
       "path": ".github/workflows/jules-session-watchdog.yml",
-      "requiredSecrets": [
-        "JULES_API_KEY"
-      ],
+      "requiredSecrets": ["JULES_API_KEY"],
       "critical": false,
       "description": "Watchdog keeping the Jules session count within the governed cap."
     },
     {
       "workflowId": "jules-tracking-issue-watchdog",
       "path": ".github/workflows/jules-tracking-issue-watchdog.yml",
-      "requiredSecrets": [
-        "JULES_API_KEY"
-      ],
+      "requiredSecrets": ["JULES_API_KEY"],
       "critical": false,
       "description": "Watchdog for the Jules tracking issue lifecycle."
     },
