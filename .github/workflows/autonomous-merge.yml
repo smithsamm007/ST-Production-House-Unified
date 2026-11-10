@@ -16,8 +16,14 @@ on:
         type: string
 
 permissions:
-  contents: read
-  pull-requests: read
+  # `gh pr merge` merges the pull request (contents: write) and arms
+  # auto-merge (pull-requests: write). A workflow that declares a permissions
+  # block gets `none` for every scope it omits, so the previous read-only pair
+  # made these calls fail with 403 while the job still reported success.
+  contents: write
+  pull-requests: write
+  checks: read
+  statuses: read
 
 concurrency:
   group: autonomous-merge-${{ github.event.pull_request.number }}
@@ -97,13 +103,53 @@ jobs:
       - name: Run exact-head PostgreSQL integration
         run: npm run test:integration
 
-      - name: Enable auto-merge on pass
+      - name: Refuse a duplicate claim on the same issue
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          gh pr ready "${{ github.event.pull_request.number }}" 2>/dev/null || true
-          gh pr merge "${{ github.event.pull_request.number }}" \
-            --auto --squash --delete-branch \
-            --match-head-commit "${{ github.event.pull_request.head.sha }}" || \
-          echo "::notice::Auto-merge armed; merges when all checks pass."
+          set -euo pipefail
+          gh pr list --repo "$REPOSITORY" --state open --limit 100 --json number,body > open-pull-requests.json
+          node .github/scripts/duplicate-claim-check.mjs open-pull-requests.json "$PR_NUMBER"
+
+      - name: Re-read the exact head before arming
+        id: head
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          TESTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          live="$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
+          if [ "$live" != "$TESTED_HEAD" ]; then
+            echo "::error::AUTONOMOUS_MERGE_HEAD_MOVED pr=$PR_NUMBER tested=$TESTED_HEAD live=$live"
+            exit 1
+          fi
+          echo "head=$live" >> "$GITHUB_OUTPUT"
+          echo "AUTONOMOUS_MERGE_HEAD_CONFIRMED pr=$PR_NUMBER head=$live"
+
+      - name: Arm auto-merge on the verified exact head
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD: ${{ steps.head.outputs.head }}
+        run: |
+          set -euo pipefail
+          if ! gh pr merge "$PR_NUMBER" --repo "$REPOSITORY" --auto --squash \
+              --match-head-commit "$HEAD" > merge-arm.log 2>&1; then
+            detail="$(tr '\n' ' ' < merge-arm.log | cut -c1-400)"
+            echo "::error::AUTONOMOUS_MERGE_ARM_FAILED pr=$PR_NUMBER head=$HEAD reason=$detail"
+            exit 1
+          fi
+          armed="$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" --jq '.auto_merge != null')"
+          if [ "$armed" != "true" ]; then
+            echo "::error::AUTONOMOUS_MERGE_NOT_ARMED pr=$PR_NUMBER head=$HEAD — GitHub reports no armed auto-merge for this pull request."
+            exit 1
+          fi
+          echo "AUTONOMOUS_MERGE_ARMED pr=$PR_NUMBER head=$HEAD"

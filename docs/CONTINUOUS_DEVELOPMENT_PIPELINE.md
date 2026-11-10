@@ -75,3 +75,22 @@ and `npm run verify` pass on the proposed tree. The PR body embeds the real
 pasted output of both commands (Rule 1: honest evidence; Rule R6: real test
 evidence in the PR body). A failing tree fails the workflow loudly and
 nothing is published.
+
+## 6. Merge path contract (`autonomous-merge.yml`, `exact-head-merge.yml`)
+The two paths that can merge into `main` are contracts, not conveniences:
+
+- Each declares the write scopes it uses. A declared `permissions:` block sets
+  every omitted scope to `none`, so an under-declared workflow fails its merge
+  call with 403 — and must never mask that failure as success.
+- Each re-reads the exact head from the API immediately before acting and pins
+  the merge with `--match-head-commit`, so a head that moved cannot be merged.
+- The controller confirms GitHub's actual merged state and prints the merge
+  commit SHA; a requested merge that GitHub did not perform fails with
+  `MERGE_NOT_CONFIRMED`.
+- Two open pull requests claiming the same closing issue are a competing-claim
+  conflict, not two deliverables: the merge path refuses with
+  `AUTONOMOUS_MERGE_DUPLICATE_CLAIM` and leaves the choice to the owner.
+- Neither path deletes the head branch.
+
+Stable codes, required scopes, prerequisites and the verification procedure are
+recorded in `docs/MERGE_PATH_CONTRACT.md`.

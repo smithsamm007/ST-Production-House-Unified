@@ -20,11 +20,39 @@ function latestRunsByName(workflowRuns) {
   return latest;
 }
 
+const CLOSING_KEYWORD = /\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+#(\d+)\b/gi;
+
+/** Issue numbers a pull request body claims to close (AGENTS.md amendment 2). */
+export function closingIssueNumbers(body) {
+  if (typeof body !== 'string') return [];
+  const numbers = new Set();
+  for (const match of body.matchAll(CLOSING_KEYWORD)) numbers.add(Number(match[1]));
+  return [...numbers].sort((a, b) => a - b);
+}
+
+/**
+ * Other open pull requests that claim to close the same issue.
+ *
+ * Two open pull requests for one issue are competing implementations, not two
+ * deliverables: merging either makes the other contradictory work. The merge
+ * path refuses to proceed until the owner picks one.
+ */
+export function findDuplicateClaimants({ pullRequest, openPullRequests = [] }) {
+  const claimed = new Set(closingIssueNumbers(pullRequest?.body));
+  if (claimed.size === 0) return [];
+  return (Array.isArray(openPullRequests) ? openPullRequests : [])
+    .filter((candidate) => candidate && Number.isInteger(candidate.number) && candidate.number !== pullRequest.number)
+    .filter((candidate) => closingIssueNumbers(candidate.body).some((issue) => claimed.has(issue)))
+    .map((candidate) => candidate.number)
+    .sort((a, b) => a - b);
+}
+
 export function evaluateMergeEligibility({
   pullRequest,
   expectedHeadSha,
   workflowRuns,
-  requiredWorkflows = REQUIRED_WORKFLOWS
+  requiredWorkflows = REQUIRED_WORKFLOWS,
+  openPullRequests = null
 }) {
   const reasons = [];
 
@@ -35,6 +63,11 @@ export function evaluateMergeEligibility({
     reasons.push('stale_or_mismatched_head');
   }
   if (pullRequest?.mergeable !== true) reasons.push('pull_request_not_mergeable');
+  if (Array.isArray(openPullRequests)) {
+    for (const competitor of findDuplicateClaimants({ pullRequest, openPullRequests })) {
+      reasons.push(`duplicate_claim:${competitor}`);
+    }
+  }
 
   const latest = latestRunsByName(workflowRuns);
   for (const name of requiredWorkflows) {

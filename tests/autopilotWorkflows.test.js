@@ -45,7 +45,11 @@ test('merge controller is globally serialized and re-verifies remaining autopilo
   const workflow = read('.github/workflows/exact-head-merge.yml');
   assert.match(workflow, /group: exact-head-merge-global/);
   assert.match(workflow, /cancel-in-progress: false/);
-  assert.match(workflow, /Current main .* has not passed post-merge CI/);
+  // The baseline gate still refuses to merge into an unproven main, and it now
+  // names the recovery path and a stable code instead of a bare sentence.
+  assert.match(workflow, /MAIN_BASELINE_MISSING/);
+  assert.match(workflow, /MAIN_BASELINE_RED/);
+  assert.match(workflow, /no pull request may merge into it yet/);
   assert.match(workflow, /gh workflow run ci\.yml[^\n]*--ref main/);
 
   const reverify = read('.github/workflows/post-merge-reverify.yml');
