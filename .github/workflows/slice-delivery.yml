@@ -20,8 +20,10 @@ on:
         default: false
 
 permissions:
+  # Least privilege: this workflow opens pull requests and dispatches gates.
+  # It never pushes, so contents stays read-only.
   actions: write
-  contents: write
+  contents: read
   issues: read
   pull-requests: write
 

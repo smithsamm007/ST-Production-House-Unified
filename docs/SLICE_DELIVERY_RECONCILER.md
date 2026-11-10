@@ -57,6 +57,20 @@ the governed merge path finishes the work.
 8. **Completion is never claimed here.** A slice becomes `ALREADY_MERGED` only
    when its id is present in `automation/backlog/lifecycle.json`, which the
    backlog feeder writes on an issue closed as completed.
+9. **A branch with nothing ahead of `main` is not a candidate.** Zero commits
+   ahead means nothing to deliver, so a stale branch cannot be re-delivered as
+   an empty pull request (`NO_COMMITS_AHEAD`).
+10. **At most one pull request per run.** When several slices are deliverable,
+    the lowest slice id is opened and the rest are held with
+    `ONE_PULL_REQUEST_PER_RUN`, so a backlog advances one pull request at a time
+    rather than in a burst.
+11. **An existing pull request is adopted, not duplicated.** If a pull request
+    already exists for the branch, the runner logs
+    `SLICE_DELIVERY_PULL_REQUEST_EXISTS` and continues, and it dispatches the
+    gates on the pull request's own `headRefOid` (logging
+    `SLICE_DELIVERY_HEAD_MOVED` when that differs from the observed head), so a
+    branch that moved mid-run cannot cause a mismatch between the commit that
+    was verified and the commit that was dispatched.
 
 ## Verdicts
 
@@ -109,9 +123,10 @@ The report is written to git-ignored
 
 ## Known limits
 
-- The workflow needs `pull-requests: write` and `actions: write` on the
-  runner-provided token; on a fork, or with Actions disabled, it reports
-  `SLICE_DELIVERY_ACTION_FAILED` rather than pretending to deliver.
+- The workflow declares least privilege: `contents: read` (it never pushes),
+  `pull-requests: write`, `actions: write`, `issues: read`. On a fork, with
+  Actions disabled, or with repository workflow permissions capped at read-only,
+  it reports `SLICE_DELIVERY_ACTION_FAILED` rather than pretending to deliver.
 - Verification evidence is recognised only from a successful
   `ST Production House CI` run on the exact head SHA. A branch verified only
   locally counts as unverified, which is what makes competing branches

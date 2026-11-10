@@ -125,18 +125,31 @@ export function mapSliceToIssue(issues) {
  * @param {Array<{ branch: string, headSha?: string, aheadBy?: number, verifiedHead?: boolean }>} candidates
  */
 export function selectCanonicalCandidate(candidates) {
-  const list = requireArray(candidates, "SLICE_DELIVERY_INPUT_INVALID")
-    .filter((candidate) => candidate && typeof candidate.branch === "string" && candidate.branch.length > 0)
+  const provided = requireArray(candidates, "SLICE_DELIVERY_INPUT_INVALID").filter(
+    (candidate) => candidate && typeof candidate.branch === "string" && candidate.branch.length > 0
+  );
+
+  // A branch with no commits ahead of main carries nothing to deliver, so it is
+  // never a candidate. Without this, a stale branch left behind by an earlier
+  // squashed merge could be re-delivered as an empty pull request.
+  const list = provided
     .map((candidate) => ({
       branch: candidate.branch,
       headSha: typeof candidate.headSha === "string" ? candidate.headSha : "",
       aheadBy: Number.isInteger(candidate.aheadBy) ? candidate.aheadBy : Number.MAX_SAFE_INTEGER,
       verifiedHead: candidate.verifiedHead === true
     }))
+    .filter((candidate) => candidate.aheadBy > 0)
     .sort((a, b) => a.branch.localeCompare(b.branch));
 
   if (list.length === 0) {
-    return { status: "NONE", reason: "NO_CANDIDATE_BRANCH", selected: null, duplicates: [], ambiguousBranches: [] };
+    return {
+      status: "NONE",
+      reason: provided.length > 0 ? "NO_COMMITS_AHEAD" : "NO_CANDIDATE_BRANCH",
+      selected: null,
+      duplicates: [],
+      ambiguousBranches: []
+    };
   }
   if (list.length === 1) {
     return { status: "SELECTED", reason: "SINGLE_CANDIDATE", selected: list[0], duplicates: [], ambiguousBranches: [] };
@@ -281,6 +294,17 @@ export function planSliceDelivery(input) {
       ...base,
       action: issue ? SLICE_DELIVERY_ACTIONS.AWAIT_IMPLEMENTATION : SLICE_DELIVERY_ACTIONS.AWAIT_PROMOTION
     });
+  }
+
+  // At most one pull request per run (AGENTS.md amendment 3). Deterministic:
+  // the lowest slice id goes first, the rest are held, so repeat runs make
+  // stable progress instead of opening a burst of pull requests.
+  const openCandidates = actions
+    .filter((action) => action.action === SLICE_DELIVERY_ACTIONS.OPEN_PULL_REQUEST)
+    .sort((a, b) => a.sliceId.localeCompare(b.sliceId));
+  for (const held of openCandidates.slice(1)) {
+    held.action = SLICE_DELIVERY_ACTIONS.HOLD_ONE_PULL_REQUEST_IN_FLIGHT;
+    held.reason = "ONE_PULL_REQUEST_PER_RUN";
   }
 
   const automatableRemaining = slices.filter(
