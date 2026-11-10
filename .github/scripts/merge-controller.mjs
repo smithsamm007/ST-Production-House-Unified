@@ -15,6 +15,7 @@ const result = evaluateMergeEligibility({
   workflowRuns: runsPayload.workflow_runs
 });
 
+console.log(`MERGE_ELIGIBILITY eligible=${result.eligible} reasons=${result.reasons.join(',') || 'none'}`);
 console.log(JSON.stringify(result));
 if (process.env.GITHUB_OUTPUT) {
   fs.appendFileSync(process.env.GITHUB_OUTPUT, `eligible=${result.eligible}\n`);

@@ -46,12 +46,29 @@ jobs:
             exit 0
           fi
 
+          # Main's own historical CI state is ADVISORY, never a merge condition.
+          #
+          # The exact-head gates already carry the stronger evidence: on a
+          # pull_request run, ci.yml checks out github.sha, which GitHub sets to
+          # the synthetic merge commit of this head and the current base. A green
+          # gate at this exact head therefore proves "head merged with main
+          # passes", which is what a merge actually needs. A past green run on
+          # main proves nothing about this head, and making it a precondition
+          # deadlocks the repository: main only changes when a pull request
+          # merges, so a red main could never be fixed by a pull request again.
+          #
+          # We still record the state, so a persistently red main stays visible.
           main_sha="$(gh api "repos/$REPOSITORY/commits/main" --jq '.sha')"
           gh api -X GET "repos/$REPOSITORY/actions/runs" -f head_sha="$main_sha" -f per_page=100 > main-runs.json
-          if ! jq -e '[.workflow_runs[] | select(.name == "ST Production House CI" and .status == "completed" and .conclusion == "success")] | length > 0' main-runs.json >/dev/null; then
-            echo "Current main $main_sha has not passed post-merge CI; no PR may merge yet."
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          if jq -e '[.workflow_runs[] | select(.name == "ST Production House CI" and .status == "completed" and .conclusion == "success")] | length > 0' main-runs.json >/dev/null; then
+            echo "MAIN_BASELINE_GREEN main=$main_sha"
+          else
+            recorded="$(jq -r '[.workflow_runs[] | select(.name == "ST Production House CI")] | length' main-runs.json)"
+            if [ "$recorded" = "0" ]; then
+              echo "::warning::MAIN_BASELINE_MISSING main=$main_sha — no CI run is recorded for this main. This does not block the merge: the exact-head gates verify this head merged with this main. Dispatch ci.yml on main when you want the baseline recorded."
+            else
+              echo "::warning::MAIN_BASELINE_RED main=$main_sha — main's own CI is not green. This does not block the merge: the exact-head gates verify this head merged with this main, and main is only repaired by merging a verified pull request. Dispatch ci.yml on main after the next merge to refresh the baseline."
+            fi
           fi
 
           for attempt in 1 2 3 4 5 6; do
@@ -94,7 +111,18 @@ jobs:
           gh api -X GET "repos/$REPOSITORY/actions/runs" -f head_sha="$EXPECTED_HEAD" -f per_page=100 > workflow-runs-final.json
           node .github/scripts/merge-controller.mjs pull-final.json workflow-runs-final.json "$EXPECTED_HEAD"
 
-      - name: Merge the still-current exact head
+      - name: Refuse a duplicate claim on the same issue
+        if: steps.final_gate.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          gh pr list --repo "$REPOSITORY" --state open --limit 100 --json number,body > open-pull-requests.json
+          node .github/scripts/duplicate-claim-check.mjs open-pull-requests.json "$PR_NUMBER"
+
+      - name: Merge the still-current exact head and confirm GitHub merged it
         if: steps.final_gate.outputs.eligible == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -104,6 +132,26 @@ jobs:
         run: |
           set -euo pipefail
           current_head="$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
-          test "$current_head" = "$EXPECTED_HEAD"
-          gh pr merge "$PR_NUMBER" --repo "$REPOSITORY" --squash --delete-branch --match-head-commit "$EXPECTED_HEAD"
+          if [ "$current_head" != "$EXPECTED_HEAD" ]; then
+            echo "::error::MERGE_HEAD_MOVED pr=$PR_NUMBER expected=$EXPECTED_HEAD live=$current_head"
+            exit 1
+          fi
+          if ! gh pr merge "$PR_NUMBER" --repo "$REPOSITORY" --squash \
+              --match-head-commit "$EXPECTED_HEAD" > merge.log 2>&1; then
+            detail="$(tr '\n' ' ' < merge.log | cut -c1-400)"
+            echo "::error::MERGE_REQUEST_FAILED pr=$PR_NUMBER head=$EXPECTED_HEAD reason=$detail"
+            exit 1
+          fi
+          merged="false"
+          for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+            merged="$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" --jq '.merged')"
+            if [ "$merged" = "true" ]; then break; fi
+            sleep 3
+          done
+          merge_commit="$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" --jq '.merge_commit_sha // ""')"
+          if [ "$merged" != "true" ] || [ -z "$merge_commit" ]; then
+            echo "::error::MERGE_NOT_CONFIRMED pr=$PR_NUMBER head=$EXPECTED_HEAD merged=$merged — GitHub does not report this head as merged."
+            exit 1
+          fi
+          echo "MERGE_VERIFIED pr=$PR_NUMBER head=$EXPECTED_HEAD merge_commit=$merge_commit"
           gh workflow run ci.yml --repo "$REPOSITORY" --ref main
