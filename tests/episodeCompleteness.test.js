@@ -1,11 +1,11 @@
 /**
- * Episode completeness gate tests (S-M41-01, Issue #243).
+ * Episode completeness gate tests (S-M41-01, S-M43-01, Issue #243, #263).
  *
  * The gate exists because a duration-valid render can be almost entirely
- * silent: the measured 30 s / 1 s render on `main` passed every QC check. These
- * tests pin the fail-closed contract on the REAL inspection shape FFprobe
- * produces — required streams, per-stream measured durations, audio coverage
- * against the reference program length, and the A/V overrun direction.
+ * silent or technically non-conforming. These tests pin the fail-closed contract
+ * on the REAL inspection shape FFprobe produces — required streams, per-stream
+ * measured durations, audio coverage against the reference program length,
+ * the A/V overrun direction, resolution, sample rate, frame rate, and loudness.
  */
 
 import test from "node:test";
@@ -18,17 +18,31 @@ import {
   REQUIRED_STREAMS,
   audioCoverageToleranceSeconds,
   evaluateEpisodeCompleteness,
+  parseStreamTechnicalProperties,
 } from "../src/media/episodeCompleteness.js";
 
-function inspection({ video = "1800", audio = "1800", videoType = "video", audioType = "audio", formatDuration = null, success = true } = {}) {
+function inspection({
+  video = "1800",
+  audio = "1800",
+  videoType = "video",
+  audioType = "audio",
+  formatDuration = null,
+  success = true,
+  width = 1920,
+  height = 1080,
+  sampleRate = "48000",
+  frameRate = "30/1",
+  videoCodec = "h264",
+  audioCodec = "aac",
+} = {}) {
   const streams = [];
   if (videoType !== null) {
     streams.push(videoType === "video"
-      ? { codec_type: "video", codec_name: "h264", ...(video !== null ? { duration: video } : {}) }
-      : { codec_type: videoType, codec_name: "png", ...(video !== null ? { duration: video } : {}) });
+      ? { codec_type: "video", codec_name: videoCodec, width, height, avg_frame_rate: frameRate, ...(video !== null ? { duration: video } : {}) }
+      : { codec_type: videoType, codec_name: "png", width, height, ...(video !== null ? { duration: video } : {}) });
   }
   if (audioType !== null) {
-    streams.push({ codec_type: audioType, codec_name: "aac", ...(audio !== null ? { duration: audio } : {}) });
+    streams.push({ codec_type: audioType, codec_name: audioCodec, sample_rate: sampleRate, channels: 2, ...(audio !== null ? { duration: audio } : {}) });
   }
   return {
     tool: "ffprobe",
@@ -56,6 +70,11 @@ test("contract surface: version, required streams, and closed reason codes", () 
     "QC_STREAM_DURATION_MISSING",
     "QC_AUDIO_COVERAGE_INSUFFICIENT",
     "QC_AUDIO_EXTENDS_BEYOND_VIDEO",
+    "QC_RESOLUTION_MISMATCH",
+    "QC_SAMPLE_RATE_INVALID",
+    "QC_FRAME_RATE_INVALID",
+    "QC_LOUDNESS_OUT_OF_RANGE",
+    "QC_AUDIO_CLIPPING_DETECTED",
   ]) {
     assert.ok(COMPLETENESS_ERROR_CODES.includes(code), `${code} must stay stable`);
   }
@@ -69,6 +88,27 @@ test("tolerance: 0.5% of the reference, floored at 1 s and capped at 15 s", () =
   assert.equal(audioCoverageToleranceSeconds(1), 1);
   assert.equal(audioCoverageToleranceSeconds(0), 1);
   assert.equal(audioCoverageToleranceSeconds(null), 1);
+});
+
+// ---------------------------------------------------------------------------
+// Technical stream properties extraction
+// ---------------------------------------------------------------------------
+
+test("parseStreamTechnicalProperties extracts video and audio specs", () => {
+  const parsed = parseStreamTechnicalProperties(inspection({ width: 1920, height: 1080, sampleRate: "48000", frameRate: "30000/1001" }));
+  assert.equal(parsed.video.width, 1920);
+  assert.equal(parsed.video.height, 1080);
+  assert.equal(parsed.video.aspectRatio, "16:9");
+  assert.ok(Math.abs(parsed.video.frameRate - 29.97) < 0.05);
+  assert.equal(parsed.video.codec, "h264");
+  assert.equal(parsed.audio.sampleRate, 48000);
+  assert.equal(parsed.audio.channels, 2);
+  assert.equal(parsed.audio.codec, "aac");
+});
+
+test("parseStreamTechnicalProperties detects 9:16 vertical Reel", () => {
+  const parsed = parseStreamTechnicalProperties(inspection({ width: 1080, height: 1920 }));
+  assert.equal(parsed.video.aspectRatio, "9:16");
 });
 
 // ---------------------------------------------------------------------------
@@ -128,6 +168,80 @@ test("audio extending past the picture is an A/V sync failure", () => {
   // Within the overrun allowance is fine (encoder tail).
   const ok = evaluateEpisodeCompleteness({ inspection: inspection({ video: "30", audio: "30.5" }) });
   assert.equal(ok.passed, true);
+});
+
+// ---------------------------------------------------------------------------
+// Technical conformance checks: resolution, sample rate, frame rate, loudness
+// ---------------------------------------------------------------------------
+
+test("resolution and aspect ratio mismatch fails closed", () => {
+  const longform = inspection({ width: 1280, height: 720 });
+  const widthFail = evaluateEpisodeCompleteness({ inspection: longform, expectedWidth: 1920 });
+  assert.equal(widthFail.passed, false);
+  assert.equal(widthFail.reasonCode, "QC_RESOLUTION_MISMATCH");
+
+  const aspectFail = evaluateEpisodeCompleteness({ inspection: longform, expectedAspectRatio: "9:16" });
+  assert.equal(aspectFail.passed, false);
+  assert.equal(aspectFail.reasonCode, "QC_RESOLUTION_MISMATCH");
+
+  const brandReelOk = evaluateEpisodeCompleteness({
+    inspection: inspection({ width: 1080, height: 1920 }),
+    expectedAspectRatio: "9:16",
+    expectedWidth: 1080,
+    expectedHeight: 1920,
+  });
+  assert.equal(brandReelOk.passed, true);
+});
+
+test("audio sample rate mismatch fails closed", () => {
+  const badSampleRate = inspection({ sampleRate: "44100" });
+  const verdict = evaluateEpisodeCompleteness({ inspection: badSampleRate, requiredSampleRate: 48000 });
+  assert.equal(verdict.passed, false);
+  assert.equal(verdict.reasonCode, "QC_SAMPLE_RATE_INVALID");
+
+  const goodSampleRate = inspection({ sampleRate: "48000" });
+  const ok = evaluateEpisodeCompleteness({ inspection: goodSampleRate, requiredSampleRate: 48000 });
+  assert.equal(ok.passed, true);
+});
+
+test("video frame rate under minimum fails closed", () => {
+  const lowFps = inspection({ frameRate: "1/1" });
+  const verdict = evaluateEpisodeCompleteness({ inspection: lowFps, minFrameRate: 2 });
+  assert.equal(verdict.passed, false);
+  assert.equal(verdict.reasonCode, "QC_FRAME_RATE_INVALID");
+});
+
+test("audio loudness gating fails closed on out-of-range LUFS, true peak, or clipping", () => {
+  const insp = inspection();
+  // Target -14 LUFS, but measured is -22 LUFS (too quiet)
+  const quietLoudness = { integratedLufs: -22.0, truePeakDbtp: -5.0, clippingCount: 0 };
+  const quietVerdict = evaluateEpisodeCompleteness({ inspection: insp, loudness: quietLoudness, targetLufs: -14.0 });
+  assert.equal(quietVerdict.passed, false);
+  assert.equal(quietVerdict.reasonCode, "QC_LOUDNESS_OUT_OF_RANGE");
+
+  // True peak exceeds ceiling (-0.5 > -1.0)
+  const hotLoudness = { integratedLufs: -14.0, truePeakDbtp: -0.5, clippingCount: 0 };
+  const hotVerdict = evaluateEpisodeCompleteness({ inspection: insp, loudness: hotLoudness, targetLufs: -14.0, maxTruePeakDbtp: -1.0 });
+  assert.equal(hotVerdict.passed, false);
+  assert.equal(hotVerdict.reasonCode, "QC_LOUDNESS_OUT_OF_RANGE");
+
+  // Clipping detected
+  const clipLoudness = { integratedLufs: -14.0, truePeakDbtp: 0.5, clippingCount: 1 };
+  const clipVerdict = evaluateEpisodeCompleteness({ inspection: insp, loudness: clipLoudness });
+  assert.equal(clipVerdict.passed, false);
+  assert.equal(clipVerdict.reasonCode, "QC_AUDIO_CLIPPING_DETECTED");
+
+  // Conforming loudness passes
+  const goodLoudness = { integratedLufs: -14.2, truePeakDbtp: -1.1, clippingCount: 0 };
+  const passVerdict = evaluateEpisodeCompleteness({
+    inspection: insp,
+    loudness: goodLoudness,
+    targetLufs: -14.0,
+    maxTruePeakDbtp: -1.0,
+  });
+  assert.equal(passVerdict.passed, true);
+  assert.equal(passVerdict.reasonCode, null);
+  assert.equal(passVerdict.technical.loudness.integratedLufs, -14.2);
 });
 
 // ---------------------------------------------------------------------------

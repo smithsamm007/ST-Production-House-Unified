@@ -1,5 +1,5 @@
 /**
- * ST Production House — FFprobe media inspection runner (Issue #170).
+ * ST Production House — FFprobe media inspection runner (Issue #170, #263).
  *
  * Media-layer priority (production-completion plan §11 item 7, §17): the
  * artifact-descriptor contract (S-M30-01) promotes a descriptor to VERIFIED
@@ -100,6 +100,105 @@ export function buildFfprobeArgs(artifactPath) {
     "-show_streams",
     artifactPath,
   ]);
+}
+
+/**
+ * Pure: build the FFmpeg loudnorm analysis argument array (CONVENTIONS Rule 2 —
+ * array args ONLY, never a shell string).
+ */
+export function buildLoudnormArgs(artifactPath) {
+  validateArtifactPath(artifactPath);
+  return Object.freeze([
+    "-hide_banner",
+    "-nostdin",
+    "-i", artifactPath,
+    "-vn",
+    "-af", "loudnorm=print_format=json",
+    "-f", "null",
+    "-",
+  ]);
+}
+
+/**
+ * Parse FFmpeg loudnorm / ebur128 analysis output from stderr.
+ * Truthful extraction: returns integratedLufs, truePeakDbtp, loudnessRangeLu,
+ * thresholdLufs, clippingCount. Unparseable output fails closed with
+ * FFPROBE_OUTPUT_UNPARSEABLE.
+ */
+export function parseLoudnormOutput(stderr) {
+  if (typeof stderr !== "string" || stderr.trim() === "") {
+    throw fail("FFPROBE_OUTPUT_UNPARSEABLE");
+  }
+  const jsonMatch = stderr.match(/\{\s*"input_i"\s*:\s*"[^"]+"[\s\S]*?\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      const integratedLufs = Number(parsed.input_i);
+      const truePeakDbtp = Number(parsed.input_tp);
+      const loudnessRangeLu = Number(parsed.input_lra);
+      const thresholdLufs = Number(parsed.input_thresh);
+      if (!Number.isFinite(integratedLufs) || !Number.isFinite(truePeakDbtp)) {
+        throw fail("FFPROBE_OUTPUT_UNPARSEABLE");
+      }
+      return Object.freeze({
+        integratedLufs,
+        truePeakDbtp,
+        loudnessRangeLu: Number.isFinite(loudnessRangeLu) ? loudnessRangeLu : null,
+        thresholdLufs: Number.isFinite(thresholdLufs) ? thresholdLufs : null,
+        clippingCount: truePeakDbtp > 0.0 ? 1 : 0,
+        raw: Object.freeze(parsed),
+      });
+    } catch (e) {
+      if (e.code === "FFPROBE_OUTPUT_UNPARSEABLE") throw e;
+    }
+  }
+
+  // Fallback ebur128 text parsing
+  const iMatch = stderr.match(/I:\s*(-?\d+(?:\.\d+)?)\s*LUFS/i);
+  const tpMatch = stderr.match(/(?:True peak|Peak):\s*(-?\d+(?:\.\d+)?)\s*(?:dBFS|dBTP)/i);
+  const lraMatch = stderr.match(/LRA:\s*(-?\d+(?:\.\d+)?)\s*LU/i);
+  if (iMatch && tpMatch) {
+    const integratedLufs = Number(iMatch[1]);
+    const truePeakDbtp = Number(tpMatch[1]);
+    const loudnessRangeLu = lraMatch ? Number(lraMatch[1]) : null;
+    return Object.freeze({
+      integratedLufs,
+      truePeakDbtp,
+      loudnessRangeLu,
+      thresholdLufs: null,
+      clippingCount: truePeakDbtp > 0.0 ? 1 : 0,
+      raw: null,
+    });
+  }
+
+  throw fail("FFPROBE_OUTPUT_UNPARSEABLE");
+}
+
+/**
+ * Measure audio loudness of a media artifact using FFmpeg's loudnorm filter.
+ * Honest: spawns FFmpeg with array arguments, parses measured values from
+ * real output bytes/stream. Never fabricates.
+ */
+export async function measureAudioLoudness(path, { spawnImpl, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  validateArtifactPath(path);
+  if (typeof spawnImpl !== "function") {
+    throw fail("FFPROBE_SPAWN_FAILED");
+  }
+  const args = buildLoudnormArgs(path);
+  let result;
+  try {
+    result = await spawnImpl({ command: "ffmpeg", args, timeoutMs });
+  } catch {
+    throw fail("FFPROBE_SPAWN_FAILED");
+  }
+  if (!result || typeof result !== "object") {
+    throw fail("FFPROBE_SPAWN_FAILED");
+  }
+  if (result.timedOut === true) {
+    throw fail("FFPROBE_TIMEOUT");
+  }
+  const stderr = typeof result.stderr === "string" ? result.stderr : "";
+  return parseLoudnormOutput(stderr);
 }
 
 /**

@@ -1,11 +1,11 @@
-# FFmpeg Assembly Executor (Issue #174)
+# FFmpeg Assembly Executor (Issue #174, #243, #263)
 
 The media-chain continuation from validated plans to actual media
 processing. S-M33-01 (assembly plan) validates `media_assembly_plan_v1`
 objects and defines the fail-closed main-video runtime gate; S-M30-01
 (artifact descriptor) anchors artifact identity to content hashes; the
-S-M30 runner (Issue #170) performs real inspections. Until now NO component
-executed FFmpeg. This module is the executor boundary:
+S-M30 runner (Issue #170) performs real inspections. This module is the
+executor boundary:
 
 ```
 validated plan (media_assembly_plan_v1)
@@ -18,7 +18,8 @@ validated plan (media_assembly_plan_v1)
         ├── evaluateMainVideoRuntimeGate() /
         │   evaluateShortFormDurationGate() — QC duration policy
         └── evaluateEpisodeCompleteness()  — required streams + measured
-                                             audio coverage (S-M41-01)
+                                             audio coverage + technical
+                                             conformance (S-M41-01, S-M43-01)
 ```
 
 ## Safety: references, paths, and array args
@@ -68,7 +69,7 @@ validated plan (media_assembly_plan_v1)
 | Plan tampered / id mismatch | `ASSEMBLY_ID_MISMATCH` — no argv is ever derived |
 | Plan type wrong | `ASSEMBLY_PLAN_TYPE_MISMATCH` |
 | Ref unbound / path hostile | `EXEC_REF_UNBOUND` / `PATH_UNSAFE` / `EXEC_OUTPUT_PATH_UNSAFE` |
-| ffprobe/ffmpeg binary absent | `FFPROBE_VERSION_SPAWN_FAILED` at pre-flight — the truthful state of environments without media tooling |
+| ffprobe/ffmpeg binary absent | `FFPROBE_VERSION_SPAWN_FAILED` at pre-flight — truthful state of environments without media tooling |
 | Timeout | `FFMPEG_TIMEOUT` / `FFPROBE_VERSION_TIMEOUT` |
 | Non-zero exit | `FFMPEG_EXIT_NONZERO` (+ exitCode + bounded stderrTail) |
 | Rendered file unreadable / probe fails | `QC_DESCRIPTOR_NOT_VERIFIED` (inspection reason surfaced verbatim, e.g. `INSPECTION_SOURCE_UNREADABLE`) |
@@ -79,13 +80,18 @@ validated plan (media_assembly_plan_v1)
 | Per-stream duration absent | `QC_STREAM_DURATION_MISSING` |
 | Audio does not cover the program | `QC_AUDIO_COVERAGE_INSUFFICIENT` |
 | Audio runs past the picture | `QC_AUDIO_EXTENDS_BEYOND_VIDEO` |
+| Video resolution / aspect ratio mismatch | `QC_RESOLUTION_MISMATCH` |
+| Audio sample rate not 48 kHz (or mismatch) | `QC_SAMPLE_RATE_INVALID` |
+| Video frame rate below minimum | `QC_FRAME_RATE_INVALID` |
+| Loudness outside target [-16, -12] LUFS or true peak > -1.0 dBTP | `QC_LOUDNESS_OUT_OF_RANGE` |
+| Audio clipping detected (> 0 dBTP) | `QC_AUDIO_CLIPPING_DETECTED` |
 
 A success result requires ALL of: real command execution, a real inspection
 of the rendered bytes (hash computed from the actual file, ffprobe payload
-present), a passing QC duration gate, and a passing completeness gate. The
-returned descriptor is `VERIFIED` only through the existing S-M30-01
-promotion, anchored to the REAL rendered content hash — the executor asserts
-no claimed duration on it.
+present), a passing QC duration gate, and a passing completeness & technical
+conformance gate. The returned descriptor is `VERIFIED` only through the existing
+S-M30-01 promotion, anchored to the REAL rendered content hash — the executor
+asserts no claimed duration on it.
 
 ## QC duration policy (defined and enforced here)
 
@@ -94,54 +100,36 @@ no claimed duration on it.
   measured duration must exist, claimed-vs-measured conflict > 1 s fails,
   and the measured duration must lie inside **[1800, 3000] s** (30–50 min).
 - **`content_reel_1`, `content_reel_2`, `brand_reel`** →
-  `short_form_runtime` policy (new `evaluateShortFormDurationGate`, same
-  fail-closed structure) with the reel window **[3, 90] s**.
+  `short_form_runtime` policy (fail-closed structure) with the reel window **[3, 90] s**.
 - The gate consumes the POST-RENDER inspection of the rendered file — never
   a caller's claim — so the policy is evidence-based end to end.
 
-## Episode completeness gate (S-M41-01, Issue #243)
+## Episode completeness & technical conformance gate (S-M41-01, S-M43-01)
 
-Duration alone does not make an episode. Measured on `main`: a real 30 s
-render with a 1 s narration track passed every QC check, and the production
-narration script measures **3.6 s** against an 1800–3000 s main-video target.
-`src/media/episodeCompleteness.js` evaluates the SAME post-render inspection
-and must pass before a render is recorded:
+Duration alone does not make an episode. `src/media/episodeCompleteness.js`
+evaluates the SAME post-render inspection and must pass before a render is
+recorded:
 
 | Check | Rule |
 |---|---|
 | Required streams | both `video` and `audio` streams present in the probe |
 | Measured durations | per-stream `duration` present and parseable; no default pass |
-| Audio coverage | `audioSeconds + tolerance >= referenceSeconds`; the reference is the Director's configured main target when supplied, otherwise the measured video duration |
+| Audio coverage | `audioSeconds + tolerance >= referenceSeconds`; reference is configured main target when supplied, otherwise measured video duration |
 | A/V sync | `audioSeconds <= videoSeconds + 1 s` (an audio tail with no picture is a broken render) |
-| Tolerance | `min(15 s, max(1 s, 0.5 % of the reference))` — a 30-minute program may end at most 9 s before its planned length; a 6 s Reel gets a 1 s allowance |
+| Coverage Tolerance | `min(15 s, max(1 s, 0.5 % of the reference))` — a 30-minute program may end at most 9 s before its planned length; a 6 s Reel gets a 1 s allowance |
+| Resolution / Geometry | Main longform must be 1920x1080 (16:9); standalone brand Reel and content Shorts must be 1080x1920 (9:16) |
+| Audio Sample Rate | Verified as 48 kHz (48000 Hz) |
+| Loudness & True Peak | Post-render loudnorm analysis measured against -14.0 LUFS target (±2.0 LUFS tolerance window) and true peak ≤ -1.0 dBTP |
+| Zero Clipping | clippingCount must equal 0 (true peak must not exceed 0.0 dBTP) |
 
 The QC record carries the measured evidence (`qc.completeness.videoSeconds`,
 `audioSeconds`, `referenceSeconds`, `coverageToleranceSeconds`,
-`audioCoverageRatio`, `reasonCode`), so a rejection states exactly how much
-audio is missing. A failure means `success: false`, `descriptor: null`, the
-release re-plans, and the job carries the stable code — an incomplete render
-is never recorded as a complete episode.
+`audioCoverageRatio`, `technical`, `reasonCode`), so a rejection states
+truthfully what failed.
 
-This gate does **not** scale narration to the episode, add BGM/SFX, or
-validate subtitle timing. It makes the completeness claim truthful and turns
-the current short-narration reality into an explicit, resumable failure.
+## Rehearsal & Smoke evidence runner
 
-## Injected transports (offline testability)
-
-`spawnImpl` (`{ command, args, timeoutMs }` → `{ exitCode, stdout, stderr,
-timedOut }`), `readFileImpl` (file bytes), and the clock are injectable, so
-the suite proves the full contract offline — including tamper gates, every
-failure code, and the QC matrix — without an ffmpeg binary or real media.
-Production binds `node:child_process.spawn` (array args, `shell: false`,
-timeout kill, bounded output) and `node:fs/promises`.
-
-## Deliberate non-goals (this slice)
-
-- No worker/queue wiring: callers (the assembly worker slice) invoke
-  `executeAssemblyPlan` with descriptor bindings and record the returned
-  evidence object through the existing ledger append path.
-- No progress streaming or cancellation UI; timeouts are the executor's
-  only time bound.
-- No xfade cross-fades (they require overlapping inputs and a timeline
-  model); fades are self-contained in/out transitions today, with `wipe`
-  labeled as degraded.
+- `scripts/real_media_smoke.mjs`:
+  Verifies the canonical 1+2+1 package (1 long-form 16:9 1920x1080 + 2 content Shorts 9:16 1080x1920 + 1 brand promo Reel 9:16 1080x1920).
+- `scripts/real_media_rehearsal.mjs`:
+  Executes real speech synthesis rate auto-calibration, a real loudness normalization pass (`-af loudnorm=I=-14:TP=-1.0:LRA=7 -ar 48000`), real 1920x1080 long-form assembly, real 9:16 1080x1920 brand Reel assembly, real ffprobe inspection, real loudness analysis (integrated LUFS, true peak dBTP, clipping count), and records measured evidence in `artifacts/rehearsal/`. Visual placeholders are explicitly labeled as placeholders per AGENTS.md Rule 3.
