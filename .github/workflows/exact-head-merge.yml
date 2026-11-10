@@ -46,17 +46,29 @@ jobs:
             exit 0
           fi
 
+          # Main's own historical CI state is ADVISORY, never a merge condition.
+          #
+          # The exact-head gates already carry the stronger evidence: on a
+          # pull_request run, ci.yml checks out github.sha, which GitHub sets to
+          # the synthetic merge commit of this head and the current base. A green
+          # gate at this exact head therefore proves "head merged with main
+          # passes", which is what a merge actually needs. A past green run on
+          # main proves nothing about this head, and making it a precondition
+          # deadlocks the repository: main only changes when a pull request
+          # merges, so a red main could never be fixed by a pull request again.
+          #
+          # We still record the state, so a persistently red main stays visible.
           main_sha="$(gh api "repos/$REPOSITORY/commits/main" --jq '.sha')"
           gh api -X GET "repos/$REPOSITORY/actions/runs" -f head_sha="$main_sha" -f per_page=100 > main-runs.json
-          if ! jq -e '[.workflow_runs[] | select(.name == "ST Production House CI" and .status == "completed" and .conclusion == "success")] | length > 0' main-runs.json >/dev/null; then
+          if jq -e '[.workflow_runs[] | select(.name == "ST Production House CI" and .status == "completed" and .conclusion == "success")] | length > 0' main-runs.json >/dev/null; then
+            echo "MAIN_BASELINE_GREEN main=$main_sha"
+          else
             recorded="$(jq -r '[.workflow_runs[] | select(.name == "ST Production House CI")] | length' main-runs.json)"
             if [ "$recorded" = "0" ]; then
-              echo "::warning::MAIN_BASELINE_MISSING main=$main_sha — no CI run is recorded for the current main; dispatch ci.yml on main to establish the baseline."
+              echo "::warning::MAIN_BASELINE_MISSING main=$main_sha — no CI run is recorded for this main. This does not block the merge: the exact-head gates verify this head merged with this main. Dispatch ci.yml on main when you want the baseline recorded."
             else
-              echo "::warning::MAIN_BASELINE_RED main=$main_sha — the current main has no successful CI run, so no pull request may merge into it yet; fix main, dispatch ci.yml on main, then re-run this controller."
+              echo "::warning::MAIN_BASELINE_RED main=$main_sha — main's own CI is not green. This does not block the merge: the exact-head gates verify this head merged with this main, and main is only repaired by merging a verified pull request. Dispatch ci.yml on main after the next merge to refresh the baseline."
             fi
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            exit 0
           fi
 
           for attempt in 1 2 3 4 5 6; do

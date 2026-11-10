@@ -72,8 +72,9 @@ last read and the merge.
 | `MERGE_NOT_CONFIRMED` | `gh pr merge` returned, but GitHub does not report the head as merged |
 | `MERGE_VERIFIED` | GitHub reports `merged: true`; the merge commit SHA is printed |
 | `MERGE_ELIGIBILITY` | controller verdict: `eligible=<bool> reasons=<csv>` |
-| `MAIN_BASELINE_MISSING` | no CI run is recorded for the current `main` |
-| `MAIN_BASELINE_RED` | the current `main` has no successful CI run |
+| `MAIN_BASELINE_GREEN` | the current `main` has a successful CI run (informational) |
+| `MAIN_BASELINE_MISSING` | no CI run is recorded for the current `main` (advisory) |
+| `MAIN_BASELINE_RED` | the current `main` has no successful CI run (advisory) |
 
 A failed merge request must exit non-zero. Masking it with `|| true` or
 `|| echo` is a policy violation: it turns "the merge never happened" into a
@@ -89,21 +90,34 @@ are an owner decision, and picking one automatically would discard work that may
 be the better implementation. The guard only stops the merge path from
 arbitrarily resolving the race.
 
-## 6. Main baseline gate and its recovery path
+## 6. Main baseline is advisory, never a merge condition
 
-Before any merge, the controller requires the current `main` to have a
-successful CI run. This prevents stacking a merge on an already-broken baseline,
-but it is also circular: `main` only changes when something merges. The gate
-therefore names its own recovery path instead of failing silently:
+The controller records the state of `main`'s own CI and never blocks on it.
 
-- `MAIN_BASELINE_MISSING` — no CI run exists for the current `main`; dispatch
-  `ci.yml` on `main` to establish the baseline.
-- `MAIN_BASELINE_RED` — the current `main` has no successful run; fix `main`,
-  dispatch `ci.yml` on `main`, then let the controller run again.
+The earlier design required a successful run on the current `main` before any
+merge. That was both redundant and circular:
 
-Both are warnings with `found=false`, so the run is green but nothing merges.
-That is correct: skipping is not a failure, and it must never be reported as a
-merge.
+- **Redundant.** On a `pull_request` run, `ci.yml` checks out `github.sha`,
+  which GitHub sets to the synthetic merge commit of the head and the current
+  base. A green exact-head gate therefore already proves "this head merged with
+  `main` passes" — the only thing a merge needs. A past green run on `main`
+  proves nothing about a different head.
+- **Circular.** `main` only changes when a pull request merges, so requiring a
+  green `main` before merging means a red `main` can never be repaired through
+  the governed path. The repository would freeze permanently.
+
+Codes: `MAIN_BASELINE_GREEN` (informational), `MAIN_BASELINE_MISSING` and
+`MAIN_BASELINE_RED` (advisory warnings). None of them sets `found=false` or
+short-circuits the controller; `tests/mergeWorkflowContract.test.js` and
+`tests/autopilotWorkflows.test.js` assert that the baseline block cannot block.
+
+What replaces the old guarantee is the exact-head contract of §3 plus two owner
+settings: **require branches to be up to date before merging** (so a stale base
+cannot be merged) and **require the three gates** (so auto-merge cannot pass on
+the referee's own suite alone).
+
+If `main` is red, that is a real problem — recorded on every controller run —
+but the fix is to merge a verified pull request that repairs it, not to freeze.
 
 ## 7. Owner-configured prerequisites
 

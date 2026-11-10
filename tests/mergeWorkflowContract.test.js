@@ -85,11 +85,24 @@ test('the exact-head controller confirms the merge from GitHub state and merge c
   assert.match(text, /MERGE_REQUEST_FAILED/);
 });
 
-test('the controller names its main-baseline recovery path instead of failing silently', () => {
+test('main historical CI is recorded but never blocks a merge', () => {
   const text = workflow('exact-head-merge.yml');
 
+  assert.match(text, /MAIN_BASELINE_GREEN/);
   assert.match(text, /MAIN_BASELINE_MISSING/);
   assert.match(text, /MAIN_BASELINE_RED/);
+
+  const start = text.indexOf('main_sha=');
+  const end = text.indexOf('for attempt in 1 2 3 4 5 6');
+  assert.ok(start !== -1 && end > start, 'the main-baseline observation is present');
+
+  const baseline = text.slice(start, end);
+  assert.doesNotMatch(
+    baseline,
+    /found=false/,
+    'a red main must not stop the controller: main is only repaired by merging a verified pull request'
+  );
+  assert.doesNotMatch(baseline, /exit 0/, 'the baseline must not short-circuit the merge decision');
 });
 
 test('neither merge path deletes the head branch', () => {
