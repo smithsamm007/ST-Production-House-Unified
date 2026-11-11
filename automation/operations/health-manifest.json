@@ -11,6 +11,13 @@
       "description": "Scheduled truthful self-audit classifying every autonomous workflow as RUNNABLE or PAUSED (missing credentials) and uploading the report as a run artifact."
     },
     {
+      "workflowId": "rehearsal-evidence",
+      "path": ".github/workflows/rehearsal-evidence.yml",
+      "requiredSecrets": [],
+      "critical": false,
+      "description": "Opt-in workflow_dispatch run of a real 30/40/50-minute media rehearsal on a media-capable runner. Retains one sanitized evidence bundle (allowlisted fields, paths and secret-shaped keys removed) and uploads nothing when no evidence exists."
+    },
+    {
       "workflowId": "ci",
       "path": ".github/workflows/ci.yml",
       "requiredSecrets": [],
