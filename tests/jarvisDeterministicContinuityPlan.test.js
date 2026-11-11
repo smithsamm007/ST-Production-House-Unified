@@ -13,7 +13,7 @@ function outline(overrides = {}) {
     generationMode: "deterministic_local",
     publicBrand: "Raat Ki Awaaz",
     language: "hinglish",
-    targetMinutes: 27,
+    targetMinutes: 30,
     suppliedConcept: concept,
     storyOutline: [
       { beat: "hook", purpose: "Open with an immediate unsettling event grounded in the supplied concept." },

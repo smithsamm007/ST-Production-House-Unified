@@ -11,7 +11,7 @@
 
 ## 2. Timing and Boundary Constraints
 
-- **Segment Timings:** Must be finite numbers with `startTime >= 0`, `endTime > startTime`, and `endTime <= 1800` (30 minutes max).
+- **Segment Timings:** Must be finite numbers with `startTime >= 0`, `endTime > startTime`, and `endTime <= 3000` (the longest canonical 30/40/50-minute episode target, Issue #262; this was 1800 before the JARVIS chain accepted 40/50-minute packages). Each individual segment may span at most 120 s; longer beats are split at word boundaries.
 - **Overlaps:** Overlapping narration segments (where `seg[i].startTime < seg[i-1].endTime`) are strictly rejected with `SUBTITLE_TIMING_OVERLAP_DETECTED`.
 - **Cue Length and Duration:**
   - Maximum characters per cue line: 42 characters.

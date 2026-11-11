@@ -17,7 +17,7 @@ function scriptPlan(overrides = {}) {
     { order: 2, beat: "discovery", targetMinutes: 5, writingDirection: "Reveal the local mystery without explaining its supernatural cause.", languageStyle: "natural_hinglish" },
     { order: 3, beat: "escalation", targetMinutes: 7, writingDirection: "Increase danger, emotional pressure, and uncertainty.", languageStyle: "natural_hinglish" },
     { order: 4, beat: "reversal", targetMinutes: 6, writingDirection: "Introduce a fair but surprising change in what the audience believes.", languageStyle: "natural_hinglish" },
-    { order: 5, beat: "cliffhanger", targetMinutes: 6, writingDirection: "End with unresolved danger without revealing the final truth.", languageStyle: "natural_hinglish" },
+    { order: 5, beat: "cliffhanger", targetMinutes: 9, writingDirection: "End with unresolved danger without revealing the final truth.", languageStyle: "natural_hinglish" },
   ];
   const base = {
     schemaVersion: 1,
@@ -27,7 +27,7 @@ function scriptPlan(overrides = {}) {
     sourcePackageId: "a".repeat(64),
     publicBrand: "Raat Ki Awaaz",
     language: "hinglish",
-    targetMinutes: 27,
+    targetMinutes: 30,
     suppliedConcept: "Ek sunsaan pahadi hostel mein har raat band kamre se ghanti sunai deti hai.",
     sections,
     providerCalls: [],

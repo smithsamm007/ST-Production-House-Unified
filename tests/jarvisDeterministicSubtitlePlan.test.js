@@ -139,13 +139,24 @@ test("enforces timing boundaries, overlap rejection, and non-negative/NaN checks
     /SUBTITLE_TIMING_OVERLAP_DETECTED/
   );
 
+  // Issue #262: the total cap is the longest canonical target (3000 s).
   assert.throws(
     () => createDeterministicSubtitlePlan(sampleNarrationPackage({
       narrationSegments: [
-        { segmentId: "s1", text: "Excessive duration.", startTime: 0.0, endTime: 1900.0 },
+        { segmentId: "s1", text: "Excessive duration.", startTime: 0.0, endTime: 3001.0 },
       ],
     })),
     /SUBTITLE_DURATION_EXCESSIVE/
+  );
+
+  // A single long segment stays bounded even inside the total cap.
+  assert.throws(
+    () => createDeterministicSubtitlePlan(sampleNarrationPackage({
+      narrationSegments: [
+        { segmentId: "s1", text: "Excessive single segment.", startTime: 0.0, endTime: 300.0 },
+      ],
+    })),
+    /SUBTITLE_SEGMENT_DURATION_EXCESSIVE/
   );
 });
 

@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { PRELOADED_AGENTS } from "../catalog/agents.js";
+import { assertJarvisTargetMinutes } from "./targetDuration.js";
 
 const AGENT_ID = "agent-01";
 const JOB_TYPE = "jarvis.content.metadata-thumbnail-plan.v1";
@@ -48,9 +49,8 @@ function validateOutlinePackage(source) {
   const suppliedConcept = publicText(source.suppliedConcept, "METADATA_PLAN_CONCEPT_INVALID", 20, 1200);
   const language = String(source.language || "").toLowerCase();
   if (!LANGUAGES.has(language)) throw new Error("METADATA_PLAN_LANGUAGE_UNSUPPORTED");
-  if (!Number.isInteger(source.targetMinutes) || source.targetMinutes < 25 || source.targetMinutes > 30) {
-    throw new Error("METADATA_PLAN_DURATION_INVALID");
-  }
+  // Issue #262: one canonical planning duration (30 / 40 / 50 minutes).
+  assertJarvisTargetMinutes(source.targetMinutes, "METADATA_PLAN_DURATION_INVALID");
   if (!Array.isArray(source.storyOutline) || source.storyOutline.length !== EXPECTED_BEATS.length) {
     throw new Error("METADATA_PLAN_BEATS_INVALID");
   }

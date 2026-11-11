@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { assertJarvisTargetMinutes } from "./targetDuration.js";
 
 const JARVIS_AGENT_ID = "agent-01";
 const OUTLINE_BEATS = Object.freeze(["hook", "discovery", "escalation", "reversal", "cliffhanger"]);
@@ -39,9 +40,8 @@ function validateOutlinePackage(value) {
   const publicBrand = publicText(value.publicBrand, "JARVIS_OUTLINE_PUBLIC_BRAND_INVALID", 2, 80);
   const suppliedConcept = publicText(value.suppliedConcept, "JARVIS_OUTLINE_CONCEPT_INVALID", 20, 1200);
   if (!new Set(["hindi", "hinglish"]).has(value.language)) throw new Error("JARVIS_OUTLINE_LANGUAGE_UNSUPPORTED");
-  if (!Number.isInteger(value.targetMinutes) || value.targetMinutes < 25 || value.targetMinutes > 30) {
-    throw new Error("JARVIS_OUTLINE_DURATION_INVALID");
-  }
+  // Issue #262: one canonical planning duration (30 / 40 / 50 minutes).
+  assertJarvisTargetMinutes(value.targetMinutes, "JARVIS_OUTLINE_DURATION_INVALID");
   if (!Array.isArray(value.storyOutline) || value.storyOutline.length !== OUTLINE_BEATS.length) {
     throw new Error("JARVIS_OUTLINE_BEATS_INVALID");
   }

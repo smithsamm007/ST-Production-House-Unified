@@ -12,7 +12,7 @@ function outline(overrides = {}) {
     generationMode: "deterministic_local",
     publicBrand: "Raat Ki Awaaz",
     language: "hinglish",
-    targetMinutes: 27,
+    targetMinutes: 30,
     suppliedConcept: "Ek sunsaan pahadi hostel mein band kamre se har raat ghanti sunai deti hai.",
     storyOutline: [
       { beat: "hook", purpose: "Open with an immediate unsettling event grounded in the supplied concept." },
@@ -50,7 +50,7 @@ test("creates a deterministic truthful Hindi/Hinglish 25-30 minute script plan",
   assert.deepEqual(result, replay);
   assert.equal(result.readiness, "script_plan_only");
   assert.equal(result.generationMode, "deterministic_local");
-  assert.equal(result.sections.reduce((sum, section) => sum + section.targetMinutes, 0), 27);
+  assert.equal(result.sections.reduce((sum, section) => sum + section.targetMinutes, 0), 30);
   assert.deepEqual(result.sections.map((section) => section.beat), ["hook", "discovery", "escalation", "reversal", "cliffhanger"]);
   assert.ok(result.sections.every((section) => section.languageStyle === "natural_hinglish"));
   assert.deepEqual(result.providerCalls, []);

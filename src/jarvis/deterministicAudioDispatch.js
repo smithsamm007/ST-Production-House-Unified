@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { PRELOADED_AGENTS } from "../catalog/agents.js";
+import { assertJarvisTargetMinutes } from "./targetDuration.js";
 import { WorkEnvelope } from "../workers/workEnvelope.js";
 
 const AGENT_ID = "agent-01";
@@ -51,9 +52,8 @@ function validateNarrationPlan(source) {
   const publicBrand = safeText(source.publicBrand, "AUDIO_DISPATCH_PUBLIC_BRAND_INVALID", 2, 80);
   const language = String(source.language || "").toLowerCase();
   if (language !== "hindi" && language !== "hinglish") throw new Error("AUDIO_DISPATCH_LANGUAGE_UNSUPPORTED");
-  if (!Number.isInteger(source.targetMinutes) || source.targetMinutes < 25 || source.targetMinutes > 30) {
-    throw new Error("AUDIO_DISPATCH_DURATION_INVALID");
-  }
+  // Issue #262: one canonical planning duration (30 / 40 / 50 minutes).
+  assertJarvisTargetMinutes(source.targetMinutes, "AUDIO_DISPATCH_DURATION_INVALID");
   if (!Array.isArray(source.voiceProfiles) || source.voiceProfiles.length !== 2) throw new Error("AUDIO_DISPATCH_VOICE_PROFILES_INVALID");
   for (const profile of source.voiceProfiles) {
     if (!profile || !VOICE_PROFILES.has(profile.label) || profile.status !== "profile_only" || profile.provider !== null) {
