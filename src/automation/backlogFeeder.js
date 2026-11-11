@@ -260,6 +260,29 @@ export function planPromotions(manifest, state) {
  * Pure: no clocks, no randomness, no GitHub access. Returns a frozen
  * decision: { action, reason, addLabels? }.
  */
+/**
+ * Normalises an observed issue state into this module's vocabulary.
+ *
+ * GitHub emits the state through two different transports: plain REST returns
+ * `open`/`closed`, while the CLI's `--json` output is serialised from GraphQL
+ * and returns `OPEN`/`CLOSED`. A runner that compares the raw value against
+ * lowercase silently stalls the whole promotion loop, because every existing
+ * issue then throws BACKLOG_ISSUE_STATE_INVALID and no slice is ever relabelled
+ * ready again. The vocabulary is the contract, not the transport's casing, so
+ * both spellings are accepted here — and anything that is not a real issue
+ * state (e.g. `reopened`, `merged`, an object) still fails closed.
+ */
+export function normalizeIssueState(value) {
+  if (typeof value !== "string") {
+    throw feederError("BACKLOG_ISSUE_STATE_INVALID");
+  }
+  const state = value.trim().toLowerCase();
+  if (state !== "open" && state !== "closed") {
+    throw feederError("BACKLOG_ISSUE_STATE_INVALID");
+  }
+  return state;
+}
+
 export function classifyExistingIssueForRelabel(slice, issue) {
   requirePlainObject(slice, "BACKLOG_SLICE_INVALID");
   requirePlainObject(issue, "BACKLOG_ISSUE_OBSERVATION_INVALID");
@@ -286,14 +309,14 @@ export function classifyExistingIssueForRelabel(slice, issue) {
   ) {
     throw feederError("BACKLOG_ISSUE_OBSERVATION_INVALID");
   }
-  if (issue.state !== "open" && issue.state !== "closed") {
-    throw feederError("BACKLOG_ISSUE_STATE_INVALID");
-  }
+  // Accept both transport casings (REST `open`, CLI/GraphQL `OPEN`), while
+  // still refusing any value that is not an actual issue state.
+  const state = normalizeIssueState(issue.state);
 
   if (slice.ownerGated) {
     return Object.freeze({ action: "NONE", reason: "OWNER_GATED" });
   }
-  if (issue.state === "closed") {
+  if (state === "closed") {
     return Object.freeze({ action: "NONE", reason: "ISSUE_CLOSED" });
   }
 

@@ -347,6 +347,19 @@ function main() {
     // was closed without merge — return it to the ready queue with a logged,
     // auditable record instead of skipping silently and stalling the loop.
     const observation = observeIssueForRelabel(existing);
+    // Log the raw observation before classifying: if a future failure names
+    // BACKLOG_ISSUE_STATE_INVALID, the run must show which value and which
+    // transport produced it, not just the code.
+    console.log(
+      JSON.stringify({
+        code: "BACKLOG_ISSUE_OBSERVED",
+        sliceId,
+        issue: existing,
+        state: observation.state,
+        labels: observation.labels,
+        referencedByOpenPr: observation.referencedByOpenPr
+      })
+    );
     const decision = classifyExistingIssueForRelabel(slice, observation);
     if (decision.action === "RELABEL_READY") {
       relabelReady(existing, slice.lane);
