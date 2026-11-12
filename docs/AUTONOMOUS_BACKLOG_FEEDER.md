@@ -50,6 +50,12 @@ issues. Two latent first-dispatch failures were also found (missing
    the pure `classifyExistingIssueForRelabel` contract (issue #137), which
    never relabels closed issues, `in-progress`/`blocked` claims, or issues
    referenced by an OPEN pull request (one canonical PR per slice), and
+   normalises the observed state first (`normalizeIssueState`): the CLI emits
+   `OPEN`/`CLOSED` from GraphQL while REST emits `open`/`closed`, and comparing
+   the raw value against lowercase made every relabel decision throw
+   `BACKLOG_ISSUE_STATE_INVALID` and stall the promotion loop. Any value that is
+   not a real issue state still fails closed, and the runner logs the raw
+   observation as `BACKLOG_ISSUE_OBSERVED` before classifying; and
    never relabels owner-gated slices.
 6. **Honest close handling.** On issue close:
    - `completed` → the slice id is appended to `lifecycle.json` (dependents

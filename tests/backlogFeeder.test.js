@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildIssuePayload,
   classifyExistingIssueForRelabel,
+  normalizeIssueState,
   planPromotions,
   validateManifest
 } from "../src/automation/backlogFeeder.js";
@@ -313,4 +314,42 @@ test("relabel: absent PR observation is fail-open to stale-state relabel, malfor
     () => classifyExistingIssueForRelabel(slice, { number: 132, state: "open", labels: [], referencedByOpenPr: "no" }),
     /BACKLOG_ISSUE_OBSERVATION_INVALID/
   );
+});
+
+// The CLI serialises issue state from GraphQL, so `gh issue view --json state`
+// yields OPEN/CLOSED while plain REST yields open/closed. Comparing the raw
+// value against lowercase stalled every relabel decision with
+// BACKLOG_ISSUE_STATE_INVALID, which froze the promotion loop.
+test("relabel: CLI-uppercase state is normalised, never treated as invalid", () => {
+  const slice = manifest().slices[0];
+  const open = classifyExistingIssueForRelabel(slice, {
+    number: 132,
+    state: "OPEN",
+    labels: ["lane-1"],
+    referencedByOpenPr: false
+  });
+  assert.equal(open.action, "RELABEL_READY");
+  assert.deepEqual(open.addLabels, ["ready"]);
+
+  const closed = classifyExistingIssueForRelabel(slice, {
+    number: 132,
+    state: "CLOSED",
+    labels: [],
+    referencedByOpenPr: false
+  });
+  assert.equal(closed.action, "NONE");
+  assert.equal(closed.reason, "ISSUE_CLOSED");
+});
+
+test("normalise: both transport casings map to the contract vocabulary", () => {
+  assert.equal(normalizeIssueState("open"), "open");
+  assert.equal(normalizeIssueState("OPEN"), "open");
+  assert.equal(normalizeIssueState("Closed"), "closed");
+  assert.equal(normalizeIssueState(" CLOSED "), "closed");
+});
+
+test("normalise: anything that is not a real issue state still fails closed", () => {
+  for (const bogus of ["reopened", "merged", "", "   ", null, undefined, 42, {}, []]) {
+    assert.throws(() => normalizeIssueState(bogus), /BACKLOG_ISSUE_STATE_INVALID/);
+  }
 });
