@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { PRELOADED_AGENTS } from "../catalog/agents.js";
+import { assertJarvisTargetMinutes } from "./targetDuration.js";
 
 const AGENT_ID = "agent-01";
 const JOB_TYPE = "jarvis.content.continuity-plan.v1";
@@ -39,9 +40,8 @@ function validateOutline(outline) {
   if (!new Set(["hindi", "hinglish"]).has(outline.language)) {
     throw new Error("JARVIS_CONTINUITY_LANGUAGE_INVALID");
   }
-  if (!Number.isInteger(outline.targetMinutes) || outline.targetMinutes < 25 || outline.targetMinutes > 30) {
-    throw new Error("JARVIS_CONTINUITY_DURATION_INVALID");
-  }
+  // Issue #262: one canonical planning duration (30 / 40 / 50 minutes).
+  assertJarvisTargetMinutes(outline.targetMinutes, "JARVIS_CONTINUITY_DURATION_INVALID");
   const expectedId = hash({ publicBrand, concept: suppliedConcept, language: outline.language, targetMinutes: outline.targetMinutes });
   if (outline.packageId !== expectedId) throw new Error("JARVIS_CONTINUITY_PACKAGE_ID_MISMATCH");
   if (!Array.isArray(outline.storyOutline) || outline.storyOutline.length !== BEATS.length) {

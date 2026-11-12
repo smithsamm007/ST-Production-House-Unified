@@ -14,7 +14,7 @@ async function outline(overrides = {}) {
       publicBrand: "Raat Ki Awaaz",
       concept: "Ek sunsaan pahadi hostel mein band kamre se har raat kisi bachche ki ghanti sunai deti hai.",
       language: "hinglish",
-      targetMinutes: 27,
+      targetMinutes: 30,
       ...overrides,
     },
     heartbeat() {},

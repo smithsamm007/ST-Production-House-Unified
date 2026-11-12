@@ -11,7 +11,7 @@ async function outline(overrides = {}) {
       publicBrand: "Raat Ki Awaaz",
       concept: "Ek sunsaan pahadi hostel mein band kamre se har raat kisi bachche ki ghanti sunai deti hai.",
       language: "hinglish",
-      targetMinutes: 27,
+      targetMinutes: 30,
       ...overrides,
     },
     heartbeat() {},
@@ -28,7 +28,7 @@ test("creates a deterministic narration-only plan from the existing outline cont
   assert.equal(first.readiness, "narration_plan_only");
   assert.equal(first.generationMode, "deterministic_local");
   assert.equal(first.narrationSegments.length, 5);
-  assert.equal(first.narrationSegments.reduce((sum, segment) => sum + segment.plannedDurationSeconds, 0), 27 * 60);
+  assert.equal(first.narrationSegments.reduce((sum, segment) => sum + segment.plannedDurationSeconds, 0), 30 * 60);
   assert.deepEqual(first.voiceProfiles.map((profile) => profile.label), ["indian_male_narrator", "indian_female_narrator"]);
   assert.ok(first.narrationSegments.every((segment) => segment.audioStatus === "not_generated"));
   assert.ok(first.cuePlan.every((cue) => cue.assetReference === null && cue.status === "cue_only"));

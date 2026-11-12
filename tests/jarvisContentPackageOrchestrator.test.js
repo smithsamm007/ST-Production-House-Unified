@@ -45,7 +45,7 @@ function validInput(overrides = {}) {
     publicBrand: "Raat Ek Kahaani",
     suppliedConcept: "A night-shift security guard discovers a sealed record room that hums every full moon night.",
     language: "hinglish",
-    targetMinutes: 26,
+    targetMinutes: 30,
     ...overrides
   };
 }

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { assertJarvisTargetMinutes } from "./targetDuration.js";
 
 const AGENT_ID = "agent-01";
 const JOB_TYPE = "jarvis.content.narration-plan.v1";
@@ -45,9 +46,8 @@ function validateOutlinePackage(source) {
   publicText(source.suppliedConcept, "NARRATION_PLAN_CONCEPT_INVALID", 20, 1200);
   const language = String(source.language || "").toLowerCase();
   if (!LANGUAGES.has(language)) throw new Error("NARRATION_PLAN_LANGUAGE_UNSUPPORTED");
-  if (!Number.isInteger(source.targetMinutes) || source.targetMinutes < 25 || source.targetMinutes > 30) {
-    throw new Error("NARRATION_PLAN_DURATION_INVALID");
-  }
+  // Issue #262: plan exactly the durations the production pipeline & gate use.
+  assertJarvisTargetMinutes(source.targetMinutes, "NARRATION_PLAN_DURATION_INVALID");
   if (!Array.isArray(source.storyOutline) || source.storyOutline.length !== EXPECTED_BEATS.length) {
     throw new Error("NARRATION_PLAN_BEATS_INVALID");
   }

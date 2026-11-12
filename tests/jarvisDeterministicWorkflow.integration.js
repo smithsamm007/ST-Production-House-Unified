@@ -23,7 +23,7 @@ test("PostgreSQL 15 JARVIS deterministic vertical slice", async (t) => {
     const taskId=crypto.randomUUID();const scope={ownerId,agentId:"agent-01"};
     const runtime=new WorkerRuntime({idempotencyStore:new PostgresWorkerResultStore(db,scope)});
     const checkpoints=new CheckpointStore(new PostgresCheckpointAdapter(db,scope));
-    const work={taskId,jobType:"jarvis.content.outline.v1",agentId:"agent-01",payload:{publicBrand:"Raat Ki Awaaz",concept:"Ek purani gaon ki haveli mein baarish ki raat ek band radio bhavishya ki cheekhen sunata hai.",language:"hindi",targetMinutes:27},context:{ownerId}};
+    const work={taskId,jobType:"jarvis.content.outline.v1",agentId:"agent-01",payload:{publicBrand:"Raat Ki Awaaz",concept:"Ek purani gaon ki haveli mein baarish ki raat ek band radio bhavishya ki cheekhen sunata hai.",language:"hindi",targetMinutes:30},context:{ownerId}};
     const first=await runtime.run(work,deterministicJarvisContentHandler,{checkpointStore:checkpoints});
     assert.equal(first.status,"success");assert.equal(first.output.readiness,"outline_only");assert.equal(first.output.providerCalls.length,0);
     const restarted=new WorkerRuntime({idempotencyStore:new PostgresWorkerResultStore(db,scope)});
