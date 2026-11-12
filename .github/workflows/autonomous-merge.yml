@@ -147,9 +147,23 @@ jobs:
             echo "::error::AUTONOMOUS_MERGE_ARM_FAILED pr=$PR_NUMBER head=$HEAD reason=$detail"
             exit 1
           fi
-          armed="$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" --jq '.auto_merge != null')"
-          if [ "$armed" != "true" ]; then
-            echo "::error::AUTONOMOUS_MERGE_NOT_ARMED pr=$PR_NUMBER head=$HEAD — GitHub reports no armed auto-merge for this pull request."
-            exit 1
-          fi
-          echo "AUTONOMOUS_MERGE_ARMED pr=$PR_NUMBER head=$HEAD"
+          # Two outcomes satisfy this gate on the verified head: an armed
+          # auto-merge, or a pull request that is already merged. When the
+          # repository has auto-merge disabled, `gh pr merge --auto` merges
+          # immediately instead of arming a queue entry; failing that case made
+          # a successful merge produce a red gate.
+          for attempt in 1 2 3 4 5 6; do
+            armed="$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" --jq '.auto_merge != null')"
+            if [ "$armed" = "true" ]; then
+              echo "AUTONOMOUS_MERGE_ARMED pr=$PR_NUMBER head=$HEAD"
+              exit 0
+            fi
+            merged="$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" --jq '.merged == true')"
+            if [ "$merged" = "true" ]; then
+              echo "AUTONOMOUS_MERGE_ALREADY_MERGED pr=$PR_NUMBER head=$HEAD attempt=$attempt — no armed auto-merge was available, but this exact head is already merged, so the gate is satisfied."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::AUTONOMOUS_MERGE_NOT_ARMED pr=$PR_NUMBER head=$HEAD — GitHub reports neither an armed auto-merge nor a merged pull request for this head."
+          exit 1

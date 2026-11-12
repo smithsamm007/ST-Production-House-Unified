@@ -157,3 +157,21 @@ checkout:
 - `aws`/`gh` credentials are not available to this checkout, so pull-request
   inventory and run history must be read by the owner or by a token-bearing
   environment.
+
+## When auto-merge cannot be armed
+
+If the repository has auto-merge disabled, `gh pr merge --auto` merges the pull
+request immediately instead of queueing an armed auto-merge. The referee used to
+treat that as `AUTONOMOUS_MERGE_NOT_ARMED` and exit 1 even though the verified
+head had already merged, so a successful merge produced a red gate.
+
+The referee now accepts either outcome **on the verified head**:
+
+- `AUTONOMOUS_MERGE_ARMED` — GitHub reports an armed auto-merge.
+- `AUTONOMOUS_MERGE_ALREADY_MERGED` — the pull request is already merged
+  (auto-merge disabled, or the queue completed before the check).
+
+The failure paths are unchanged: `AUTONOMOUS_MERGE_ARM_FAILED` for a rejected
+merge request, `AUTONOMOUS_MERGE_NOT_ARMED` when there is neither an armed
+auto-merge nor a merged pull request, and `AUTONOMOUS_MERGE_HEAD_MOVED` for a
+head that changed after verification.

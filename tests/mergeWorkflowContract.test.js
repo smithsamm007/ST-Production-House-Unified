@@ -61,6 +61,11 @@ test('the merge referee never promotes a draft or hides a failed merge request',
   );
   assert.match(text, /AUTONOMOUS_MERGE_ARM_FAILED/, 'arm failures need a stable error code');
   assert.match(text, /AUTONOMOUS_MERGE_NOT_ARMED/, 'an unarmed merge must fail loudly');
+  assert.match(
+    text,
+    /AUTONOMOUS_MERGE_ALREADY_MERGED/,
+    'a merge that completes without an armed auto-merge must be accepted, not reported as a failure'
+  );
   assert.match(text, /AUTONOMOUS_MERGE_HEAD_MOVED/, 'a moved head must fail the referee');
 });
 
