@@ -26,7 +26,56 @@ deterministic stages into a single owner-triggered package workflow.
 | 5 | `visual_scene_plan` | `deterministicVisualScenePlanner.js` | `visual_scene_plan_v1` (16:9 + 9:16 scene specs only) |
 | 6 | `shorts_plan` | `deterministicShortsPlan.js` | `shorts_plan_v1` (exactly hook / high-tension / cliffhanger; no ending reveal) |
 | 7 | `metadata_thumbnail_plan` | `deterministicMetadataThumbnailPlan.js` | `metadata_thumbnail_plan` (title/description/hashtag drafts, thumbnail brief) |
-| 8 | `subtitle_plan` | `deterministicSubtitlePlan.js` | `subtitle_plan_v1` (SRT/VTT-ready cues) — **requires owner-supplied timed narration** |
+| 8 | `subtitle_plan` | `deterministicSubtitlePlan.js` | `subtitle_plan_v1` (SRT/VTT-ready cues) — derived from the package's narration script, or owner-supplied segments |
+
+## Duration contract (Issue #262)
+
+Every stage of this chain validates `targetMinutes` against ONE closed set:
+**30 / 40 / 50 minutes** (1800 / 2400 / 3000 s). The set is imported from
+`src/scheduling/directorSchedule.js` through `src/jarvis/targetDuration.js`, so
+a JARVIS plan can never describe a program length the production pipeline and
+its QC gates would refuse to measure. Any other value (including the
+previously accepted 25–30 range, e.g. 27) fails closed with the stage's own
+`*_DURATION_INVALID` code.
+
+## Narration script and measured narration audio (Issue #262)
+
+The orchestrator now resolves ONE narration script per package through
+`src/jarvis/jarvisNarrationScript.js`, which calls the SAME
+duration-aligned builder (`src/pipeline/narrationScript.js`) the production
+pipeline hands to its audio stage. `narrationScript` and
+`narrationScriptStatus` are part of the package result.
+
+- `narrationScriptStatus: "planned"` — a complete script sized to the target.
+  It is deterministic PLANNING text, not editorial output.
+- `narrationScriptStatus: "unavailable_for_language"` — the repository's
+deterministic script builder emits Hindi only, so Hinglish packages keep
+requiring owner-supplied timed narration. Nothing is mislabelled.
+
+When the caller binds `narrationStage` (see
+`src/jarvis/measuredNarration.js`), the complete script is narrated by the
+REAL TTS executor (`src/media/ttsExecutor.js`) and judged by the measured
+completeness gate (`src/media/episodeCompleteness.js`) — the same two
+contracts the production runner uses, with no second executor and no second
+gate. The executor's documented words-per-minute is passed as input; only the
+MEASURED result decides, and this stage does not re-run the production
+runner's calibration loop.
+
+`narrationAudio` is always present and carries one of:
+
+| status | meaning |
+|---|---|
+| `measured_verified` | real provider audio + gate-verified measured coverage |
+| `measured_out_of_window` | real audio, measured rejection (gate reason code + measured seconds) |
+| `not_generated` | provider wait/failure; the executor's own code is kept |
+| `skipped_pending_runtime` | no `narrationStage` bound — nothing was generated |
+| `skipped_pending_input` | no script exists for this language |
+
+`provenance.generatedMediaCount` / `mediaStatus` / `providerCalls` are derived
+from that record; a verified narration is the only path that reports one
+generated medium. A `measured_verified` record is reused from the durable
+`<taskId>#narration_audio` checkpoint, so a restart does not re-call a provider;
+unverified attempts are never cached.
 
 ## Truthfulness boundaries
 
@@ -34,10 +83,13 @@ deterministic stages into a single owner-triggered package workflow.
    `mediaStatus` is `not_generated`. Narration text, audio, images, BGM, and
    rendering require approved free providers (quota-gated) or owner-supplied
    input and are separate future slices.
-2. **No invented narration.** No in-repo stage can synthesize speech. If the
-   caller does not supply `timedNarrationSegments`, the subtitle stage is
-   recorded as `skipped_pending_input` with reason `NARRATION_SEGMENTS_REQUIRED`
-   and a resumable checkpoint — never fabricated text or timings.
+2. **No invented narration.** Subtitle cues are derived from the package's own
+   narration script: contiguous slices of the script's words, with timings
+   labelled `narration_script_planned_seconds` (planned, never measured).
+   Hinglish packages (no script builder exists) still record
+   `skipped_pending_input` / `NARRATION_SEGMENTS_REQUIRED` unless the owner
+   supplies `timedNarrationSegments`; derived cues without a valid `ownerId`
+   record `OWNER_SCOPE_REQUIRED`. No text or timing is ever fabricated.
 3. **No publication.** `publication.status` stays `not_requested` on every stage
    output and on the package; `assertContract` rejects any stage that claims
    otherwise.
@@ -61,6 +113,12 @@ deterministic stages into a single owner-triggered package workflow.
 
 ## Verification
 
+`tests/jarvisTargetDuration.test.js` (Issue #262) covers: the canonical
+30/40/50 set matching the Director schedule options, consistent plans across
+every stage for all three targets, fail-closed non-canonical durations, the
+shared narration script, derived cue provenance (words == script words,
+contiguous planned timings), and the measured narration gate verdicts
+(in-window, short, unmeasurable, provider wait) plus checkpoint reuse.
 `tests/jarvisContentPackageOrchestrator.test.js` covers: the full stage chain,
 deterministic artifact identity across task ids, distinct concepts producing
 distinct outline ids, restart-safe rerun, durable checkpoints for package and
