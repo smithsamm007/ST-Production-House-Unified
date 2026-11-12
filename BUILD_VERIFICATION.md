@@ -225,10 +225,14 @@ Drives the production `createRealMediaRunnerFactory` for ONE Director
 
 ## Issue #264 — durable sanitized rehearsal evidence (offline verification)
 
-- `npm test` — **1514 tests, 1514 passed, 0 failed** on this tree (current main
-  `0b73d94` plus this change). The 5 new evidence-bundle tests cover allowlist
-  copy, path/URL/token scrubbing, required-measurement refusal, invalid-shape
-  codes, and the post-build leak assertion.
+- `npm test` — **1526 tests, 1526 passed, 0 failed** measured on this branch at
+  `f47f40f` (the merge of `main` @ `6a23fe2`; this documentation-only commit
+  follows it and changes no code). The 5 new evidence-bundle tests cover
+  allowlist copy, path/URL/token scrubbing, required-measurement refusal,
+  invalid-shape codes, and the post-build leak assertion.
+- Superseded figure: before that merge the same suite reported 1514/1514 against
+  `main` @ `0b73d94`. That number described the pre-merge tree only and must not
+  be quoted for this branch.
 - `npm run lint` — PASSED · `npm run verify` — exit 0 · `npm run plan:check` —
   `DEVELOPMENT_PLAN_VALID`.
 - The new workflow is registered in `automation/operations/health-manifest.json`,
