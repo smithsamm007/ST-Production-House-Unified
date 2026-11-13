@@ -245,6 +245,66 @@ Drives the production `createRealMediaRunnerFactory` for ONE Director
   against a realistic evidence record and against deliberately leaky input.
 ---
 
+# 2026-11-13 Rehearsal delivery loudness — real QC failure, two-pass fix
+
+Environment: Freebuff cloud worktree · Node v26.13.0 · ffmpeg/ffprobe/espeak-ng:
+NOT installed · Live providers contacted: none · Media generated locally: none ·
+Publishing: none
+
+## What the real run measured
+
+The `Rehearsal Evidence` workflow ran on `main` @ `640ade7`
+([run 43301281602](https://github.com/smithsamm007/ST-Production-House-Unified/actions/runs/43301281602))
+and rendered a real 1800 s episode before the completeness gate rejected it:
+
+```
+REHEARSAL_GATE_FAILED_QC_AUDIO_CLIPPING_DETECTED
+truePeakDbtp 0.14, clippingCount 1, integratedLufs -15.47, audioSeconds 1792.856
+```
+
+## What was actually wrong (traced, not assumed)
+
+The gate was already receiving `measureLoudnessSync(videoPath)` — the delivered
+MP4 — not a pre-normalization measurement. `loudnorm`'s JSON reports
+`input_i`/`input_tp` for the file it measures and `output_i`/`output_tp` for its
+own internal pass to the default -24 LUFS target; only `input_*` describes the
+delivered file. So the file was genuinely over the contract, for two reasons:
+
+1. The normalization was **single-pass dynamic** `loudnorm`, which missed its
+target (-15.47 LUFS against -14.0) and only bounded the peak of the buffer it
+   processed, not of the AAC encode that followed.
+2. The **delivery peak target equalled the QC limit** (-1.0 dBTP), leaving zero
+   headroom, so AAC intersample overshoot pushed the deliverable to +0.14 dBTP.
+
+## What changed
+
+- `src/media/loudnessNormalization.js` (new) — `buildMeasuredNormalizationFilter`
+  (two-pass linear `loudnorm`), `requiresCorrectiveNormalization`,
+  `selectGateLoudness`, plus the contract constants: QC stays
+  `QC_MAX_TRUE_PEAK_DBTP = -1.0`, delivery aims at `-2.5` dBTP.
+- `scripts/real_media_rehearsal.mjs` — two-pass normalization, delivery headroom,
+  one corrective re-normalize + remux (`-c:v copy`) if the encoded file still
+  breaches the contract, and the gate fed through `selectGateLoudness`.
+- `tests/loudnessNormalization.test.js` (new) — pins that the gate receives the
+  delivered-file measurement and never a pre-normalization value, that the
+  applying pass is linear and measurement-driven, and that headroom sits below
+  the QC limit.
+
+**The QC contract was not relaxed.** The gate still rejects anything above
+-1.0 dBTP; only the delivery target gained headroom.
+
+## Verification
+
+- `npm test` — **1535 tests, 1535 passed, 0 failed** (1529 before + 6 new).
+- `npm run lint` — PASSED · `npm run verify` — exit 0 · `npm run plan:check` —
+  `DEVELOPMENT_PLAN_VALID`.
+- **Not run here:** the encoder itself. This worktree has no ffmpeg, so the
+  aural proof must come from re-dispatching `Rehearsal Evidence`. No retained
+  artifact exists yet and the two-pass behaviour is unverified until that run
+  reports `REHEARSAL_COMPLETE`.
+
+---
+
 # 2026-11-07 Issue #262 — JARVIS 30/40/50-minute unification (offline)
 
 Environment: Freebuff cloud worktree · Node v26.13.0 · ffmpeg/ffprobe: NOT

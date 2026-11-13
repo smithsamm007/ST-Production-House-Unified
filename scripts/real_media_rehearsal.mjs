@@ -8,7 +8,9 @@
  *   deterministic narration script (labelled planning text)
  *     → REAL speech synthesis (espeak-ng, local open-source emergency provider)
  *     → rate auto-calibration against REAL measured durations
- *     → REAL audio loudness normalization pass (ffmpeg loudnorm -> -14 LUFS / -1 dBTP)
+ *     → REAL two-pass audio loudness normalization (ffmpeg loudnorm, linear
+ *       applying pass -> -14 LUFS / -2.5 dBTP delivery headroom; the published
+ *       QC contract stays -1 dBTP and is never relaxed to make a render pass)
  *     → REAL ffmpeg assembly (1920x1080 16:9 main video + 1080x1920 9:16 brand promo Reel)
  *     → REAL ffprobe inspection & ebur128/loudnorm loudness analysis of RENDERED files
  *       → evaluateEpisodeCompleteness (S-M41-01, S-M43-01 audio-coverage & technical QC)
@@ -36,7 +38,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { buildNarrationScript } from "../src/pipeline/narrationScript.js";
@@ -46,11 +48,22 @@ import {
   parseStreamTechnicalProperties,
 } from "../src/media/episodeCompleteness.js";
 import { parseLoudnormOutput } from "../src/media/mediaInspectionRunner.js";
+import {
+  DELIVERY_TARGET_LUFS,
+  DELIVERY_TRUE_PEAK_HEADROOM_DBTP,
+  QC_MAX_TRUE_PEAK_DBTP,
+  buildMeasuredNormalizationFilter,
+  requiresCorrectiveNormalization,
+  selectGateLoudness,
+} from "../src/media/loudnessNormalization.js";
 
 const OUT_ROOT = "artifacts/rehearsal";
 const MAX_CALIBRATION_ATTEMPTS = 4;
-const TARGET_LUFS = -14.0;
-const MAX_TRUE_PEAK_DBTP = -1.0;
+const TARGET_LUFS = DELIVERY_TARGET_LUFS;
+// The published QC contract (unchanged): the delivered file must not exceed it.
+const MAX_TRUE_PEAK_DBTP = QC_MAX_TRUE_PEAK_DBTP;
+// What the delivery pass aims for, leaving headroom for the AAC encode.
+const NORMALIZATION_TRUE_PEAK_DBTP = DELIVERY_TRUE_PEAK_HEADROOM_DBTP;
 const REQUIRED_SAMPLE_RATE = 48000;
 const BRAND_REEL_SECONDS = 30;
 
@@ -86,21 +99,71 @@ function measureLoudnessSync(filePath) {
   return parseLoudnormOutput(stderr);
 }
 
-function normalizeAudioSync({ inputPath, outputPath, targetLufs = TARGET_LUFS, maxTruePeak = MAX_TRUE_PEAK_DBTP }) {
+/**
+ * One corrective pass for a delivered file whose encoded audio still breaches
+ * the QC true peak: extract the real audio, two-pass normalize it to the
+ * delivery target, and remux it over the original (video stream copied, never
+ * re-encoded, so the measured picture properties are untouched).
+ */
+function applyCorrectiveNormalization({ videoPath }) {
+  const dir = path.dirname(videoPath);
+  const extractedPath = path.join(dir, "delivered_audio.wav");
+  const correctedPath = path.join(dir, "delivered_audio_normalized.wav");
+  const remuxedPath = path.join(dir, "episode_corrected.mp4");
+  execFileSync(
+    "ffmpeg",
+    ["-y", "-v", "error", "-i", videoPath, "-vn", "-acodec", "pcm_s16le", extractedPath],
+    { stdio: ["ignore", "ignore", "inherit"] }
+  );
+  const correctedLoudness = normalizeAudioSync({
+    inputPath: extractedPath,
+    outputPath: correctedPath,
+    targetLufs: TARGET_LUFS,
+    maxTruePeak: NORMALIZATION_TRUE_PEAK_DBTP,
+  });
+  execFileSync(
+    "ffmpeg",
+    [
+      "-y", "-v", "error",
+      "-i", videoPath,
+      "-i", correctedPath,
+      "-map", "0:v:0", "-map", "1:a:0",
+      "-c:v", "copy",
+      "-c:a", "aac", "-b:a", "128k", "-ar", String(REQUIRED_SAMPLE_RATE),
+      "-shortest",
+      remuxedPath,
+    ],
+    { stdio: ["ignore", "ignore", "inherit"] }
+  );
+  renameSync(remuxedPath, videoPath);
+  return { correctedLoudness, extractedPath, correctedPath };
+}
+
+function normalizeAudioSync({ inputPath, outputPath, targetLufs = TARGET_LUFS, maxTruePeak = NORMALIZATION_TRUE_PEAK_DBTP }) {
+  // TWO-PASS loudnorm. The single-pass dynamic pass used before measured
+  // -15.47 LUFS against a -14.0 target and only bounded the peak of the buffer
+  // it processed, so the AAC-encoded deliverable later measured +0.14 dBTP.
+  // Pass 1 measures the real input; pass 2 applies a linear filter from those
+  // measurements.
+  const inputMeasured = measureLoudnessSync(inputPath);
+  const filter = buildMeasuredNormalizationFilter({ targetLufs, maxTruePeak, measured: inputMeasured });
   execFileSync(
     "ffmpeg",
     [
       "-y", "-v", "error",
       "-i", inputPath,
-      "-af", `loudnorm=I=${targetLufs}:TP=${maxTruePeak}:LRA=7`,
+      "-af", filter,
       "-ar", String(REQUIRED_SAMPLE_RATE),
       outputPath,
     ],
     { stdio: ["ignore", "ignore", "inherit"] }
   );
   const measured = measureLoudnessSync(outputPath);
-  if (measured.clippingCount > 0 || measured.truePeakDbtp > 0.0) {
-    fail("REHEARSAL_LOUDNORM_CLIPPING", `Normalized audio clipped: true peak ${measured.truePeakDbtp} dBTP`);
+  if (measured.truePeakDbtp > maxTruePeak + 0.1) {
+    fail(
+      "REHEARSAL_LOUDNORM_CLIPPING",
+      `Normalized audio missed its delivery peak target: true peak ${measured.truePeakDbtp} dBTP over target ${maxTruePeak} dBTP`,
+    );
   }
   if (Math.abs(measured.integratedLufs - targetLufs) > 2.0) {
     fail("REHEARSAL_LOUDNORM_TARGET_MISSED", `Normalized audio LUFS ${measured.integratedLufs} missed target ${targetLufs}`);
@@ -212,8 +275,21 @@ function main() {
   const longformInspection = probeFile(videoPath);
   const brandReelInspection = probeFile(brandReelPath);
 
-  // Real loudness measurements of assembled outputs
-  const longformLoudness = measureLoudnessSync(videoPath);
+  // Real loudness measurements of the DELIVERED files. This is the only
+  // measurement the completeness gate may see: the raw synthesis and the
+  // normalized WAV are evidence about inputs, not about what was delivered.
+  let longformLoudness = measureLoudnessSync(videoPath);
+  let correctivePass = null;
+  if (requiresCorrectiveNormalization(longformLoudness, MAX_TRUE_PEAK_DBTP)) {
+    console.log(JSON.stringify({
+      code: "REHEARSAL_CORRECTIVE_NORMALIZATION",
+      measuredTruePeakDbtp: longformLoudness.truePeakDbtp,
+      qcMaxTruePeakDbtp: MAX_TRUE_PEAK_DBTP,
+      deliveryTargetDbtp: NORMALIZATION_TRUE_PEAK_DBTP,
+    }));
+    correctivePass = applyCorrectiveNormalization({ videoPath });
+    longformLoudness = measureLoudnessSync(videoPath);
+  }
   const brandReelLoudness = measureLoudnessSync(brandReelPath);
 
   // Conformance gate on long-form
@@ -224,7 +300,11 @@ function main() {
     expectedHeight: 1080,
     expectedAspectRatio: "16:9",
     requiredSampleRate: REQUIRED_SAMPLE_RATE,
-    loudness: longformLoudness,
+    loudness: selectGateLoudness({
+      assembled: longformLoudness,
+      rawSpeech: rawSpeechLoudness,
+      normalizedSpeech: normSpeechLoudness,
+    }),
     targetLufs: TARGET_LUFS,
     maxTruePeakDbtp: MAX_TRUE_PEAK_DBTP,
   });
@@ -275,9 +355,16 @@ function main() {
       settledMeasuredAudioSeconds: Number(calibration.measuredSeconds.toFixed(3)),
     },
     loudnessNormalization: {
-      pass: "real ffmpeg loudnorm pass (-af loudnorm=I=-14:TP=-1.0:LRA=7 -ar 48000)",
+      pass: "real two-pass ffmpeg loudnorm (measuring pass, then a linear applying pass using measured_I/measured_TP/measured_LRA/measured_thresh), delivery target -14 LUFS / -2.5 dBTP for AAC headroom, 48 kHz",
       targetIntegratedLufs: TARGET_LUFS,
-      maxTruePeakDbtp: MAX_TRUE_PEAK_DBTP,
+      deliveryTruePeakDbtp: NORMALIZATION_TRUE_PEAK_DBTP,
+      qcMaxTruePeakDbtp: MAX_TRUE_PEAK_DBTP,
+      correctivePassApplied: correctivePass !== null,
+      deliveredFile: {
+        integratedLufs: longformLoudness.integratedLufs,
+        truePeakDbtp: longformLoudness.truePeakDbtp,
+        clippingCount: longformLoudness.clippingCount,
+      },
       rawSpeech: {
         integratedLufs: rawSpeechLoudness.integratedLufs,
         truePeakDbtp: rawSpeechLoudness.truePeakDbtp,
@@ -376,6 +463,9 @@ function main() {
     audioCoverageRatio: longformVerdict.audioCoverageRatio,
     measuredLongformLufs: longformLoudness.integratedLufs,
     measuredLongformTruePeak: longformLoudness.truePeakDbtp,
+    qcMaxTruePeakDbtp: MAX_TRUE_PEAK_DBTP,
+    deliveryTruePeakDbtp: NORMALIZATION_TRUE_PEAK_DBTP,
+    correctivePassApplied: correctivePass !== null,
     measuredBrandReelLufs: brandReelLoudness.integratedLufs,
     measuredBrandReelTruePeak: brandReelLoudness.truePeakDbtp,
     longformResolution: `${longformTechnical.video.width}x${longformTechnical.video.height}`,
