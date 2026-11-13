@@ -504,19 +504,28 @@ test("an unconfigured OAuth custody fails honestly at 503 with zero network call
   assert.equal(check.release.status, "review", "release stays in review after the honest failure");
 });
 
-test("non-YouTube destinations keep the original intent-recording behavior", async () => {
-  const release = await createRelease(channelIntent, "Intent Only Fixture");
+test("a destination without a wired release publisher is refused, never marked published", async () => {
+  const release = await createRelease(channelIntent, "Unwired Platform Fixture");
   await moveReleaseToReview(release.id);
+  const evidenceBefore = await evidenceJson();
 
   const before = publishCalls.length;
-  const res = await postPublish(release.id, { destinationId: destFacebook }).expect(200);
-  assert.equal(res.body.production.status, "published");
+  const res = await postPublish(release.id, { destinationId: destFacebook }).expect(501);
+  assert.equal(res.body.error, "PUBLISH_PLATFORM_NOT_WIRED");
+  assert.equal(res.body.platform, "facebook");
   assert.equal(res.body.receipt, undefined,
     "no platform receipt is ever claimed without a platform call (R1)");
-  assert.equal(publishCalls.length, before, "intent recording performs zero network calls");
+  assert.equal(publishCalls.length, before, "a refusal performs zero network calls");
+
+  const after = await getProduction(release.id);
+  assert.equal(after.release.status, "review",
+    "a refused publish must not move the release out of review (Rules 1/2)");
 
   const evidence = await evidenceJson();
-  assert.ok(evidence.includes("publish_intent_recorded"), "intent evidence is recorded");
+  assert.ok(!evidence.includes("publish_intent_recorded"),
+    "an intent is never recorded as a substitute for a publication");
+  assert.equal(evidence.length, evidenceBefore.length,
+    "a refused publish appends no publishing evidence");
 });
 
 test("selectMainUploadArtifact picks the newest verified assembly video and fails closed otherwise", () => {

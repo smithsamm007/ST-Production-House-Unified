@@ -70,6 +70,31 @@ boundary — the built-in secret-manager adapters are configured with:
   `STPH_<PROVIDER>_OAUTH_CLIENT_SECRET` (exact names from
   `src/catalog/socialOAuthProviders.js`).
 
+## Release publish route: unwired platforms are refused
+
+`POST /api/productions/:id/publish` has exactly one wired release publisher:
+`youtube` (release → verified assembly artifact → durable approval bound to the
+artifact hash → private upload → receipt). Every other destination
+(`instagram`, `facebook`, `snapchat`, `bilibili`) has **no release publisher
+bound on this route**, and the route says so instead of pretending:
+
+| Outcome | Response |
+|---|---|
+| Destination has a wired publisher and the upload succeeds | `200` + `receipt`; release → `published` |
+| Destination unwired | `501 PUBLISH_PLATFORM_NOT_WIRED` + `platform`; release **stays** `review` |
+
+A refusal writes one `production_publish_rejected` audit row (outcome
+`platform_not_wired`) and no publishing evidence: no receipt, no
+`publish_intent_recorded`, no pipeline `complete` event, zero network calls.
+
+This route previously recorded a publish "intent" and flipped the release to
+`published` for those platforms, which asserted a publication that never
+occurred (Rules 1/2/7). Recording intent was not a substitute for publishing.
+
+For a real private-first platform test on a wired deployment, use
+`POST /ops/publishing/:agentId/private-test`, where the destination publisher
+must return a genuine receipt or the request fails closed (§4 above).
+
 ## What is NOT proven here (honest scope)
 
 - No live platform upload, no public publishing, no real receipts: live

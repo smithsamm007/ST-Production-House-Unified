@@ -245,6 +245,55 @@ Drives the production `createRealMediaRunnerFactory` for ONE Director
   against a realistic evidence record and against deliberately leaky input.
 ---
 
+# 2026-11-13 Release publish honesty — unwired platforms are refused, not "published"
+
+Environment: Freebuff cloud worktree · Node v26.13.0 · PostgreSQL: not used by
+this change (in-memory storage path) · Live providers contacted: none ·
+Uploads: none
+
+## What was wrong
+
+`POST /api/productions/:id/publish` handled only `youtube` for real. Every other
+destination fell through to an "intent" branch that called
+`updateReleaseStatus(..., "published")`, wrote a `complete`-stage pipeline event
+with `publishIntentRecorded: true`, and appended a `publish_intent_recorded`
+evidence row — then returned `200` with `production.status === "published"`
+while performing no platform call and producing no receipt.
+
+The API therefore reported a publication that never happened (Rules 1, 2, 7).
+The prior test suite ENCODED that behaviour as correct
+("non-YouTube destinations keep the original intent-recording behavior").
+
+## What changed
+
+- `src/catalog/server.js` — the fallthrough branch is now a refusal:
+  `501 PUBLISH_PLATFORM_NOT_WIRED` with `platform`, one
+  `production_publish_rejected` audit row (outcome `platform_not_wired`), no
+  receipt, no publishing evidence, no status change. The release stays
+  `review` and remains publishable once a real publisher exists.
+- `tests/youtubePublishRoute.test.js` — the misleading test is replaced by one
+  that asserts the refusal, that no network call occurs, that the release is
+  still `review`, and that no `publish_intent_recorded` evidence is appended.
+- `docs/publishing/CROSS_PLATFORM_PUBLISHING_E2E.md` — documents the route's
+  two real outcomes and points at `/ops/publishing/:agentId/private-test` for a
+  genuine private-first platform test.
+
+No status enum changed (R5): the published/unpublished vocabulary is untouched
+and no migration was needed, because refusing is more honest than inventing a
+state that still means "not published".
+
+## Verification
+
+- Focused: `tests/youtubePublishRoute.test.js` 13/13 pass.
+- Mutation check: restoring the old fallthrough branch makes the new test fail
+  (1 test, 0 pass, 1 fail); the new branch passes again.
+- Full gates recorded in the PR body: `npm test`, `npm run lint`,
+  `npm run verify`, `npm run plan:check`.
+- **Not verified here:** any live platform upload for these destinations, which
+  remains owner-gated (#118) and unreachable from this change.
+
+---
+
 # 2026-11-13 Real-media worker startup — async runner factory was not awaited
 
 Environment: Freebuff cloud worktree · Node v26.13.0 · PostgreSQL: not used by
