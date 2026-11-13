@@ -35,6 +35,8 @@ import { setSocialOAuthRuntime } from "./socialOAuthService.js";
 import { executeYouTubePublish } from "../publishing/youtubePublishExecution.js";
 import { createHermesRouter } from "../api/hermesRouter.js";
 import { createDirectorScheduleRouter } from "../api/directorScheduleRouter.js";
+import { createCanonicalDirectorRouter } from "./canonicalDirectorServer.js";
+import { enforceOperationalActive } from "./canonicalDirectorLifecycle.js";
 import { DirectorScheduleRepository } from "./scheduleRepository.js";
 import {
   createBackgroundSchedulerTrigger,
@@ -1115,6 +1117,18 @@ app.post("/api/productions", authenticateOwner, requireCsrf, async (req, release
       return releaseEpRes.status(409).json({ error: "AGENT_DISABLED" });
     }
 
+    // Canonical lifecycle (retirement) enforcement: the authoritative production-
+    // eligibility state is the Director's canonical mapping (sql/032), not only the
+    // row-level enabled flag. A retired or suspended Director cannot queue work.
+    try {
+      await enforceOperationalActive(postgres, channel.agentId);
+    } catch (err) {
+      if (err?.code === "CANONICAL_DIRECTOR_NOT_ACTIVE") {
+        return releaseEpRes.status(409).json({ error: "CANONICAL_DIRECTOR_NOT_ACTIVE" });
+      }
+      throw err;
+    }
+
     // The Director's configured episode duration is stamped on the queued job
     // (sql/029) so the pipeline renders and QC-checks the configured length.
     let directorSchedule = null;
@@ -1759,8 +1773,20 @@ app.use("/api/social", authenticateOwner, createSocialOAuthRouter({
 // Hermes manager command center (Issue #166): auditable decision layer.
 // Decision authority without secret access — the evidence lookup below is
 // the only bridge to the ledger, returning a found/verified boolean only.
+// Canonical Director registry lifecycle (Phase 2): the single authoritative
+// lifecycle state for the ten canonical Directors, with the active-only cap.
+app.use("/api/canonical-directors", authenticateOwner, createCanonicalDirectorRouter({
+  db: () => postgres,
+  recordAuditEvent,
+}));
+
 app.use("/api/hermes", authenticateOwner, createHermesRouter({
   recordAuditEvent,
+  // Phase 2C: the manager and its execution bridge both consult the canonical
+  // Director mapping before any production work is queued.
+  canonicalGuard: {
+    assertActive: (agentId) => enforceOperationalActive(postgres, agentId),
+  },
   // Durable decision store (Issue #172): PostgresHermesDecisionStore over
   // sql/023 — lazy adapter resolution; honest 503 before configureRuntime.
   db: () => postgres,

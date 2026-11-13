@@ -32,6 +32,7 @@ import {
 } from "../manager/hermesManager.js";
 import { PostgresHermesDecisionStore } from "../manager/postgresHermesDecisionStore.js";
 import { createHermesJobBridge } from "../manager/hermesJobBridge.js";
+import { enforceOperationalActive } from "../catalog/canonicalDirectorLifecycle.js";
 import {
   HERMES_AUTHORITY_MATRIX,
   AUTHORITY_AUTONOMOUS,
@@ -77,6 +78,10 @@ export function createHermesRouter({
   // persisted schedule (sql/029) before production is queued, so Hermes plans
   // against the owner's configured episode duration and daily target.
   directorScheduleProvider = null,
+  // Phase 2C: canonical lifecycle guard for production-originating decisions and
+  // for the execution bridge. Optional (null) so the demo/test transports keep
+  // their behaviour; the sql/032 triggers still enforce the rule in the database.
+  canonicalGuard = null,
 } = {}) {
   // Durable store (Issue #172): PostgresHermesDecisionStore over sql/023 when
   // a db adapter is injected. WITHOUT a db the router degrades HONESTLY — it
@@ -149,6 +154,24 @@ export function createHermesRouter({
     try {
       if (!hasOnlyFields(req.body, ["action", "directorId", "category", "reason", "payload", "credentialRequest", "ownerApproval"])) {
         return res.status(400).json({ error: "REQUEST_VALIDATION_FAILED" });
+      }
+      // Retirement enforcement (Phase 2C): a production-originating decision may
+      // not name a retired or suspended canonical Director — refused before any
+      // decision record is written.
+      if (req.body?.category === "production" &&
+          typeof req.body?.action === "string" &&
+          req.body.action.startsWith("production.")) {
+        try {
+          await enforceOperationalActive(
+            typeof db === "function" ? db() : db,
+            req.body.directorId
+          );
+        } catch (err) {
+          if (err?.code === "CANONICAL_DIRECTOR_NOT_ACTIVE") {
+            return res.status(409).json({ error: "CANONICAL_DIRECTOR_NOT_ACTIVE" });
+          }
+          throw err;
+        }
       }
       const decision = await requireManager().decide(req.body);
       if (typeof recordAuditEvent === "function") {
@@ -241,6 +264,7 @@ export function createHermesRouter({
         production: typeof productionRepository === "function" ? productionRepository() : productionRepository,
         evidence: evidenceLedger,
         directorScheduleProvider,
+        canonicalGuard,
       });
       const result = await bridge(manager, req.ownerId, Number.parseInt(req.params.decisionNumber, 10));
       if (typeof recordAuditEvent === "function" && result.status === "QUEUED") {

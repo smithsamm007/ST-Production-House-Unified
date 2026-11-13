@@ -42,6 +42,7 @@ import {
   directorScheduleDto,
   validateDirectorScheduleInput,
 } from "../scheduling/directorSchedule.js";
+import { enforceOperationalActive } from "../catalog/canonicalDirectorLifecycle.js";
 import {
   DEFAULT_LOOKBACK_DAYS,
   DEFAULT_MAX_CONCURRENT_JOBS_PER_DIRECTOR,
@@ -286,6 +287,24 @@ export function createDirectorScheduleRouter({
       if (!(await agentExists(agentId))) return res.status(404).json({ error: "AGENT_NOT_FOUND" });
       const repo = getRepo();
       const existing = await repo.getScheduleRow(req.ownerId, agentId);
+
+      // Retirement enforcement (Phase 2C): an ENABLED schedule is a standing
+      // production commitment, so a retired/suspended canonical Director cannot
+      // create or keep one enabled. Disabling stays allowed so an owner can
+      // always stand work down.
+      const enabling = req.body?.scheduleEnabled === undefined
+        ? existing?.schedule_enabled === true
+        : req.body.scheduleEnabled === true;
+      if (enabling) {
+        try {
+          await enforceOperationalActive(resolveDb(), agentId);
+        } catch (err) {
+          if (err?.code === "CANONICAL_DIRECTOR_NOT_ACTIVE") {
+            return res.status(409).json({ error: "CANONICAL_DIRECTOR_NOT_ACTIVE" });
+          }
+          throw err;
+        }
+      }
       const base = existing
         ? {
             episodeDurationSeconds: Number(existing.episode_duration_seconds),

@@ -98,7 +98,16 @@ export function validateProductionStartPayload(payload) {
  *               persisted schedule (sql/029). Injected so this layer performs
  *               no I/O of its own; a thrown error fails the decision closed.
  */
-export function createHermesJobBridge({ production, evidence, audit, directorScheduleProvider = null } = {}) {
+export function createHermesJobBridge({
+  production,
+  evidence,
+  audit,
+  directorScheduleProvider = null,
+  // Phase 2C: canonical Director lifecycle guard ({ assertActive(agentId) } or
+  // null). Optional so the demo/test transports keep working; when wired, a
+  // retired or suspended canonical Director can never have production queued.
+  canonicalGuard = null,
+} = {}) {
   if (!production || typeof production.createReleaseWithJob !== "function" ||
       typeof production.getChannel !== "function") {
     throw fail("HERMES_BRIDGE_PRODUCTION_REPO_REQUIRED");
@@ -162,6 +171,18 @@ export function createHermesJobBridge({ production, evidence, audit, directorSch
     }
     if (channel.agentEnabled === false) {
       return recordFailure("AGENT_DISABLED");
+    }
+    // Canonical lifecycle (retirement) enforcement: the authoritative state is the
+    // Director's canonical mapping, not just the row-level enabled flag.
+    if (canonicalGuard && typeof canonicalGuard.assertActive === "function") {
+      try {
+        await canonicalGuard.assertActive(channel.agentId);
+      } catch (err) {
+        if (err?.code === "CANONICAL_DIRECTOR_NOT_ACTIVE") {
+          return recordFailure("CANONICAL_DIRECTOR_NOT_ACTIVE");
+        }
+        throw err;
+      }
     }
     // Tenant isolation (Rule 5): the decision's director must OWN the
     // channel it is queueing work for.

@@ -30,6 +30,7 @@
 
 import { Router } from "express";
 import { verifyCsrfToken } from "../catalog/ownerAuthentication.js";
+import { enforceOperationalActive } from "../catalog/canonicalDirectorLifecycle.js";
 import {
   DirectorConnectionsRepository,
   runConnectionTest,
@@ -156,6 +157,17 @@ export function createDirectorConnectionsRouter({ db, recordAuditEvent }) {
       const { providerKey, kind, secretFields, configFields, credentialLabel } = req.body;
       if (typeof providerKey !== "string" || !PROVIDER_KEY_PATTERN.test(providerKey)) {
         return res.status(400).json({ error: "PROVIDER_KEY_INVALID" });
+      }
+      // Retirement enforcement (Phase 2C): binding a new credential is new
+      // operational state, so a retired or suspended canonical Director cannot
+      // create one. Reads and deletes stay available.
+      try {
+        await enforceOperationalActive(resolveDb(), req.params.agentId);
+      } catch (err) {
+        if (err?.code === "CANONICAL_DIRECTOR_NOT_ACTIVE") {
+          return res.status(409).json({ error: "CANONICAL_DIRECTOR_NOT_ACTIVE" });
+        }
+        throw err;
       }
       const connection = await getRepo().upsertConnection(req.ownerId, req.params.agentId, {
         providerKey,
