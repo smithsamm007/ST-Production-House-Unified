@@ -276,8 +276,15 @@ leased queue stayed idle while the process reported healthy.
 
 ## Verification
 
-- Focused: 3/3 pass. Mutation check: removing the `await` fails the call-site
-  test (2/3), and restoring it passes again — the test detects the exact defect.
+- Focused: 1/1 pass. Mutation check: removing the `await` fails that same test
+  (0/1 pass), and restoring it passes again — it detects the exact defect.
+- The test file was reduced to that single assertion. It is a source assertion
+  because the binding lives inside `finalizeRuntimeStartup`, whose worker branch
+  only runs when PostgreSQL storage is configured, so there is no offline call
+  path to exercise. Two earlier behavioural tests were removed: they passed
+  whether or not the `await` was present (they exercised `ProductionWorkerLoop`'s
+  own `WORKER_EXECUTOR_RUNNER_FACTORY_INVALID` validation, which is not what
+  regressed), so they documented the consequence without detecting the defect.
 - Full gates recorded below in the PR body: `npm test`, `npm run lint`,
   `npm run verify`, `npm run plan:check`.
 - **Not verified here:** a live worker run against PostgreSQL with real media
