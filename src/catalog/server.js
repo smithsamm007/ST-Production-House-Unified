@@ -1281,8 +1281,14 @@ function statusForPublishUploadError(code) {
  * the body cannot request public. Unconfigured custody fails closed (503) —
  * intent is never recorded as a substitute for a real upload.
  *
- * Other platforms keep the original intent-recording behavior (their
- * official integrations are later slices).
+ * Other platforms are NOT wired on this release route. There is no official
+ * publisher bound here for them, so the route REFUSES the request with
+ * `501 PUBLISH_PLATFORM_NOT_WIRED` and leaves the release in `review`.
+ * It previously recorded an "intent" and flipped the release to `published`,
+ * which claimed a publication that never happened (Rules 1/2/7). The honest
+ * private-first test for those platforms lives on
+ * `POST /ops/publishing/:agentId/private-test`, where a real publisher must
+ * return a genuine receipt.
  */
 app.post("/api/productions/:id/publish", authenticateOwner, requireCsrf, async (req, res) => {
   try {
@@ -1381,23 +1387,23 @@ app.post("/api/productions/:id/publish", authenticateOwner, requireCsrf, async (
       });
     }
 
-    // ---- Other platforms: original intent-recording behavior (unchanged).
-    const published = await repo.updateReleaseStatus(req.ownerId, req.params.id, "published");
-    await repo.recordPipelineEvent({
+    // ---- Other platforms: no release publisher is wired here. Refuse rather
+    // than record an "intent" and mark the release published: that claimed a
+    // publication which never occurred (Rules 1/2/7). The release is left
+    // untouched, so it can still be published once a real integration exists.
+    await recordAuditEvent(req.ownerId, "production_publish_rejected", {
       releaseId: req.params.id,
-      ownerId: req.ownerId,
-      stage: "complete",
-      status: "succeeded",
-      detail: { publishIntentRecorded: true, destinationId: destination.id, platform: destination.platform },
+      destinationId: destination.id,
+      platform: destination.platform,
+      outcome: "platform_not_wired",
+      errorCode: "PUBLISH_PLATFORM_NOT_WIRED",
     });
-    await evidenceRepo.append({
-      subjectId: req.params.id,
-      kind: "publish_intent_recorded",
-      classification: "owner_authorized_publish_intent",
-      payload: { destinationId: destination.id, platform: destination.platform },
+    return res.status(501).json({
+      error: "PUBLISH_PLATFORM_NOT_WIRED",
+      platform: destination.platform,
+      message:
+        "No release publisher is wired for this platform; nothing was published and the release is unchanged.",
     });
-    await recordAuditEvent(req.ownerId, "production_publish_recorded", { releaseId: req.params.id, destinationId: destination.id });
-    return res.json({ production: published, destination: { id: destination.id, platform: destination.platform, handle: destination.handle } });
   } catch (err) {
     logInternalError("PRODUCTION_PUBLISH_FAILED", err);
     return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
