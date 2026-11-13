@@ -390,7 +390,11 @@ export async function finalizeRuntimeStartup() {
         await mkdir(mediaPaths.motion, { recursive: true });
         await mkdir(mediaPaths.episode, { recursive: true });
         await mkdir(mediaPaths.thumbnail, { recursive: true });
-        executorRunnerFactory = createRealMediaRunnerFactory({ bindProductionRunner, transports, mediaPaths });
+        // The factory resolves per-Director governed provider capacity, so it is
+        // async: without the await this variable holds a Promise, which
+        // ProductionWorkerLoop rejects as WORKER_EXECUTOR_RUNNER_FACTORY_INVALID
+        // and the worker never starts (observed as WORKER_START_FAILED).
+        executorRunnerFactory = await createRealMediaRunnerFactory({ bindProductionRunner, transports, mediaPaths });
       }
       if (localMotionEnabled() && process.env.STPH_ENABLE_REAL_MEDIA !== "1") {
         console.warn(
