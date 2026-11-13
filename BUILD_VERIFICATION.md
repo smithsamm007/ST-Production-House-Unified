@@ -245,6 +245,46 @@ Drives the production `createRealMediaRunnerFactory` for ONE Director
   against a realistic evidence record and against deliberately leaky input.
 ---
 
+# 2026-11-13 Real-media worker startup — async runner factory was not awaited
+
+Environment: Freebuff cloud worktree · Node v26.13.0 · PostgreSQL: not used by
+this change · Live providers contacted: none · Media generated: none
+
+## What was wrong
+
+`src/catalog/server.js` bound the real-media runner factory without `await`:
+
+```js
+executorRunnerFactory = createRealMediaRunnerFactory({ ... }); // Promise, not a function
+```
+
+`createRealMediaRunnerFactory` is `async` because it resolves per-Director
+governed provider capacity at binding time. `ProductionWorkerLoop` accepts only
+`null` or a function (`src/pipeline/workerLoop.js:54`), so the constructor threw
+`WORKER_EXECUTOR_RUNNER_FACTORY_INVALID` inside the startup `try`, which
+`logInternalError("WORKER_START_FAILED", ...)` swallowed. The observable effect:
+with `STPH_ENABLE_REAL_MEDIA=1` **no production worker started at all** and the
+leased queue stayed idle while the process reported healthy.
+
+## What changed
+
+- `src/catalog/server.js` — `await createRealMediaRunnerFactory(...)`, with a
+  comment naming the failure mode so it is not re-simplified away.
+- `tests/realMediaWorkerStartup.test.js` (new) — pins the consequence (a Promise
+  bound as the factory is rejected) and the call site (the factory is awaited),
+  so dropping the `await` fails in CI instead of silently in production.
+
+## Verification
+
+- Focused: 3/3 pass. Mutation check: removing the `await` fails the call-site
+  test (2/3), and restoring it passes again — the test detects the exact defect.
+- Full gates recorded below in the PR body: `npm test`, `npm run lint`,
+  `npm run verify`, `npm run plan:check`.
+- **Not verified here:** a live worker run against PostgreSQL with real media
+  tooling. The startup wiring is proven; an end-to-end production run is not.
+
+---
+
 # 2026-11-13 Rehearsal delivery loudness — real QC failure, two-pass fix
 
 Environment: Freebuff cloud worktree · Node v26.13.0 · ffmpeg/ffprobe/espeak-ng:
