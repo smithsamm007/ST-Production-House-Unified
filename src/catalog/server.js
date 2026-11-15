@@ -418,6 +418,10 @@ export async function finalizeRuntimeStartup() {
         // job's Director configuration so the configured episode duration
         // reaches the real render target and QC window.
         directorScheduleProvider: ({ ownerId, agentId }) => readDirectorSchedule(ownerId, agentId),
+        // Creative identity (DCIIS wiring): the SAME opt-in flag as the Hermes
+        // bridge, so one switch enables identity context end to end.
+        creativeContextProvider: ({ agentId }) => generateSanitizedWorkerContext(agentId),
+        creativeContextEnabled: process.env.HERMES_CREATIVE_CONTEXT === "enabled",
         // Local motion stage (Issue #241): opt-in only. The stage is part of
         // the REAL executor pipeline, so the flag is only meaningful with
         // STPH_ENABLE_REAL_MEDIA=1; the combination is reported honestly

@@ -34,6 +34,7 @@ import {
   evaluateExecutorArtifact,
   EXECUTOR_WAIT_CODES,
 } from "./episodePipeline.js";
+import { sanitizeDirectorCreativeContext } from "../catalog/directorCreativeContext.js";
 
 export const EXECUTOR_INTEGRATION_VERSION = "executor_integration_v1";
 
@@ -47,7 +48,7 @@ export { EXECUTOR_WAIT_CODES };
  * Immutable per-call execution context for one release stage. Built from the
  * release's own binding; nothing is shared or cached across releases.
  */
-export function createStageExecutionContext({ release, stage, stageInputs }) {
+export function createStageExecutionContext({ release, stage, stageInputs, creativeContext = null }) {
   if (!release || typeof release !== "object" || typeof release.agentId !== "string" || release.agentId.length === 0) {
     const error = new Error("EXECUTOR_STAGE_MISMATCH");
     error.code = "EXECUTOR_STAGE_MISMATCH";
@@ -56,10 +57,27 @@ export function createStageExecutionContext({ release, stage, stageInputs }) {
   if (!EXECUTOR_STAGES.includes(stage)) {
     throw new Error("UNKNOWN_PIPELINE_STAGE");
   }
+  // Creative identity (opt-in): re-sanitized at THIS boundary even when the
+  // caller already holds a sanitized context, so no caller can smuggle extra
+  // fields or another Director's identity into a stage payload.
+  let safeCreativeContext = null;
+  if (creativeContext !== null && creativeContext !== undefined) {
+    try {
+      safeCreativeContext = sanitizeDirectorCreativeContext(creativeContext, release.agentId);
+    } catch (error) {
+      const wrapped = new Error(
+        error?.code === "DIRECTOR_IDENTITY_MISMATCH" ? "CREATIVE_CONTEXT_SCOPE_MISMATCH" : "CREATIVE_CONTEXT_INVALID"
+      );
+      wrapped.code = wrapped.message;
+      throw wrapped;
+    }
+  }
+
   return Object.freeze({
     contextVersion: EXECUTOR_INTEGRATION_VERSION,
     stage,
     agentId: release.agentId,
+    creativeContext: safeCreativeContext,
     releaseId: release.id ?? null,
     title: typeof stageInputs?.title === "string" ? stageInputs.title : null,
     season: typeof stageInputs?.season === "number" ? stageInputs.season : null,
@@ -89,19 +107,22 @@ export function createStageExecutionContext({ release, stage, stageInputs }) {
  * EXECUTOR_STAGE_MISMATCH, or bridge gate codes) — never for honest
  * executor failures, which are returned, not thrown.
  */
-export async function runStageWithExecutor({ release, stage, stageInputs, runner }) {
+export async function runStageWithExecutor({ release, stage, stageInputs, runner, creativeContext = null }) {
   if (typeof runner !== "function") {
     const error = new Error("EXECUTOR_RUNNER_REQUIRED");
     error.code = "EXECUTOR_RUNNER_REQUIRED";
     throw error;
   }
-  const context = createStageExecutionContext({ release, stage, stageInputs });
+  const context = createStageExecutionContext({ release, stage, stageInputs, creativeContext });
 
   const executorResult = await runner({
     release,
     stage,
     stageInputs,
     agentId: context.agentId,
+    // Allowlisted Director context for this stage; null whenever the feature is
+    // disabled or the Director has no active charter.
+    creativeContext: context.creativeContext,
   });
 
   const verdict = evaluateExecutorArtifact({ stage, release, executorResult });

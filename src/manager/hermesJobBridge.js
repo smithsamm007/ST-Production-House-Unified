@@ -42,24 +42,11 @@
  */
 
 import { EPISODE_DURATION_OPTIONS_SECONDS } from "../scheduling/directorSchedule.js";
+import { sanitizeDirectorCreativeContext } from "../catalog/directorCreativeContext.js";
 
-/**
- * Creative context allowlist (DCIIS Phase 2 wiring, no schema change).
- *
- * Only these fields may travel with a Hermes decision. Everything else an
- * identity provider returns (provider names, credentials, affiliate data,
- * prompts, file paths) is dropped by construction: the context is built from
- * this list, never filtered from the input.
- */
-const CREATIVE_CONTEXT_SNAPSHOT_KEYS = Object.freeze([
-  "universeType",
-  "narrator",
-  "sourceCategories",
-  "lazyHierarchy",
-  "bibleSummary",
-]);
-const CREATIVE_CONTEXT_MAX_STRING = 2000;
-const CREATIVE_CONTEXT_MAX_LIST = 20;
+// Re-exported so existing callers/tests keep one import site; the single
+// implementation lives in src/catalog/directorCreativeContext.js.
+export { sanitizeDirectorCreativeContext };
 
 function fail(code) {
   const error = new Error(code);
@@ -103,70 +90,6 @@ export function validateProductionStartPayload(payload) {
     episodeDurationSeconds = duration;
   }
   return { channelId, title: title.trim(), season: seasonNum, episode: episodeNum, episodeDurationSeconds };
-}
-
-// A field that is PRESENT but unusable is a contract violation, never something
-// to drop silently: a Director with a 3000-character vision must not look like a
-// Director with no vision. Only keys outside the allowlist are dropped.
-const requireBoundedString = (value) => {
-  if (typeof value !== "string") throw fail("DIRECTOR_IDENTITY_INVALID");
-  const trimmed = value.trim();
-  if (trimmed.length === 0 || value.length > CREATIVE_CONTEXT_MAX_STRING) {
-    throw fail("DIRECTOR_IDENTITY_INVALID");
-  }
-  return trimmed;
-};
-
-const requireBoundedList = (value) => {
-  if (!Array.isArray(value) || value.length > CREATIVE_CONTEXT_MAX_LIST) throw fail("DIRECTOR_IDENTITY_INVALID");
-  return value.map((item) => requireBoundedString(item));
-};
-
-const requireBoundedMap = (value) => {
-  if (!isPlainObject(value)) throw fail("DIRECTOR_IDENTITY_INVALID");
-  const keys = Object.keys(value);
-  if (keys.length > CREATIVE_CONTEXT_MAX_LIST) throw fail("DIRECTOR_IDENTITY_INVALID");
-  const out = {};
-  for (const key of keys) out[key] = requireBoundedString(value[key]);
-  return out;
-};
-
-/**
- * Reduce a Director identity to the allowlisted, serializable creative context a
- * team may see. Fails closed on cross-Director identity (Rule 5) and returns
- * null when the identity carries nothing usable.
- *
- * @param {Object|null} identity
- * @param {string} expectedAgentId
- * @returns {null|Object}
- */
-export function sanitizeDirectorCreativeContext(identity, expectedAgentId) {
-  if (identity === null || identity === undefined) return null;
-  if (!isPlainObject(identity)) throw fail("DIRECTOR_IDENTITY_INVALID");
-  if (identity.agentId !== expectedAgentId) throw fail("DIRECTOR_IDENTITY_MISMATCH");
-
-  const snapshot = isPlainObject(identity.snapshot) ? identity.snapshot : {};
-  const safeSnapshot = {};
-  for (const key of CREATIVE_CONTEXT_SNAPSHOT_KEYS) {
-    const value = snapshot[key];
-    if (value === undefined || value === null) continue;
-    if (typeof value === "string") {
-      safeSnapshot[key] = requireBoundedString(value);
-    } else if (Array.isArray(value)) {
-      safeSnapshot[key] = requireBoundedList(value);
-    } else {
-      safeSnapshot[key] = requireBoundedMap(value);
-    }
-  }
-
-  const context = { agentId: expectedAgentId };
-  for (const field of ["charterId", "vision", "defaultLanguage", "secondaryLanguage"]) {
-    if (identity[field] === undefined || identity[field] === null) continue;
-    context[field] = requireBoundedString(identity[field]);
-  }
-  if (Object.keys(safeSnapshot).length > 0) context.snapshot = safeSnapshot;
-
-  return Object.freeze(context);
 }
 
 /**

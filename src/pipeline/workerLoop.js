@@ -38,6 +38,11 @@ export class ProductionWorkerLoop {
     enabledAgentsProvider = null,
     executorRunnerFactory = null,
     directorScheduleProvider = null,
+    // Creative identity (DCIIS wiring): opt-in. Off by default so the worker
+    // path is unchanged; when enabled the resolved per-job context is passed to
+    // the pipeline and re-sanitized per stage.
+    creativeContextProvider = null,
+    creativeContextEnabled = false,
     motionEnabled = false,
     log = () => {},
     pollMs = DEFAULT_POLL_MS,
@@ -55,10 +60,15 @@ export class ProductionWorkerLoop {
       throw new Error("WORKER_EXECUTOR_RUNNER_FACTORY_INVALID");
     }
     this.executorRunnerFactory = executorRunnerFactory;
+    if (creativeContextProvider !== null && typeof creativeContextProvider !== "function") {
+      throw new Error("WORKER_CREATIVE_CONTEXT_PROVIDER_INVALID");
+    }
     if (directorScheduleProvider !== null && typeof directorScheduleProvider !== "function") {
       throw new Error("WORKER_DIRECTOR_SCHEDULE_PROVIDER_INVALID");
     }
     this.directorScheduleProvider = directorScheduleProvider;
+    this.creativeContextProvider = creativeContextProvider;
+    this.creativeContextEnabled = creativeContextEnabled === true;
     if (typeof motionEnabled !== "boolean") {
       throw new Error("WORKER_MOTION_FLAG_INVALID");
     }
@@ -165,6 +175,19 @@ export class ProductionWorkerLoop {
           this.log(JSON.stringify({ code: "WORKER_DIRECTOR_SCHEDULE_LOOKUP_FAILED", jobId: job.id, agentId }));
         }
       }
+      // Creative identity (opt-in): resolved per job from THAT Director's own
+      // identity. An unreadable identity logs honestly and the run continues
+      // with no context — the context guides creative work, it never authorizes
+      // it, and a lookup outage must not strand a queued production.
+      let creativeContext = null;
+      if (this.creativeContextEnabled === true && typeof this.creativeContextProvider === "function" && agentId) {
+        try {
+          creativeContext = await this.creativeContextProvider({ ownerId, agentId });
+        } catch {
+          this.log(JSON.stringify({ code: "WORKER_DIRECTOR_IDENTITY_LOOKUP_FAILED", jobId: job.id, agentId }));
+          creativeContext = null;
+        }
+      }
       const result = await runEpisodePipeline({
         ownerId,
         releaseId,
@@ -173,6 +196,7 @@ export class ProductionWorkerLoop {
         evidenceLedger: this.evidenceLedger,
         executorRunner,
         directorSchedule,
+        creativeContext,
         motionEnabled: this.motionEnabled,
         log: this.log,
       });
