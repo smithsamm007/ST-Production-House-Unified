@@ -120,3 +120,50 @@ test("migration runner explains a type that exists only outside search_path", as
     await dropDisposableDatabase(dbUrl, disposable.name);
   }
 });
+
+test("a reachable copy of the type suppresses the diagnostic (no false positive)", async (t) => {
+  const dbUrl = requireDatabase(t);
+  if (!dbUrl) return;
+
+  let disposable;
+  try {
+    disposable = await createDisposableDatabase(dbUrl, "stph_checksum_reachable");
+  } catch (error) {
+    if (error.code === "DRILL_REQUIRES_CREATEDB") {
+      t.diagnostic(`CREATEDB is unavailable: ${error.message}`);
+      return;
+    }
+    throw error;
+  }
+
+  const dir = await withMigrations({ "001_probe_guard.sql": TRAP_SQL });
+  const admin = new pg.Pool({ connectionString: disposable.connectionString, connectionTimeoutMillis: 5000 });
+  try {
+    // The stale copy exists, but a reachable copy in public also exists, so the
+    // unqualified reference resolves and the migration must simply succeed.
+    await admin.query("CREATE SCHEMA stale_owner");
+    await admin.query("CREATE TYPE stale_owner.probe_status AS ENUM ('active', 'retired')");
+    await admin.query("CREATE TYPE public.probe_status AS ENUM ('active', 'retired')");
+
+    const { pool, adapter } = await openSchemaAdapter(disposable.connectionString, "public");
+    try {
+      const result = await new MigrationRunner(adapter, { migrationsDir: dir }).runMigrations();
+      assert.equal(result.appliedCount, 1, "the migration applies when the type is reachable");
+    } finally {
+      await pool.end().catch(() => {});
+    }
+  } finally {
+    await admin.end().catch(() => {});
+    await fs.rm(dir, { recursive: true, force: true });
+    await dropDisposableDatabase(dbUrl, disposable.name);
+  }
+});
+
+test("a failing diagnostic probe never masks the original error", async () => {
+  const { MigrationSearchPathMismatchError, MigrationExecutionError } = await import("../src/db/migrationRunner.js");
+  const original = new MigrationExecutionError("001_x.sql", Object.assign(new Error('type "probe_status" does not exist'), { code: "42704" }));
+  const runner = new MigrationRunner({ query: async () => { throw new Error("catalog probe unavailable"); } });
+  assert.equal(await runner.diagnoseUnreachableObject(original), null);
+  assert.equal(original instanceof MigrationSearchPathMismatchError, false);
+  assert.match(original.message, /probe_status/);
+});
