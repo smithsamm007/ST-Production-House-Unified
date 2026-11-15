@@ -397,3 +397,21 @@ test("34. Charter approval does not activate autopilot or publishing", async () 
   const response = await simulateOwnerRoute(s1.token, owner.id, "owner", true);
   assert.equal(response.status, 200);
 });
+
+// Regression: the refusal must carry the public code, because owner routes map
+// err.code to a status. A bare Error("INSUFFICIENT_PRIVILEGES") produced 500.
+test("requireOwnerRole refuses a non-owner with the INSUFFICIENT_PRIVILEGES code (403 contract)", async () => {
+  const owner = await registerOwner("role-owner@st.com", "PasswordSecure123", "owner");
+  const viewer = await registerOwner("role-viewer@st.com", "PasswordSecure123", "viewer");
+
+  assert.equal(await requireOwnerRole(owner.id, "owner"), true);
+
+  await assert.rejects(
+    () => requireOwnerRole(viewer.id, "owner"),
+    (err) => {
+      assert.equal(err.message, "INSUFFICIENT_PRIVILEGES");
+      assert.equal(err.code, "INSUFFICIENT_PRIVILEGES");
+      return true;
+    }
+  );
+});

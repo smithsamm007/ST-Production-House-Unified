@@ -78,6 +78,12 @@ export function createHermesRouter({
   // persisted schedule (sql/029) before production is queued, so Hermes plans
   // against the owner's configured episode duration and daily target.
   directorScheduleProvider = null,
+  // Creative identity (DCIIS Phase 2 wiring): optional, OFF by default. When
+  // enabled the bridge attaches the Director's allowlisted charter context to
+  // the queued decision; when disabled the response and evidence shapes are
+  // unchanged.
+  directorIdentityProvider = null,
+  creativeContextEnabled = false,
   // Phase 2C: canonical lifecycle guard for production-originating decisions and
   // for the execution bridge. Optional (null) so the demo/test transports keep
   // their behaviour; the sql/032 triggers still enforce the rule in the database.
@@ -264,6 +270,8 @@ export function createHermesRouter({
         production: typeof productionRepository === "function" ? productionRepository() : productionRepository,
         evidence: evidenceLedger,
         directorScheduleProvider,
+        directorIdentityProvider,
+        creativeContextEnabled,
         canonicalGuard,
       });
       const result = await bridge(manager, req.ownerId, Number.parseInt(req.params.decisionNumber, 10));

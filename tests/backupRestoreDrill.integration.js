@@ -12,13 +12,13 @@ import {
   verifyRestoredAgainstManifest,
 } from "../src/recovery/backupRestoreDrill.js";
 import {
-  openSchemaAdapter,
+  createDisposableDatabase,
+  dropDisposableDatabase,
+  openDatabaseAdapter,
   restoreBackupInto,
   runBackupRestoreDrill,
   seedDrillData,
 } from "../src/recovery/drillRunner.js";
-import { PostgresAdapter } from "../src/db/postgresAdapter.js";
-import pg from "pg";
 
 test("backup/restore drill restores digest-identically through canonical migrations", async (t) => {
   const dbUrl = process.env.POSTGRES_TEST_URL || process.env.DATABASE_URL;
@@ -47,18 +47,21 @@ test("tamper detection: a substituted restored row fails the drill verification"
   }
 
   const suffix = `${process.pid}_${Date.now()}`;
-  const sourceSchema = `stph_tamper_src_${suffix}`;
-  const restoreSchema = `stph_tamper_dst_${suffix}`;
-  const admin = new pg.Pool({ connectionString: dbUrl, connectionTimeoutMillis: 5000 });
+  // Each leg gets its own database: sql/032 resolves its enum through a
+  // database-global pg_type lookup, so a second schema in the same database can
+  // make it skip CREATE TYPE and then fail to resolve the type.
+  const sourceDatabase = await createDisposableDatabase(dbUrl, `stph_tamper_src_${suffix}`);
+  let restoreDatabase;
   try {
-    await admin.query(`CREATE SCHEMA "${sourceSchema}"`);
-    await admin.query(`CREATE SCHEMA "${restoreSchema}"`);
-    const source = await openSchemaAdapter(dbUrl, sourceSchema);
-    const target = await openSchemaAdapter(dbUrl, restoreSchema);
+    const source = await openDatabaseAdapter(sourceDatabase.connectionString);
+    let target;
     try {
       await new MigrationRunner(source.adapter).runMigrations();
       await seedDrillData(source.adapter, suffix);
       const manifest = await buildBackupManifest(source.adapter);
+
+      restoreDatabase = await createDisposableDatabase(dbUrl, `stph_tamper_dst_${suffix}`);
+      target = await openDatabaseAdapter(restoreDatabase.connectionString);
 
       await restoreBackupInto(target.adapter, manifest);
       const ownersEntry = manifest.restorePayload.find((e) => e.name === "owners");
@@ -77,12 +80,11 @@ test("tamper detection: a substituted restored row fails the drill verification"
       );
     } finally {
       await source.pool.end().catch(() => {});
-      await target.pool.end().catch(() => {});
+      if (target) await target.pool.end().catch(() => {});
     }
   } finally {
-    await admin.query(`DROP SCHEMA IF EXISTS "${sourceSchema}" CASCADE`).catch(() => {});
-    await admin.query(`DROP SCHEMA IF EXISTS "${restoreSchema}" CASCADE`).catch(() => {});
-    await admin.end();
+    await dropDisposableDatabase(dbUrl, sourceDatabase.name);
+    if (restoreDatabase) await dropDisposableDatabase(dbUrl, restoreDatabase.name);
   }
 });
 
@@ -95,21 +97,14 @@ test("rollback safety: a tampered applied migration fails closed with no partial
     return;
   }
 
-  const schema = `stph_checksum_${process.pid}_${Date.now()}`;
+  // Same isolation reason as the tamper leg: one disposable database per leg.
+  const checksumDatabase = await createDisposableDatabase(dbUrl, "stph_checksum");
   const tamperDir = path.join(os.tmpdir(), `stph_tampered_migrations_${process.pid}_${Date.now()}`);
-  const admin = new pg.Pool({ connectionString: dbUrl, connectionTimeoutMillis: 5000 });
   let pool;
   try {
-    await admin.query(`CREATE SCHEMA "${schema}"`);
-    const { pool: schemaPool, adapter } = await (async () => {
-      const p = new pg.Pool({
-        connectionString: dbUrl,
-        connectionTimeoutMillis: 5000,
-        options: `-c search_path=${schema},public`,
-      });
-      return { pool: p, adapter: new PostgresAdapter({}, p) };
-    })();
-    pool = schemaPool;
+    const opened = await openDatabaseAdapter(checksumDatabase.connectionString);
+    const { adapter } = opened;
+    pool = opened.pool;
 
     // 1. Apply the intact migration set; record the schema_migrations rows.
     const first = await new MigrationRunner(adapter).runMigrations();
@@ -147,8 +142,47 @@ test("rollback safety: a tampered applied migration fails closed with no partial
     assert.equal(flagged.status, "CHECKSUM_MISMATCH");
   } finally {
     if (pool) await pool.end().catch(() => {});
-    await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {});
     await rm(tamperDir, { recursive: true, force: true }).catch(() => {});
-    await admin.end();
+    await dropDisposableDatabase(dbUrl, checksumDatabase.name);
   }
+});
+
+test("a failed drill still drops its disposable databases (failure-path cleanup)", async (t) => {
+  const dbUrl = process.env.POSTGRES_TEST_URL || process.env.DATABASE_URL;
+  const required = Boolean(process.env.CI || process.env.npm_lifecycle_event === "test:integration" || dbUrl);
+  if (!dbUrl) {
+    if (required) assert.fail("PostgreSQL 15 URL is mandatory for the failure-cleanup acceptance");
+    t.diagnostic("PostgreSQL is not configured; skipped by the unit command");
+    return;
+  }
+
+  const pg = (await import("pg")).default;
+  const admin = new pg.Pool({ connectionString: dbUrl, connectionTimeoutMillis: 5000 });
+  try {
+    const before = await admin.query("SELECT datname FROM pg_database WHERE datname LIKE 'stph_%'");
+
+    // maxRows: -1 makes the manifest stage fail AFTER the source database exists,
+    // which is exactly the path that used to leave disposable databases behind.
+    await assert.rejects(() => runBackupRestoreDrill(dbUrl, { maxRows: -1 }));
+
+    const after = await admin.query("SELECT datname FROM pg_database WHERE datname LIKE 'stph_%'");
+    assert.deepEqual(
+      after.rows.map((r) => r.datname).sort(),
+      before.rows.map((r) => r.datname).sort(),
+      "a failed drill must not leave disposable databases behind"
+    );
+  } finally {
+    await admin.end().catch(() => {});
+  }
+});
+
+test("the drill refuses to drop a database it did not create", async (t) => {
+  const dbUrl = process.env.POSTGRES_TEST_URL || process.env.DATABASE_URL;
+  if (!dbUrl) {
+    t.diagnostic("PostgreSQL is not configured; skipped by the unit command");
+    return;
+  }
+  const { dropDisposableDatabase } = await import("../src/recovery/drillRunner.js");
+  const current = new URL(dbUrl).pathname.replace(/^\//, "");
+  assert.equal(await dropDisposableDatabase(dbUrl, current), false, "the source database must never be dropped");
 });

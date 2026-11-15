@@ -13,3 +13,6 @@ artifacts/
 
 # generated JARVIS package dumps (workspace artifacts)
 out/
+
+# Disposable PostgreSQL 15 rehearsal binaries (never committed)
+scratch/pg15/

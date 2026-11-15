@@ -29,6 +29,39 @@ export class MigrationExecutionError extends Error {
     this.name = 'MigrationExecutionError';
     this.filename = filename;
     this.originalError = sanitized;
+    this.code = originalError?.code ?? sanitized?.code ?? null;
+  }
+}
+
+/**
+ * Raised when a migration references an object by an unqualified name that is
+ * visible to the catalog but unreachable through the effective search_path.
+ *
+ * This is the failure mode of a guard written as
+ * `IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'x')`: the check is
+ * catalog-global, while `... x` resolves through search_path, so a leftover
+ * copy of the object in another schema suppresses creation and the reference
+ * then fails with `type "x" does not exist`.
+ *
+ * The applied migration itself must never be edited to work around this; the
+ * caller must migrate into `public` or include the owning schema in
+ * search_path.
+ */
+export class MigrationSearchPathMismatchError extends MigrationExecutionError {
+  constructor(filename, originalError, { objectName, existingSchemas, searchPath }) {
+    super(filename, originalError);
+    this.name = 'MigrationSearchPathMismatchError';
+    this.objectName = objectName;
+    this.existingSchemas = existingSchemas;
+    this.searchPath = searchPath;
+    this.message =
+      `Migration failed on file '${filename}': ` +
+      `${objectName ? `type "${objectName}"` : 'a required object'} exists in schema(s) [${existingSchemas.join(', ')}] ` +
+      `but none of them is on the effective search_path "${searchPath}". ` +
+      `A catalog-global existence check inside the migration therefore skipped creation ` +
+      `while the unqualified reference could not be resolved. ` +
+      `Migrate into public, or set search_path to include the owning schema. ` +
+      `Applied migration files must not be modified.`;
   }
 }
 
@@ -171,9 +204,86 @@ export class MigrationRunner {
    *
    * @returns {Promise<{appliedCount: number, status: Array<Object>}>}
    */
+  /**
+   * Explains a `type "…" does not exist` failure when the object exists in a
+   * schema the session cannot see. Returns null for every other failure (or when
+   * any diagnostic probe fails) so genuine errors keep their original shape.
+   *
+   * Runs after the caller's transaction has rolled back and released its client,
+   * so it cannot depend on an aborted session.
+   *
+   * @param {Error} error
+   * @returns {Promise<null|{objectName: string, existingSchemas: Array<string>, searchPath: string}>}
+   */
+  async diagnoseUnreachableObject(error) {
+    const code = error?.code ?? null;
+    if (code !== '42704') return null;
+
+    const match = /type "([^"]+)" does not exist/.exec(error?.message ?? '');
+    if (!match) return null;
+    const objectName = match[1];
+
+    try {
+      // Only user-owned schemas can be "misplaced"; pg_catalog and the
+      // information schema are always implicitly reachable, so they must never
+      // be reported as the owner of an unreachable object.
+      const schemasRes = await this.adapter.query(
+        `SELECT n.nspname
+           FROM pg_type t
+           JOIN pg_namespace n ON n.oid = t.typnamespace
+          WHERE t.typname = $1
+            AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+            AND n.nspname NOT LIKE 'pg\_%'
+          ORDER BY n.nspname`,
+        [objectName]
+      );
+      const existingSchemas = schemasRes.rows.map((row) => row.nspname);
+      if (existingSchemas.length === 0) return null;
+
+      // `current_schemas(true)` is the RESOLVED path for this session: it expands
+      // "$user", keeps pg_catalog, and drops schemas that do not exist. `SHOW
+      // search_path` cannot do any of that, so it would mis-report reachability.
+      //
+      // Unnested into rows on purpose: the array type can come back through the
+      // adapter as a raw array literal string, and treating that as a list
+      // silently produced a null diagnosis (caught by the acceptance test).
+      const pathRes = await this.adapter.query(
+        'SELECT unnest(current_schemas(true)) AS schema_name'
+      );
+      const onPath = pathRes.rows.map((row) => row.schema_name).filter((name) => typeof name === 'string');
+      if (onPath.length === 0) return null;
+      const searchPath = onPath.join(', ');
+
+      // Reachable from this session: the failure has some other cause.
+      if (existingSchemas.some((schema) => onPath.includes(schema))) return null;
+
+      return { objectName, existingSchemas, searchPath };
+    } catch {
+      return null;
+    }
+  }
+
   async runMigrations() {
     const discovered = await this.discoverMigrations();
 
+    try {
+      return await this.runPendingMigrations(discovered);
+    } catch (error) {
+      const diagnosis = await this.diagnoseUnreachableObject(error);
+      if (diagnosis) {
+        throw new MigrationSearchPathMismatchError(error.filename ?? 'unknown', error, diagnosis);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Applies pending migrations inside one advisory-locked transaction.
+   *
+   * @param {Array<Object>} discovered
+   * @returns {Promise<{appliedCount: number, status: Array<Object>}>}
+   */
+  async runPendingMigrations(discovered) {
     return await this.adapter.withTransaction(async (client) => {
       // 1. Acquire advisory lock to prevent concurrent migrations across multiple instances/workers
       await client.query(

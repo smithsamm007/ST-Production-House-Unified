@@ -245,6 +245,9 @@ export async function runEpisodePipeline({
   // order. Only an explicit `true` (STPH_ENABLE_LOCAL_MOTION=1 in the worker)
   // inserts `motion` between `visual` and `assembly`.
   motionEnabled = false,
+  // Opt-in allowlisted Director context (DCIIS wiring). Default null keeps the
+  // deterministic and executor paths byte-identical to before.
+  creativeContext = null,
   log = () => {},
 }) {
   const release = await production.getRelease(ownerId, releaseId);
@@ -298,12 +301,20 @@ export async function runEpisodePipeline({
       stageInputs,
       targetDuration,
       motionEnabled,
+      creativeContext,
       log,
     });
   }
 
   for (const stage of PIPELINE_STAGES) {
-    await production.recordPipelineEvent({ releaseId, ownerId, stage, status: "started" });
+    // Evidence (Rule 1): the context is recorded with the stage so an auditor
+    // can see which Director configuration the stage ran against. Only the
+    // allowlisted shape is ever present (sanitized upstream and again when the
+    // stage context is built); when the feature is off nothing is added.
+    await production.recordPipelineEvent({
+      releaseId, ownerId, stage, status: "started",
+      ...(creativeContext ? { detail: { creativeContext } } : {}),
+    });
 
     try {
       const content = renderStageContent(stage, stageInputs);
@@ -663,6 +674,7 @@ export async function runEpisodePipelineWithExecutors({
   stageInputs,
   targetDuration = null,
   motionEnabled = false,
+  creativeContext = null,
   log = () => {},
 }) {
   const configuredTargetSeconds = targetDuration?.seconds ?? null;
@@ -704,7 +716,10 @@ export async function runEpisodePipelineWithExecutors({
   };
 
   for (const stage of executorStages) {
-    await production.recordPipelineEvent({ releaseId, ownerId, stage, status: "started" });
+    await production.recordPipelineEvent({
+      releaseId, ownerId, stage, status: "started",
+      ...(creativeContext ? { detail: { creativeContext } } : {}),
+    });
 
     let outcome;
     try {
@@ -712,6 +727,7 @@ export async function runEpisodePipelineWithExecutors({
         release,
         stage,
         stageInputs,
+        creativeContext,
         runner: (runnerArgs) => executorRunner({
           ...runnerArgs,
           // The configured episode duration is handed to EVERY stage so the

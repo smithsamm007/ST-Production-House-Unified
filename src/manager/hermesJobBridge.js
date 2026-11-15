@@ -42,6 +42,11 @@
  */
 
 import { EPISODE_DURATION_OPTIONS_SECONDS } from "../scheduling/directorSchedule.js";
+import { sanitizeDirectorCreativeContext } from "../catalog/directorCreativeContext.js";
+
+// Re-exported so existing callers/tests keep one import site; the single
+// implementation lives in src/catalog/directorCreativeContext.js.
+export { sanitizeDirectorCreativeContext };
 
 function fail(code) {
   const error = new Error(code);
@@ -103,6 +108,12 @@ export function createHermesJobBridge({
   evidence,
   audit,
   directorScheduleProvider = null,
+  // Creative identity (DCIIS Phase 2 wiring): optional async
+  // ({ ownerId, agentId }) => identity | null, the same injection shape as
+  // directorScheduleProvider. Disabled by default so the existing behaviour is
+  // byte-identical unless a caller explicitly opts in.
+  directorIdentityProvider = null,
+  creativeContextEnabled = false,
   // Phase 2C: canonical Director lifecycle guard ({ assertActive(agentId) } or
   // null). Optional so the demo/test transports keep working; when wired, a
   // retired or suspended canonical Director can never have production queued.
@@ -190,6 +201,25 @@ export function createHermesJobBridge({
       return recordFailure("DIRECTOR_CHANNEL_MISMATCH");
     }
 
+    // Creative identity retrieval (opt-in): the Director's own allowlisted
+    // context, fetched only after the tenant check so one Director can never
+    // read another's identity. A lookup that cannot be performed is an honest
+    // failure, never a silent empty context.
+    let creativeContext = null;
+    if (creativeContextEnabled === true && typeof directorIdentityProvider === "function") {
+      let identity;
+      try {
+        identity = await directorIdentityProvider({ ownerId, agentId: channel.agentId });
+      } catch {
+        return recordFailure("DIRECTOR_IDENTITY_LOOKUP_FAILED");
+      }
+      try {
+        creativeContext = sanitizeDirectorCreativeContext(identity, channel.agentId);
+      } catch (err) {
+        return recordFailure(err.code ?? "DIRECTOR_IDENTITY_INVALID");
+      }
+    }
+
     // Per-Director duration resolution (master prompt §5): the Director's OWN
     // persisted setting is read when the decision does not carry one, so the
     // queued job is planned with the settings the owner configured.
@@ -247,6 +277,9 @@ export function createHermesJobBridge({
         // value the production pipeline resolves for the render target.
         episodeDurationSeconds: episodeDurationSeconds ?? null,
         jobId: queued.jobId,
+        // Present only when the creative-context flag is on, so existing
+        // evidence records keep their exact shape.
+        ...(creativeContext ? { creativeContext } : {}),
       },
     });
     const receiptId = stored?.id ?? null;
@@ -268,6 +301,7 @@ export function createHermesJobBridge({
       jobId: queued.jobId,
       receiptId,
       episodeDurationSeconds: episodeDurationSeconds ?? null,
+      creativeContext,
     };
   };
 }

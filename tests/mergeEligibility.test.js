@@ -130,3 +130,36 @@ test('uses the latest run and rejects a newer failure after an older success', (
   assert.equal(result.eligible, false);
   assert.ok(result.reasons.includes('unsuccessful_workflow:PR Gate:failure'));
 });
+
+// Incident 2026-11-13 (PR #279): a green referee run must never make a failed
+// PostgreSQL CI job irrelevant. The reviewer's exact requirement.
+test('a failed PostgreSQL CI run cannot be overridden by a successful referee run', () => {
+  const result = evaluateMergeEligibility({
+    pullRequest: pull(),
+    expectedHeadSha: HEAD,
+    workflowRuns: successfulRuns({
+      'ST Production House CI': { conclusion: 'failure' }
+    })
+  });
+
+  assert.equal(result.eligible, false);
+  assert.ok(
+    result.reasons.includes('unsuccessful_workflow:ST Production House CI:failure'),
+    'the failed CI run must be reported by name, not masked by the referee'
+  );
+  assert.ok(
+    !result.reasons.some((reason) => reason.includes('Autonomous Merge Referee')),
+    'the referee being green contributes no eligibility of its own'
+  );
+});
+
+test('a stale successful CI run at another head cannot authorise this head', () => {
+  const result = evaluateMergeEligibility({
+    pullRequest: pull(),
+    expectedHeadSha: HEAD,
+    workflowRuns: successfulRuns({ 'ST Production House CI': { head_sha: 'c'.repeat(40) } })
+  });
+
+  assert.equal(result.eligible, false);
+  assert.ok(result.reasons.includes('stale_workflow:ST Production House CI'));
+});

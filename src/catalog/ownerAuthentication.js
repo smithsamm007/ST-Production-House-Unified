@@ -658,7 +658,12 @@ export async function requireOwnerRole(ownerId, requiredRole = "owner") {
   }
 
   if (!owner || owner.role !== requiredRole) {
-    throw new Error("INSUFFICIENT_PRIVILEGES");
+    // The refusal must carry the public code: owner routes map `err.code` to a
+    // status, so a bare Error("INSUFFICIENT_PRIVILEGES") surfaced as 500 instead
+    // of the documented 403 (src/catalog/canonicalDirectorServer.js statusForCode).
+    throw Object.assign(new Error("INSUFFICIENT_PRIVILEGES"), {
+      code: "INSUFFICIENT_PRIVILEGES",
+    });
   }
   return true;
 }
