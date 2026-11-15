@@ -12,13 +12,13 @@ import {
   verifyRestoredAgainstManifest,
 } from "../src/recovery/backupRestoreDrill.js";
 import {
-  openSchemaAdapter,
+  createDisposableDatabase,
+  dropDisposableDatabase,
+  openDatabaseAdapter,
   restoreBackupInto,
   runBackupRestoreDrill,
   seedDrillData,
 } from "../src/recovery/drillRunner.js";
-import { PostgresAdapter } from "../src/db/postgresAdapter.js";
-import pg from "pg";
 
 test("backup/restore drill restores digest-identically through canonical migrations", async (t) => {
   const dbUrl = process.env.POSTGRES_TEST_URL || process.env.DATABASE_URL;
@@ -47,18 +47,21 @@ test("tamper detection: a substituted restored row fails the drill verification"
   }
 
   const suffix = `${process.pid}_${Date.now()}`;
-  const sourceSchema = `stph_tamper_src_${suffix}`;
-  const restoreSchema = `stph_tamper_dst_${suffix}`;
-  const admin = new pg.Pool({ connectionString: dbUrl, connectionTimeoutMillis: 5000 });
+  // Each leg gets its own database: sql/032 resolves its enum through a
+  // database-global pg_type lookup, so a second schema in the same database can
+  // make it skip CREATE TYPE and then fail to resolve the type.
+  const sourceDatabase = await createDisposableDatabase(dbUrl, `stph_tamper_src_${suffix}`);
+  let restoreDatabase;
   try {
-    await admin.query(`CREATE SCHEMA "${sourceSchema}"`);
-    await admin.query(`CREATE SCHEMA "${restoreSchema}"`);
-    const source = await openSchemaAdapter(dbUrl, sourceSchema);
-    const target = await openSchemaAdapter(dbUrl, restoreSchema);
+    const source = await openDatabaseAdapter(sourceDatabase.connectionString);
+    let target;
     try {
       await new MigrationRunner(source.adapter).runMigrations();
       await seedDrillData(source.adapter, suffix);
       const manifest = await buildBackupManifest(source.adapter);
+
+      restoreDatabase = await createDisposableDatabase(dbUrl, `stph_tamper_dst_${suffix}`);
+      target = await openDatabaseAdapter(restoreDatabase.connectionString);
 
       await restoreBackupInto(target.adapter, manifest);
       const ownersEntry = manifest.restorePayload.find((e) => e.name === "owners");
@@ -77,12 +80,11 @@ test("tamper detection: a substituted restored row fails the drill verification"
       );
     } finally {
       await source.pool.end().catch(() => {});
-      await target.pool.end().catch(() => {});
+      if (target) await target.pool.end().catch(() => {});
     }
   } finally {
-    await admin.query(`DROP SCHEMA IF EXISTS "${sourceSchema}" CASCADE`).catch(() => {});
-    await admin.query(`DROP SCHEMA IF EXISTS "${restoreSchema}" CASCADE`).catch(() => {});
-    await admin.end();
+    await dropDisposableDatabase(dbUrl, sourceDatabase.name);
+    if (restoreDatabase) await dropDisposableDatabase(dbUrl, restoreDatabase.name);
   }
 });
 
@@ -95,21 +97,14 @@ test("rollback safety: a tampered applied migration fails closed with no partial
     return;
   }
 
-  const schema = `stph_checksum_${process.pid}_${Date.now()}`;
+  // Same isolation reason as the tamper leg: one disposable database per leg.
+  const checksumDatabase = await createDisposableDatabase(dbUrl, "stph_checksum");
   const tamperDir = path.join(os.tmpdir(), `stph_tampered_migrations_${process.pid}_${Date.now()}`);
-  const admin = new pg.Pool({ connectionString: dbUrl, connectionTimeoutMillis: 5000 });
   let pool;
   try {
-    await admin.query(`CREATE SCHEMA "${schema}"`);
-    const { pool: schemaPool, adapter } = await (async () => {
-      const p = new pg.Pool({
-        connectionString: dbUrl,
-        connectionTimeoutMillis: 5000,
-        options: `-c search_path=${schema},public`,
-      });
-      return { pool: p, adapter: new PostgresAdapter({}, p) };
-    })();
-    pool = schemaPool;
+    const opened = await openDatabaseAdapter(checksumDatabase.connectionString);
+    const { adapter } = opened;
+    pool = opened.pool;
 
     // 1. Apply the intact migration set; record the schema_migrations rows.
     const first = await new MigrationRunner(adapter).runMigrations();
@@ -147,8 +142,7 @@ test("rollback safety: a tampered applied migration fails closed with no partial
     assert.equal(flagged.status, "CHECKSUM_MISMATCH");
   } finally {
     if (pool) await pool.end().catch(() => {});
-    await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`).catch(() => {});
     await rm(tamperDir, { recursive: true, force: true }).catch(() => {});
-    await admin.end();
+    await dropDisposableDatabase(dbUrl, checksumDatabase.name);
   }
 });
