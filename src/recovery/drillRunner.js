@@ -45,16 +45,6 @@ import {
 const DEFAULT_MAX_ROWS = 50_000;
 const MAX_PARAMS_PER_INSERT = 10_000; // comfortably below PostgreSQL's 65,535
 
-/** Creates a connection pool pinned to one unique schema via search_path. */
-export async function openSchemaAdapter(connectionString, schemaName) {
-  const pool = new pg.Pool({
-    connectionString,
-    connectionTimeoutMillis: 5000,
-    options: `-c search_path=${schemaName},public`,
-  });
-  return { pool, adapter: new PostgresAdapter({}, pool) };
-}
-
 /** Creates a connection pool for one database's default (public) schema. */
 export async function openDatabaseAdapter(connectionString) {
   const pool = new pg.Pool({ connectionString, connectionTimeoutMillis: 5000 });

@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import pg from "pg";
 import { MigrationRunner, MigrationExecutionError, MigrationSearchPathMismatchError } from "../src/db/migrationRunner.js";
-import { createDisposableDatabase, dropDisposableDatabase, openSchemaAdapter } from "../src/recovery/drillRunner.js";
+import { createDisposableDatabase, dropDisposableDatabase } from "../src/recovery/drillRunner.js";
+import { openSchemaAdapter } from "./helpers/schemaScopedAdapter.js";
 
 // Reproduces the guard pattern used by sql/032: the existence check is
 // catalog-global (`FROM pg_type`) while the reference below is resolved through

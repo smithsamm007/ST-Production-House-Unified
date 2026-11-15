@@ -224,23 +224,35 @@ export class MigrationRunner {
     const objectName = match[1];
 
     try {
+      // Only user-owned schemas can be "misplaced"; pg_catalog and the
+      // information schema are always implicitly reachable, so they must never
+      // be reported as the owner of an unreachable object.
       const schemasRes = await this.adapter.query(
         `SELECT n.nspname
            FROM pg_type t
            JOIN pg_namespace n ON n.oid = t.typnamespace
           WHERE t.typname = $1
+            AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+            AND n.nspname NOT LIKE 'pg\_%'
           ORDER BY n.nspname`,
         [objectName]
       );
       const existingSchemas = schemasRes.rows.map((row) => row.nspname);
       if (existingSchemas.length === 0) return null;
 
-      const pathRes = await this.adapter.query('SHOW search_path');
-      const searchPath = pathRes.rows[0]?.search_path ?? '';
-      const onPath = searchPath
-        .split(',')
-        .map((entry) => entry.trim().replace(/^"|"$/g, ''))
-        .filter(Boolean);
+      // `current_schemas(true)` is the RESOLVED path for this session: it expands
+      // "$user", keeps pg_catalog, and drops schemas that do not exist. `SHOW
+      // search_path` cannot do any of that, so it would mis-report reachability.
+      //
+      // Unnested into rows on purpose: the array type can come back through the
+      // adapter as a raw array literal string, and treating that as a list
+      // silently produced a null diagnosis (caught by the acceptance test).
+      const pathRes = await this.adapter.query(
+        'SELECT unnest(current_schemas(true)) AS schema_name'
+      );
+      const onPath = pathRes.rows.map((row) => row.schema_name).filter((name) => typeof name === 'string');
+      if (onPath.length === 0) return null;
+      const searchPath = onPath.join(', ');
 
       // Reachable from this session: the failure has some other cause.
       if (existingSchemas.some((schema) => onPath.includes(schema))) return null;
