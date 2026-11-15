@@ -55,6 +55,10 @@ jobs:
   merge-gate:
     needs: [verify-and-test]
     if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,5 +68,29 @@ jobs:
       - name: Check Merge Eligibility
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          echo "Checking exact-head merge eligibility for PR #${{ github.event.pull_request.number }}"
+          set -euo pipefail
+          # This job used to print a sentence and report success, so its green check meant
+          # nothing while a PostgreSQL job was red. It now evaluates the exact-head gates and
+          # only passes once every required workflow run at this exact head is green.
+          echo "Checking exact-head merge eligibility for PR #$PR_NUMBER at $EXPECTED_HEAD"
+          for _attempt in $(seq 1 30); do
+            gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" > pull.json
+            gh api -X GET "repos/$REPOSITORY/actions/runs" -f head_sha="$EXPECTED_HEAD" -f per_page=100 > workflow-runs.json
+            verdict="$(node .github/scripts/merge-controller.mjs pull.json workflow-runs.json "$EXPECTED_HEAD" | head -n 1)"
+            echo "$verdict"
+            case "$verdict" in
+              *"eligible=true"*) echo "MERGE_GATE_GREEN pr=$PR_NUMBER head=$EXPECTED_HEAD"; exit 0 ;;
+            esac
+            if printf '%s' "$verdict" | grep -Eq 'unsuccessful_workflow|missing_workflow|wrong_event|stale_workflow';
+            then
+              echo "::error::MERGE_GATE_NOT_GREEN pr=$PR_NUMBER head=$EXPECTED_HEAD — $verdict"
+              exit 1
+            fi
+            sleep 20
+          done
+          echo "::error::MERGE_GATE_TIMEOUT pr=$PR_NUMBER head=$EXPECTED_HEAD — exact-head gates did not turn green within 10 minutes."
+          exit 1

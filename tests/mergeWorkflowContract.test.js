@@ -50,34 +50,44 @@ test('every workflow that arms or merges declares pull-requests: write', () => {
   }
 });
 
-test('the merge referee never promotes a draft or hides a failed merge request', () => {
+test('the referee verifies and reports, and cannot merge', () => {
   const text = workflow('autonomous-merge.yml');
 
-  assert.doesNotMatch(text, /gh pr ready/, 'drafts must be rejected, never silently promoted');
   assert.doesNotMatch(
     text,
-    /gh pr merge[\s\S]{0,400}?\|\|\s*\n?\s*echo/,
-    'a failed merge request must not be converted into a success notice'
+    /gh pr merge/,
+    'the referee must never merge: exact-head-merge.yml is the only merge path'
   );
-  assert.match(text, /AUTONOMOUS_MERGE_ARM_FAILED/, 'arm failures need a stable error code');
-  assert.match(text, /AUTONOMOUS_MERGE_NOT_ARMED/, 'an unarmed merge must fail loudly');
-  assert.match(
+  assert.doesNotMatch(
     text,
-    /AUTONOMOUS_MERGE_ALREADY_MERGED/,
-    'a merge that completes without an armed auto-merge must be accepted, not reported as a failure'
+    /--auto\b/,
+    'native auto-merge obeys branch-protection required checks, so a red job that is not a ' +
+      'required check is merged anyway (observed 2026-11-13, PR #279)'
   );
+  assert.doesNotMatch(text, /gh pr ready/, 'drafts must be rejected, never silently promoted');
+  assert.match(text, /REFEREE_VERIFIED/, 'the referee must report a stable verification result');
   assert.match(text, /AUTONOMOUS_MERGE_HEAD_MOVED/, 'a moved head must fail the referee');
+  assert.match(text, /duplicate-claim-check\.mjs/, 'the referee must refuse duplicate claims');
+  assert.doesNotMatch(
+    text,
+    /^ {2}contents: write$/m,
+    'a verifying referee must not hold merge rights'
+  );
 });
 
-test('the merge referee pins the merge request to a re-read head', () => {
-  const text = workflow('autonomous-merge.yml');
+test('exactly one workflow merges, and it pins the re-read exact head', () => {
+  const merging = workflowNames().filter((name) => workflow(name).includes('gh pr merge'));
+  assert.deepEqual(merging, ['exact-head-merge.yml'], 'exactly one merge path may exist');
+
+  const text = workflow('exact-head-merge.yml');
 
   assert.match(
     text,
     /pulls\/\$PR_NUMBER" --jq '\.head\.sha'/,
-    'the live head must be re-read from the API'
+    'the live head must be re-read from the API immediately before merging'
   );
-  assert.match(text, /--match-head-commit "\$HEAD"/, 'the merge must be pinned to the re-read head');
+  assert.match(text, /--match-head-commit "\$EXPECTED_HEAD"/, 'the merge must be pinned to the exact head');
+  assert.match(text, /MERGE_HEAD_MOVED/, 'a moved head must fail the controller');
 });
 
 test('the exact-head controller confirms the merge from GitHub state and merge commit', () => {
@@ -120,7 +130,7 @@ test('neither merge path deletes the head branch', () => {
   }
 });
 
-test('both merge paths consult the duplicate-claim guard', () => {
+test('the referee and the single merge path both consult the duplicate-claim guard', () => {
   for (const name of ['autonomous-merge.yml', 'exact-head-merge.yml']) {
     assert.match(workflow(name), /duplicate-claim-check\.mjs/, `${name} must refuse duplicate claims`);
   }

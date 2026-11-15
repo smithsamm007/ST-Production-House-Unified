@@ -139,22 +139,46 @@ test('PostgreSQL Live Integration Test Suite', async (t) => {
     const afterSnapshot = await snapshotNewtonRows(adapter);
     assert.deepEqual(afterSnapshot, beforeSnapshot, 'NEWTON rows identical after idempotent re-run');
 
-    // 2e. The 50-agent cap trigger still fires on real PG (additive inserts rejected)
-    await adapter.query('BEGIN');
-    try {
-      await adapter.query("INSERT INTO agents (id, name, namespace) VALUES ('agent-22','CAP_PROBE_A','st.agent.cap_probe_a')");
-      await adapter.query("INSERT INTO agents (id, name, namespace) VALUES ('agent-23','CAP_PROBE_B','st.agent.cap_probe_b')");
-      assert.fail('Expected AGENT_CAP_REACHED once 50-row cap is hit');
-    } catch (err) {
-      assert.ok(
-        /AGENT_CAP_REACHED/.test(err.message),
-        `expected AGENT_CAP_REACHED from the 50-cap trigger, got: ${err.message}`
-      );
-    } finally {
-      await adapter.query('ROLLBACK');
-    }
-    const capProbeRes = await adapter.query("SELECT count(*) as c FROM agents WHERE name LIKE 'CAP_PROBE%'");
-    assert.equal(parseInt(capProbeRes.rows[0].c, 10), 0, 'cap probe rows rolled back cleanly');
+    // 2e. The 50-agent cap trigger is proven at its exact boundary on real PG.
+    //
+    // The previous probe was vacuous: with far fewer than 50 rows the two inserts never
+    // reached the cap, and the thrown assertion's own message contained
+    // "AGENT_CAP_REACHED", so the `catch` regex matched itself and the test always
+    // passed. This probe fills the table to exactly 50 and requires the next insert to
+    // be refused, so the boundary itself is what is asserted.
+    const capBefore = Number((await adapter.query('SELECT count(*)::int AS c FROM agents')).rows[0].c);
+    await assert.rejects(
+      () => adapter.withTransaction(async (client) => {
+        const start = Number((await client.query('SELECT count(*)::int AS c FROM agents')).rows[0].c);
+        // Fill to exactly 50 rows: the insert that brings the count to 50 must succeed.
+        for (let n = start; n < 50; n += 1) {
+          await client.query(
+            'INSERT INTO agents (id, name, namespace) VALUES ($1, $2, $3)',
+            [`cap-fill-${n}`, `CAP_FILL_${n}`, `st.cap.fill.${n}`]
+          );
+        }
+        const atCap = Number((await client.query('SELECT count(*)::int AS c FROM agents')).rows[0].c);
+        assert.equal(atCap, 50, 'the fill loop must reach exactly 50 agent rows');
+
+        // Row 51 must be rejected by agents_max_50 (sql/001 enforce_agent_cap).
+        await client.query(
+          "INSERT INTO agents (id, name, namespace) VALUES ('cap-probe-overflow','CAP_PROBE_OVERFLOW','st.cap.probe.overflow')"
+        );
+      }),
+      (err) => {
+        assert.match(String(err && err.message), /AGENT_CAP_REACHED/);
+        return true;
+      }
+    );
+
+    // The probe transaction rolled back atomically: no fill rows, no overflow row,
+    // and the table is back to its pre-probe count.
+    const capLeftover = await adapter.query(
+      "SELECT count(*)::int AS c FROM agents WHERE id LIKE 'cap-fill-%' OR id = 'cap-probe-overflow'"
+    );
+    assert.equal(Number(capLeftover.rows[0].c), 0, 'cap probe rows must not survive the rollback');
+    const capAfter = Number((await adapter.query('SELECT count(*)::int AS c FROM agents')).rows[0].c);
+    assert.equal(capAfter, capBefore, 'cap probe must leave the agents table unchanged');
 
     // 3. Verify transaction rollback on real PG using a dedicated rollback-probe table
     await adapter.query("DROP TABLE IF EXISTS test_rollback_probe");
