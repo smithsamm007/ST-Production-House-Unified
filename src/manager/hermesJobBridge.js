@@ -43,6 +43,24 @@
 
 import { EPISODE_DURATION_OPTIONS_SECONDS } from "../scheduling/directorSchedule.js";
 
+/**
+ * Creative context allowlist (DCIIS Phase 2 wiring, no schema change).
+ *
+ * Only these fields may travel with a Hermes decision. Everything else an
+ * identity provider returns (provider names, credentials, affiliate data,
+ * prompts, file paths) is dropped by construction: the context is built from
+ * this list, never filtered from the input.
+ */
+const CREATIVE_CONTEXT_SNAPSHOT_KEYS = Object.freeze([
+  "universeType",
+  "narrator",
+  "sourceCategories",
+  "lazyHierarchy",
+  "bibleSummary",
+]);
+const CREATIVE_CONTEXT_MAX_STRING = 2000;
+const CREATIVE_CONTEXT_MAX_LIST = 20;
+
 function fail(code) {
   const error = new Error(code);
   error.code = code;
@@ -87,6 +105,70 @@ export function validateProductionStartPayload(payload) {
   return { channelId, title: title.trim(), season: seasonNum, episode: episodeNum, episodeDurationSeconds };
 }
 
+// A field that is PRESENT but unusable is a contract violation, never something
+// to drop silently: a Director with a 3000-character vision must not look like a
+// Director with no vision. Only keys outside the allowlist are dropped.
+const requireBoundedString = (value) => {
+  if (typeof value !== "string") throw fail("DIRECTOR_IDENTITY_INVALID");
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || value.length > CREATIVE_CONTEXT_MAX_STRING) {
+    throw fail("DIRECTOR_IDENTITY_INVALID");
+  }
+  return trimmed;
+};
+
+const requireBoundedList = (value) => {
+  if (!Array.isArray(value) || value.length > CREATIVE_CONTEXT_MAX_LIST) throw fail("DIRECTOR_IDENTITY_INVALID");
+  return value.map((item) => requireBoundedString(item));
+};
+
+const requireBoundedMap = (value) => {
+  if (!isPlainObject(value)) throw fail("DIRECTOR_IDENTITY_INVALID");
+  const keys = Object.keys(value);
+  if (keys.length > CREATIVE_CONTEXT_MAX_LIST) throw fail("DIRECTOR_IDENTITY_INVALID");
+  const out = {};
+  for (const key of keys) out[key] = requireBoundedString(value[key]);
+  return out;
+};
+
+/**
+ * Reduce a Director identity to the allowlisted, serializable creative context a
+ * team may see. Fails closed on cross-Director identity (Rule 5) and returns
+ * null when the identity carries nothing usable.
+ *
+ * @param {Object|null} identity
+ * @param {string} expectedAgentId
+ * @returns {null|Object}
+ */
+export function sanitizeDirectorCreativeContext(identity, expectedAgentId) {
+  if (identity === null || identity === undefined) return null;
+  if (!isPlainObject(identity)) throw fail("DIRECTOR_IDENTITY_INVALID");
+  if (identity.agentId !== expectedAgentId) throw fail("DIRECTOR_IDENTITY_MISMATCH");
+
+  const snapshot = isPlainObject(identity.snapshot) ? identity.snapshot : {};
+  const safeSnapshot = {};
+  for (const key of CREATIVE_CONTEXT_SNAPSHOT_KEYS) {
+    const value = snapshot[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value === "string") {
+      safeSnapshot[key] = requireBoundedString(value);
+    } else if (Array.isArray(value)) {
+      safeSnapshot[key] = requireBoundedList(value);
+    } else {
+      safeSnapshot[key] = requireBoundedMap(value);
+    }
+  }
+
+  const context = { agentId: expectedAgentId };
+  for (const field of ["charterId", "vision", "defaultLanguage", "secondaryLanguage"]) {
+    if (identity[field] === undefined || identity[field] === null) continue;
+    context[field] = requireBoundedString(identity[field]);
+  }
+  if (Object.keys(safeSnapshot).length > 0) context.snapshot = safeSnapshot;
+
+  return Object.freeze(context);
+}
+
 /**
  * Create the bridge over injected dependencies.
  *
@@ -103,6 +185,12 @@ export function createHermesJobBridge({
   evidence,
   audit,
   directorScheduleProvider = null,
+  // Creative identity (DCIIS Phase 2 wiring): optional async
+  // ({ ownerId, agentId }) => identity | null, the same injection shape as
+  // directorScheduleProvider. Disabled by default so the existing behaviour is
+  // byte-identical unless a caller explicitly opts in.
+  directorIdentityProvider = null,
+  creativeContextEnabled = false,
   // Phase 2C: canonical Director lifecycle guard ({ assertActive(agentId) } or
   // null). Optional so the demo/test transports keep working; when wired, a
   // retired or suspended canonical Director can never have production queued.
@@ -190,6 +278,25 @@ export function createHermesJobBridge({
       return recordFailure("DIRECTOR_CHANNEL_MISMATCH");
     }
 
+    // Creative identity retrieval (opt-in): the Director's own allowlisted
+    // context, fetched only after the tenant check so one Director can never
+    // read another's identity. A lookup that cannot be performed is an honest
+    // failure, never a silent empty context.
+    let creativeContext = null;
+    if (creativeContextEnabled === true && typeof directorIdentityProvider === "function") {
+      let identity;
+      try {
+        identity = await directorIdentityProvider({ ownerId, agentId: channel.agentId });
+      } catch {
+        return recordFailure("DIRECTOR_IDENTITY_LOOKUP_FAILED");
+      }
+      try {
+        creativeContext = sanitizeDirectorCreativeContext(identity, channel.agentId);
+      } catch (err) {
+        return recordFailure(err.code ?? "DIRECTOR_IDENTITY_INVALID");
+      }
+    }
+
     // Per-Director duration resolution (master prompt §5): the Director's OWN
     // persisted setting is read when the decision does not carry one, so the
     // queued job is planned with the settings the owner configured.
@@ -247,6 +354,9 @@ export function createHermesJobBridge({
         // value the production pipeline resolves for the render target.
         episodeDurationSeconds: episodeDurationSeconds ?? null,
         jobId: queued.jobId,
+        // Present only when the creative-context flag is on, so existing
+        // evidence records keep their exact shape.
+        ...(creativeContext ? { creativeContext } : {}),
       },
     });
     const receiptId = stored?.id ?? null;
@@ -268,6 +378,7 @@ export function createHermesJobBridge({
       jobId: queued.jobId,
       receiptId,
       episodeDurationSeconds: episodeDurationSeconds ?? null,
+      creativeContext,
     };
   };
 }

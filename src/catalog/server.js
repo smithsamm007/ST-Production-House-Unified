@@ -55,6 +55,7 @@ import { localMotionEnabled } from "../pipeline/motionStage.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { generateSanitizedWorkerContext } from "./creativeCharter.js";
 
 const app = express();
 app.disable("x-powered-by");
@@ -1808,6 +1809,12 @@ app.use("/api/hermes", authenticateOwner, createHermesRouter({
   // Master prompt §5: Hermes plans against each Director's OWN persisted
   // schedule — the configured episode duration is stamped on the queued job.
   directorScheduleProvider: ({ ownerId, agentId }) => readDirectorSchedule(ownerId, agentId),
+  // Creative identity (DCIIS Phase 2 wiring): OPT-IN. When
+  // HERMES_CREATIVE_CONTEXT=enabled, Hermes attaches the Director's allowlisted
+  // charter context to the queued decision; otherwise the result and evidence
+  // shapes are byte-identical to before.
+  directorIdentityProvider: ({ agentId }) => generateSanitizedWorkerContext(agentId),
+  creativeContextEnabled: process.env.HERMES_CREATIVE_CONTEXT === "enabled",
 }));
 
 // Per-Director episode duration & daily production schedule (sql/029).

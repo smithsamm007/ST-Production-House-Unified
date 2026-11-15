@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 
 import { HermesManager, InMemoryHermesDecisionStore } from "../src/manager/hermesManager.js";
-import { createHermesJobBridge, validateProductionStartPayload } from "../src/manager/hermesJobBridge.js";
+import { createHermesJobBridge, sanitizeDirectorCreativeContext, validateProductionStartPayload } from "../src/manager/hermesJobBridge.js";
 import { ProductionRepository } from "../src/catalog/productionRepository.js";
 import { runEpisodePipeline } from "../src/pipeline/episodePipeline.js";
 import { createDemoStorageAdapter } from "../src/db/demoStorageAdapter.js";
@@ -261,4 +261,118 @@ test("END-TO-END: decision → queued job → durable pipeline → release in re
   const history = await manager.listDecisions({ limit: 10 });
   assert.equal(history[0].outcome, "EXECUTED");
   assert.equal(history[1].outcome, "EXECUTING");
+});
+
+// ---------------------------------------------------------------------------
+// Creative identity wiring (DCIIS Phase 2). Feature-flagged, OFF by default:
+// turning it on must not change anything except the added allowlisted context.
+// ---------------------------------------------------------------------------
+const IDENTITY = {
+  agentId: "agent-01",
+  charterId: "charter-1",
+  vision: "Slow-burn horror rooted in Indian folklore.",
+  defaultLanguage: "Hindi",
+  secondaryLanguage: "Hinglish",
+  snapshot: {
+    universeType: "horror",
+    narrator: "first-person",
+    sourceCategories: ["folklore", "urban legend"],
+    lazyHierarchy: { universe: "horror", series: "Nightfall" },
+    bibleSummary: "A ward that remembers its dead.",
+    // Not allowlisted: must never reach evidence or the response.
+    providerApiKey: "sk-live-do-not-leak",
+    promptTemplate: "SECRET PROMPT",
+    genresAndThemes: ["horror"],
+  },
+  secrets: { token: "abc" },
+};
+
+test("creative context stays off by default: no context, unchanged evidence shape", async () => {
+  const h = await buildHarness();
+  await queueStartDecision(h.manager, { channelId: h.channelId, episode: 41 });
+  const result = await h.bridge(h.manager, h.ownerId, 1);
+  assert.equal(result.status, "QUEUED");
+  assert.equal(result.creativeContext, null);
+  assert.equal(Object.prototype.hasOwnProperty.call(h.evidenceRows[0].payload, "creativeContext"), false);
+});
+
+test("creative context is allowlisted when enabled, and never carries secrets", async () => {
+  const h = await buildHarness();
+  const seen = [];
+  const bridge = createHermesJobBridge({
+    production: h.production,
+    evidence: h.evidence,
+    creativeContextEnabled: true,
+    directorIdentityProvider: async (scope) => {
+      seen.push(scope);
+      return IDENTITY;
+    },
+  });
+  await queueStartDecision(h.manager, { channelId: h.channelId, episode: 42 });
+  const result = await bridge(h.manager, h.ownerId, 1);
+
+  assert.equal(result.status, "QUEUED");
+  assert.deepEqual(seen, [{ ownerId: h.ownerId, agentId: "agent-01" }], "the provider is scoped to the channel's Director");
+  assert.equal(result.creativeContext.agentId, "agent-01");
+  assert.equal(result.creativeContext.vision, IDENTITY.vision);
+  assert.deepEqual(result.creativeContext.snapshot.sourceCategories, ["folklore", "urban legend"]);
+  assert.deepEqual(result.creativeContext.snapshot.lazyHierarchy, { universe: "horror", series: "Nightfall" });
+
+  const serialized = JSON.stringify(result.creativeContext) + JSON.stringify(h.evidenceRows[0].payload);
+  for (const forbidden of ["sk-live-do-not-leak", "SECRET PROMPT", "genresAndThemes", "secrets", "providerApiKey", "promptTemplate"]) {
+    assert.equal(serialized.includes(forbidden), false, `creative context must not carry ${forbidden}`);
+  }
+  assert.deepEqual(
+    Object.keys(result.creativeContext).sort(),
+    ["agentId", "charterId", "defaultLanguage", "secondaryLanguage", "snapshot", "vision"],
+  );
+  assert.deepEqual(
+    Object.keys(h.evidenceRows[0].payload.creativeContext.snapshot).sort(),
+    ["bibleSummary", "lazyHierarchy", "narrator", "sourceCategories", "universeType"],
+  );
+});
+
+test("a provider returning another Director's identity fails closed and queues nothing", async () => {
+  const h = await buildHarness();
+  const bridge = createHermesJobBridge({
+    production: h.production,
+    evidence: h.evidence,
+    creativeContextEnabled: true,
+    directorIdentityProvider: async () => ({ ...IDENTITY, agentId: "agent-02" }),
+  });
+  await queueStartDecision(h.manager, { channelId: h.channelId, episode: 43 });
+  const result = await bridge(h.manager, h.ownerId, 1);
+  assert.equal(result.status, "FAILED");
+  assert.equal(result.errorCode, "DIRECTOR_IDENTITY_MISMATCH");
+  assert.equal(h.evidenceRows.length, 0, "no evidence receipt for a refused decision");
+});
+
+test("an unreadable identity is an honest failure, not an empty context", async () => {
+  const h = await buildHarness();
+  const bridge = createHermesJobBridge({
+    production: h.production,
+    evidence: h.evidence,
+    creativeContextEnabled: true,
+    directorIdentityProvider: async () => { throw new Error("registry offline"); },
+  });
+  await queueStartDecision(h.manager, { channelId: h.channelId, episode: 44 });
+  const result = await bridge(h.manager, h.ownerId, 1);
+  assert.equal(result.status, "FAILED");
+  assert.equal(result.errorCode, "DIRECTOR_IDENTITY_LOOKUP_FAILED");
+});
+
+test("sanitizer drops unknown shapes and rejects an over-long payload", () => {
+  assert.equal(sanitizeDirectorCreativeContext(null, "agent-01"), null);
+  const minimal = sanitizeDirectorCreativeContext({ agentId: "agent-01", vision: "x" }, "agent-01");
+  assert.deepEqual(minimal, { agentId: "agent-01", vision: "x" });
+  // A present-but-unusable allowlisted field is rejected, never silently dropped.
+  assert.throws(
+    () => sanitizeDirectorCreativeContext({ agentId: "agent-01", snapshot: { narrator: 42 } }, "agent-01"),
+    /DIRECTOR_IDENTITY_INVALID/,
+  );
+  assert.throws(
+    () => sanitizeDirectorCreativeContext({ agentId: "agent-01", vision: "y".repeat(2001) }, "agent-01"),
+    /DIRECTOR_IDENTITY_INVALID/,
+  );
+  assert.equal(Object.isFrozen(minimal), true);
 });
