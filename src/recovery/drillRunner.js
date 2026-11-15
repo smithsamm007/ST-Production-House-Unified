@@ -94,14 +94,24 @@ export async function createDisposableDatabase(connectionString, prefix) {
   return { name, connectionString: connectionStringForDatabase(connectionString, name) };
 }
 
-/** Drops a disposable database created by this runner. Never touches others. */
+/**
+ * Drops a disposable database created by this runner. Never touches others.
+ * Returns true when the database is gone, false when cleanup failed — the caller
+ * reports that honestly instead of leaving a silent leftover.
+ */
 export async function dropDisposableDatabase(connectionString, databaseName) {
   assertSafeIdentifier(databaseName, "table");
+  if (!/^stph_(drill|tamper|checksum)_/.test(databaseName)) {
+    // Refuse to drop anything this runner did not create (source safety).
+    return false;
+  }
   const admin = new pg.Pool({ connectionString, connectionTimeoutMillis: 5000 });
   try {
     await admin.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
+    const check = await admin.query("SELECT 1 FROM pg_database WHERE datname = $1", [databaseName]);
+    return check.rowCount === 0;
   } catch {
-    // A leftover is reported by the next run's freshness check, not hidden.
+    return false;
   } finally {
     await admin.end().catch(() => {});
   }
@@ -264,6 +274,7 @@ export async function runBackupRestoreDrill(connectionString, options = {}) {
 
   const sourceDatabase = await createDisposableDatabase(connectionString, sourcePrefix);
   let restoreDatabase;
+  const cleanup = { attempted: [], residue: [] };
   try {
     const source = await openDatabaseAdapter(sourceDatabase.connectionString);
     let target;
@@ -292,6 +303,8 @@ export async function runBackupRestoreDrill(connectionString, options = {}) {
         isolation: "database",
         sourceDatabase: sourceDatabase.name,
         restoreDatabase: restoreDatabase.name,
+        // Populated by the finally block (same object reference).
+        cleanup,
         manifestId: manifest.manifestId,
         tableCount: manifest.tables.length,
         rowCount: manifest.tables.reduce((sum, t) => sum + t.rowCount, 0),
@@ -312,7 +325,16 @@ export async function runBackupRestoreDrill(connectionString, options = {}) {
       if (target) await target.pool.end().catch(() => {});
     }
   } finally {
-    await dropDisposableDatabase(connectionString, sourceDatabase.name);
-    if (restoreDatabase) await dropDisposableDatabase(connectionString, restoreDatabase.name);
+    for (const name of [sourceDatabase.name, restoreDatabase?.name].filter(Boolean)) {
+      cleanup.attempted.push(name);
+      const dropped = await dropDisposableDatabase(connectionString, name);
+      if (!dropped) cleanup.residue.push(name);
+    }
+    if (cleanup.residue.length > 0) {
+      // Honest cleanup failure: surfaced on the report, never swallowed.
+      console.error(
+        `DRILL_CLEANUP_INCOMPLETE: ${cleanup.residue.join(", ")} — drop these disposable databases manually; they must not be reused.`
+      );
+    }
   }
 }

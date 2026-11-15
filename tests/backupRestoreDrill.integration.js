@@ -146,3 +146,43 @@ test("rollback safety: a tampered applied migration fails closed with no partial
     await dropDisposableDatabase(dbUrl, checksumDatabase.name);
   }
 });
+
+test("a failed drill still drops its disposable databases (failure-path cleanup)", async (t) => {
+  const dbUrl = process.env.POSTGRES_TEST_URL || process.env.DATABASE_URL;
+  const required = Boolean(process.env.CI || process.env.npm_lifecycle_event === "test:integration" || dbUrl);
+  if (!dbUrl) {
+    if (required) assert.fail("PostgreSQL 15 URL is mandatory for the failure-cleanup acceptance");
+    t.diagnostic("PostgreSQL is not configured; skipped by the unit command");
+    return;
+  }
+
+  const pg = (await import("pg")).default;
+  const admin = new pg.Pool({ connectionString: dbUrl, connectionTimeoutMillis: 5000 });
+  try {
+    const before = await admin.query("SELECT datname FROM pg_database WHERE datname LIKE 'stph_%'");
+
+    // maxRows: -1 makes the manifest stage fail AFTER the source database exists,
+    // which is exactly the path that used to leave disposable databases behind.
+    await assert.rejects(() => runBackupRestoreDrill(dbUrl, { maxRows: -1 }));
+
+    const after = await admin.query("SELECT datname FROM pg_database WHERE datname LIKE 'stph_%'");
+    assert.deepEqual(
+      after.rows.map((r) => r.datname).sort(),
+      before.rows.map((r) => r.datname).sort(),
+      "a failed drill must not leave disposable databases behind"
+    );
+  } finally {
+    await admin.end().catch(() => {});
+  }
+});
+
+test("the drill refuses to drop a database it did not create", async (t) => {
+  const dbUrl = process.env.POSTGRES_TEST_URL || process.env.DATABASE_URL;
+  if (!dbUrl) {
+    t.diagnostic("PostgreSQL is not configured; skipped by the unit command");
+    return;
+  }
+  const { dropDisposableDatabase } = await import("../src/recovery/drillRunner.js");
+  const current = new URL(dbUrl).pathname.replace(/^\//, "");
+  assert.equal(await dropDisposableDatabase(dbUrl, current), false, "the source database must never be dropped");
+});

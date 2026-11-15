@@ -105,3 +105,17 @@ Requirements and honesty notes:
 - `report.isolation === "database"`, plus `sourceDatabase` / `restoreDatabase`, record the
   legs; residue is detectable with
   `SELECT datname FROM pg_database WHERE datname LIKE 'stph_%'` (must be empty after a run).
+
+## Cleanup guarantees (tested, not assumed)
+
+- Both legs are dropped in a `finally` block, so a **failed** drill cleans up too.
+  Regression: *"a failed drill still drops its disposable databases (failure-path
+  cleanup)"* calls the drill with `maxRows: -1` so the manifest stage fails after the
+  source database exists, then asserts the `stph_%` set is unchanged.
+- `dropDisposableDatabase` refuses any name that does not match
+  `stph_(drill|tamper|checksum)_*`, so the source or an unrelated database can never be
+  dropped by the drill. Regression: *"the drill refuses to drop a database it did not
+  create"*.
+- A drop that does not verify returns `false`; the runner prints
+  `DRILL_CLEANUP_INCOMPLETE: <names>` and records `report.cleanup.residue` instead of
+  claiming success.
