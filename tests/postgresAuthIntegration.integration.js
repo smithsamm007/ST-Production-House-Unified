@@ -146,9 +146,12 @@ test("live PostgreSQL authentication, CSRF, MFA and owner isolation", async (t) 
     assert.equal((await validateAndRetrieveSession(elevated.token)).ownerId, owner.id);
 
     const agents = new AgentRepository();
-    // Pad to exactly 50: 21 preloaded agents (20 original + NEWTON, S-M02-01)
-    // + 29 synthetic rows = 50, so the next insert must hit AGENT_CAP_REACHED.
-    for (let index = 22; index <= 50; index += 1) {
+    // Pad to exactly the 50-agent cap, whatever the registry currently holds
+    // (20 original agents + NEWTON + the six canonical Directors from 034), so the
+    // next insert must hit AGENT_CAP_REACHED.
+    const seededAgents = (await adapter.query("SELECT count(*)::int AS count FROM agents")).rows[0].count;
+    const padding = Math.max(0, 50 - seededAgents);
+    for (let index = 0; index < padding; index += 1) {
       await agents.add({
         id: `task2-cap-${index}`,
         name: `TASK2_CAP_${index}`,

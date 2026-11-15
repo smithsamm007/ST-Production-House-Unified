@@ -91,7 +91,7 @@ export async function createDisposableDatabase(connectionString, prefix) {
  */
 export async function dropDisposableDatabase(connectionString, databaseName) {
   assertSafeIdentifier(databaseName, "table");
-  if (!/^stph_(drill|tamper|checksum)_/.test(databaseName)) {
+  if (!/^stph_(drill|tamper|checksum|acceptance)_/.test(databaseName)) {
     // Refuse to drop anything this runner did not create (source safety).
     return false;
   }

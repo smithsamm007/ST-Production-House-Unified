@@ -27,6 +27,7 @@ import {
   ACTIVE_DIRECTOR_CAP,
   CANONICAL_DIRECTOR_PUBLIC_CODES,
 } from "./canonicalDirectorRepository.js";
+import { blockedWorkError } from "./directorLifecycle.js";
 
 function adapterOf(db) {
   const adapter = typeof db === "function" ? db() : db;
@@ -71,10 +72,10 @@ export function createCanonicalDirectorGuard(db) {
       const mapping = await repo.findByUnderlyingAgentId(underlyingAgentId);
       if (!mapping) return null; // not governed by the canonical registry yet
       if (mapping.status !== "active") {
-        throw Object.assign(
-          new Error(CANONICAL_DIRECTOR_PUBLIC_CODES.CANONICAL_DIRECTOR_NOT_ACTIVE),
-          { code: CANONICAL_DIRECTOR_PUBLIC_CODES.CANONICAL_DIRECTOR_NOT_ACTIVE }
-        );
+        // Distinguish "seeded, awaiting the Owner" from "paused"/"retired" so a
+        // caller can report something true. Both still refuse the work.
+        const blocked = blockedWorkError(mapping);
+        throw Object.assign(new Error(blocked.code), { code: blocked.code });
       }
       return mapping;
     },
@@ -98,12 +99,19 @@ export function createCanonicalDirectorGuard(db) {
         );
       }
       const repo = await repository();
-      const mapping = await repo.findActiveByCode(canonicalDirectorCode);
+      const mapping = await repo.findByCode(canonicalDirectorCode);
       if (!mapping) {
+        // Unchanged public contract: a code with no row is reported as not active.
         throw Object.assign(
           new Error(CANONICAL_DIRECTOR_PUBLIC_CODES.CANONICAL_DIRECTOR_NOT_ACTIVE),
           { code: CANONICAL_DIRECTOR_PUBLIC_CODES.CANONICAL_DIRECTOR_NOT_ACTIVE }
         );
+      }
+      if (mapping.status !== "active") {
+        // Same lifecycle vocabulary as assertActive: pending is reported as
+        // pending, not as a generic "not active".
+        const blocked = blockedWorkError(mapping);
+        throw Object.assign(new Error(blocked.code), { code: blocked.code });
       }
       return mapping;
     },
