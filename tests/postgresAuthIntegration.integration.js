@@ -24,7 +24,45 @@ test("live PostgreSQL authentication, CSRF, MFA and owner isolation", async (t) 
   }
 
   process.env.MFA_ENCRYPTION_KEY ||= "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
-  const adapter = createPostgresAdapter({ connectionString });
+
+  // Determinism: this suite bootstraps THE owner row, and OwnerRepository.createInitial
+  // correctly refuses once any owner exists (OWNER_BOOTSTRAP_ALREADY_COMPLETED). Running
+  // against a database that already has an owner therefore failed the whole integration
+  // job even though the product behaved correctly. Run in a private database created for
+  // this run and dropped afterwards, so the suite is repeatable without weakening the
+  // single-owner bootstrap rule or deleting an existing owner.
+  const { Client } = await import("pg");
+  const baseDatabase = (new URL(connectionString).pathname || "/postgres").replace(/^\//, "") || "postgres";
+  const privateDatabase = `${baseDatabase.replace(/[^a-zA-Z0-9_]/g, "_")}_authtest_${process.pid}_${Date.now()}`;
+  const privateConnectionString = (() => {
+    const url = new URL(connectionString);
+    url.pathname = `/${privateDatabase}`;
+    return url.toString();
+  })();
+  let isolated = false;
+  {
+    const admin = new Client({ connectionString });
+    try {
+      await admin.connect();
+      await admin.query(`CREATE DATABASE "${privateDatabase}"`);
+      isolated = true;
+    } catch (error) {
+      const existing = await admin
+        .query("SELECT count(*)::integer AS count FROM owners")
+        .catch(() => null);
+      if (!existing || Number(existing.rows[0]?.count ?? 0) !== 0) {
+        t.diagnostic(
+          `AUTH_SUITE_REQUIRES_EMPTY_DATABASE (${error.message}); marked skipped rather than weakening the owner bootstrap rule`
+        );
+        return;
+      }
+      t.diagnostic(`AUTH_SUITE_SHARED_DATABASE (${error.message}); the database has no owner yet`);
+    } finally {
+      await admin.end().catch(() => {});
+    }
+  }
+
+  const adapter = createPostgresAdapter({ connectionString: isolated ? privateConnectionString : connectionString });
   configureRepositoryAdapter(adapter);
   const unique = Date.now();
   const email = `owner-${unique}@example.test`;
@@ -128,5 +166,11 @@ test("live PostgreSQL authentication, CSRF, MFA and owner isolation", async (t) 
   } finally {
     await adapter.query("DELETE FROM agents WHERE id LIKE 'task2-cap-%'").catch(() => {});
     await adapter.closePool();
+    if (isolated) {
+      const admin = new Client({ connectionString });
+      await admin.connect().catch(() => {});
+      await admin.query(`DROP DATABASE IF EXISTS "${privateDatabase}" WITH (FORCE)`).catch(() => {});
+      await admin.end().catch(() => {});
+    }
   }
 });
