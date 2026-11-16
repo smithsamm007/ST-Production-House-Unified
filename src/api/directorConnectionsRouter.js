@@ -31,6 +31,7 @@
 import { Router } from "express";
 import { verifyCsrfToken } from "../catalog/ownerAuthentication.js";
 import { enforceOperationalActive } from "../catalog/canonicalDirectorLifecycle.js";
+import { lifecycleRefusalCode } from "../catalog/directorLifecycle.js";
 import {
   DirectorConnectionsRepository,
   runConnectionTest,
@@ -164,8 +165,10 @@ export function createDirectorConnectionsRouter({ db, recordAuditEvent }) {
       try {
         await enforceOperationalActive(resolveDb(), req.params.agentId);
       } catch (err) {
-        if (err?.code === "CANONICAL_DIRECTOR_NOT_ACTIVE") {
-          return res.status(409).json({ error: "CANONICAL_DIRECTOR_NOT_ACTIVE" });
+        // Binding a credential is new operational state: both refusals are 409.
+        const refusal = lifecycleRefusalCode(err);
+        if (refusal) {
+          return res.status(409).json({ error: refusal });
         }
         throw err;
       }

@@ -42,6 +42,7 @@
  */
 
 import { EPISODE_DURATION_OPTIONS_SECONDS } from "../scheduling/directorSchedule.js";
+import { lifecycleRefusalCode } from "../catalog/directorLifecycle.js";
 import { sanitizeDirectorCreativeContext } from "../catalog/directorCreativeContext.js";
 
 // Re-exported so existing callers/tests keep one import site; the single
@@ -189,8 +190,12 @@ export function createHermesJobBridge({
       try {
         await canonicalGuard.assertActive(channel.agentId);
       } catch (err) {
-        if (err?.code === "CANONICAL_DIRECTOR_NOT_ACTIVE") {
-          return recordFailure("CANONICAL_DIRECTOR_NOT_ACTIVE");
+        // BOTH lifecycle refusals (not-active and pending-activation) are an
+        // honest, recorded FAILED decision — never a thrown error that would
+        // leave the decision stranded in EXECUTING.
+        const refusal = lifecycleRefusalCode(err);
+        if (refusal) {
+          return recordFailure(refusal);
         }
         throw err;
       }

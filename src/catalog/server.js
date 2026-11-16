@@ -37,6 +37,7 @@ import { createHermesRouter } from "../api/hermesRouter.js";
 import { createDirectorScheduleRouter } from "../api/directorScheduleRouter.js";
 import { createCanonicalDirectorRouter } from "./canonicalDirectorServer.js";
 import { enforceOperationalActive } from "./canonicalDirectorLifecycle.js";
+import { lifecycleRefusalCode } from "./directorLifecycle.js";
 import { DirectorScheduleRepository } from "./scheduleRepository.js";
 import {
   createBackgroundSchedulerTrigger,
@@ -1128,8 +1129,9 @@ app.post("/api/productions", authenticateOwner, requireCsrf, async (req, release
     try {
       await enforceOperationalActive(postgres, channel.agentId);
     } catch (err) {
-      if (err?.code === "CANONICAL_DIRECTOR_NOT_ACTIVE") {
-        return releaseEpRes.status(409).json({ error: "CANONICAL_DIRECTOR_NOT_ACTIVE" });
+      const refusal = lifecycleRefusalCode(err);
+      if (refusal) {
+        return releaseEpRes.status(409).json({ error: refusal });
       }
       throw err;
     }

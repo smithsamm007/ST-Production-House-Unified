@@ -98,3 +98,31 @@ export function assertLifecycleTransition(from, to) {
   }
   return true;
 }
+
+/**
+ * Every code that means "this Director may not originate new work".
+ *
+ * The database guard (sql/032/033) raises one generic code because it cannot see
+ * the repository's finer vocabulary; the application layer can, so `pending`
+ * keeps its own identity for diagnostics and audit. Application call sites must
+ * treat BOTH as the same refusal — a pending Director is not an internal error.
+ */
+export const LIFECYCLE_REFUSAL_CODES = Object.freeze([
+  "CANONICAL_DIRECTOR_NOT_ACTIVE",
+  "CANONICAL_DIRECTOR_PENDING_ACTIVATION",
+]);
+
+/**
+ * The lifecycle refusal code carried by `error`, or null when this is not a
+ * lifecycle refusal. Preserves the original code so the response and the audit
+ * trail stay truthful about which lifecycle state refused the work.
+ */
+export function lifecycleRefusalCode(error) {
+  const code = typeof error === "string" ? error : error?.code;
+  return LIFECYCLE_REFUSAL_CODES.includes(code) ? code : null;
+}
+
+/** True when `error` is a canonical-Director lifecycle refusal. */
+export function isLifecycleRefusal(error) {
+  return lifecycleRefusalCode(error) !== null;
+}
