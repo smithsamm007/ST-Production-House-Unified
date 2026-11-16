@@ -34,6 +34,8 @@ const ALLOWED_ERROR_CODES = new Set([
   "CANONICAL_DIRECTOR_CODE_INVALID",
   "CANONICAL_DIRECTOR_NOT_FOUND",
   "CANONICAL_DIRECTOR_NOT_ACTIVE",
+  // Pending activation is a lifecycle conflict, never an internal error.
+  "CANONICAL_DIRECTOR_PENDING_ACTIVATION",
   "ACTIVE_DIRECTOR_CAP_REACHED",
   "MAPPING_ALREADY_EXISTS",
   "STATUS_INVALID",
@@ -73,13 +75,19 @@ function publicCode(err) {
   return code && ALLOWED_ERROR_CODES.has(code) ? code : null;
 }
 
-/** HTTP status per stable code. Unknown failures stay generic 500. */
-function statusForCode(code) {
+/**
+ * HTTP status per stable code. Unknown failures stay generic 500.
+ *
+ * Exported so the lifecycle-refusal mapping (both refusal codes -> 409) is
+ * pinnable by tests instead of being asserted through a 500.
+ */
+export function statusForCode(code) {
   switch (code) {
     case "CANONICAL_DIRECTOR_NOT_FOUND":
     case "CANONICAL_DIRECTOR_CODE_INVALID":
       return 404;
     case "CANONICAL_DIRECTOR_NOT_ACTIVE":
+    case "CANONICAL_DIRECTOR_PENDING_ACTIVATION":
     case "ACTIVE_DIRECTOR_CAP_REACHED":
     case "MAPPING_ALREADY_EXISTS":
       return 409;

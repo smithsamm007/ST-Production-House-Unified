@@ -43,6 +43,7 @@ import {
   validateDirectorScheduleInput,
 } from "../scheduling/directorSchedule.js";
 import { enforceOperationalActive } from "../catalog/canonicalDirectorLifecycle.js";
+import { lifecycleRefusalCode } from "../catalog/directorLifecycle.js";
 import {
   DEFAULT_LOOKBACK_DAYS,
   DEFAULT_MAX_CONCURRENT_JOBS_PER_DIRECTOR,
@@ -299,8 +300,10 @@ export function createDirectorScheduleRouter({
         try {
           await enforceOperationalActive(resolveDb(), agentId);
         } catch (err) {
-          if (err?.code === "CANONICAL_DIRECTOR_NOT_ACTIVE") {
-            return res.status(409).json({ error: "CANONICAL_DIRECTOR_NOT_ACTIVE" });
+          // Enabling a schedule is new work: pending and not-active are both 409.
+          const refusal = lifecycleRefusalCode(err);
+          if (refusal) {
+            return res.status(409).json({ error: refusal });
           }
           throw err;
         }
@@ -373,6 +376,24 @@ export function createDirectorScheduleRouter({
         return res.status(400).json({ error: "REQUEST_VALIDATION_FAILED" });
       }
       if (!(await agentExists(agentId))) return res.status(404).json({ error: "AGENT_NOT_FOUND" });
+
+      // A manual run originates production work (and queues a worker), so it
+      // obeys exactly the same canonical lifecycle rule as every other origin:
+      // only an ACTIVE Director may run. The database trigger stays as defence
+      // in depth, but the refusal must be a clear lifecycle conflict rather than
+      // a generic queue failure. Only the two lifecycle codes are reclassified;
+      // storage outages and other failures keep their own semantics.
+      try {
+        await enforceOperationalActive(resolveDb(), agentId);
+      } catch (err) {
+        const refusal = lifecycleRefusalCode(err);
+        if (refusal) {
+          return res.status(409).json({ error: refusal });
+        }
+        if (sendStorageError(res, err)) return;
+        logRouterError("DIRECTOR_SCHEDULE_RUN_GUARD_FAILED", err);
+        return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
+      }
 
       const repo = getRepo();
       const records = await repo.listScheduleRecords(req.ownerId, { agentIds: [agentId] });

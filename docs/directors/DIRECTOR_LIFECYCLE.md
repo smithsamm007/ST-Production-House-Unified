@@ -117,6 +117,46 @@ killed, and nothing is misreported as completed.
 Callers map `CANONICAL_DIRECTOR_*` / `LEGACY_DIRECTOR_RETIRED` to a 409 and never
 queue the work. Nothing logs credentials, tokens or payloads.
 
+### Application vs database codes (D-4)
+
+The database guards (`sql/032`, `sql/033`) can only raise one canonical code:
+`CANONICAL_DIRECTOR_NOT_ACTIVE` (plus `LEGACY_DIRECTOR_RETIRED` for legacy
+identities). The application layer knows *why* a Director is blocked, so a
+Director seeded as `suspended` + `PENDING_OWNER_ACTIVATION` is reported as
+`CANONICAL_DIRECTOR_PENDING_ACTIVATION`.
+
+Both are the same refusal, and every call site treats them identically through
+`lifecycleRefusalCode()` / `isLifecycleRefusal()` in
+`src/catalog/directorLifecycle.js`:
+
+| Call site | Behaviour for either code |
+|---|---|
+| `POST /api/productions` | `409 { error: <code> }`, no release, no job |
+| `PUT /api/scheduling/directors/:agentId` (enabling) | `409 { error: <code> }`, schedule stays disabled |
+| `POST /api/connections/directors/:agentId` | `409 { error: <code> }`, no credential bound |
+| `POST /api/hermes/decisions` (production.*) | `409 { error: <code> }`, no decision recorded |
+| `POST /api/scheduling/directors/:agentId/run` (manual run) | `409 { error: <code> }` before any work is planned or queued |
+| HERMES execution bridge | decision recorded `FAILED` with the original code; no job, no release, no evidence |
+
+The original code is preserved (never collapsed into a generic error) and no
+refusal changes lifecycle state. An unrelated failure is **not** reclassified as
+a lifecycle conflict: it still surfaces as a 500 (routes) or a thrown error
+(bridge), which is the honest outcome.
+
+The canonical Director API (`/api/canonical-directors`) allowlists both codes as
+`409`, so a pending conflict can never degrade to a 500 there either.
+
+### Manual schedule run
+
+`POST /api/scheduling/directors/:agentId/run` originates production work and
+queues a worker, so it runs the same canonical guard as the other origins —
+after the Director is confirmed to exist (unknown identities keep their `404`)
+and before any schedule lookup, planning or queueing. A blocked Director gets
+`409` with its lifecycle code, the schedule is untouched and no job, release or
+worker dispatch occurs. The enforcement applies to `dryRun` too: a Director that
+may not work may not be rehearsed into work either. The database trigger on
+`jobs` remains the final defence, never the only one.
+
 ## 6. Migration ordering
 
 `sql/001..034` must stay contiguous (enforced by `src/orchestration/repoLinter.js`

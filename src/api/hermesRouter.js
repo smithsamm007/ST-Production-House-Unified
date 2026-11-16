@@ -33,6 +33,7 @@ import {
 import { PostgresHermesDecisionStore } from "../manager/postgresHermesDecisionStore.js";
 import { createHermesJobBridge } from "../manager/hermesJobBridge.js";
 import { enforceOperationalActive } from "../catalog/canonicalDirectorLifecycle.js";
+import { lifecycleRefusalCode } from "../catalog/directorLifecycle.js";
 import {
   HERMES_AUTHORITY_MATRIX,
   AUTHORITY_AUTONOMOUS,
@@ -173,8 +174,10 @@ export function createHermesRouter({
             req.body.directorId
           );
         } catch (err) {
-          if (err?.code === "CANONICAL_DIRECTOR_NOT_ACTIVE") {
-            return res.status(409).json({ error: "CANONICAL_DIRECTOR_NOT_ACTIVE" });
+          // A pending Director is a lifecycle conflict, not an internal error.
+          const refusal = lifecycleRefusalCode(err);
+          if (refusal) {
+            return res.status(409).json({ error: refusal });
           }
           throw err;
         }
