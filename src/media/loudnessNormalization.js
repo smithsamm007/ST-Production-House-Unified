@@ -60,6 +60,29 @@ export const MAX_DELIVERY_CORRECTION_ATTEMPTS = 3;
 export const MAX_CUMULATIVE_ATTENUATION_DB = 12;
 
 /**
+ * Build the DYNAMIC delivery filter used by the corrective pass.
+ *
+ * The two-pass LINEAR pass preserves program dynamics, which means it cannot
+ * satisfy both delivery targets on peaky speech: run 44066920506 showed that
+ * making the delivered AAC respect -2.5 dBTP by broadband gain pushed the
+ * program to -21.06 LUFS against a -14 LUFS target. Dynamic normalization
+ * reduces crest factor instead, so peak and loudness are reachable together.
+ */
+export function buildDynamicDeliveryFilter({
+  targetLufs = DELIVERY_TARGET_LUFS,
+  truePeakDbtp = DELIVERY_TRUE_PEAK_HEADROOM_DBTP,
+  loudnessRangeLu = 7,
+} = {}) {
+  if (!Number.isFinite(targetLufs) || !Number.isFinite(truePeakDbtp)) {
+    throw loudnessError("LOUDNESS_TARGET_INVALID", "target loudness and true peak must be finite");
+  }
+  if (!Number.isFinite(loudnessRangeLu) || loudnessRangeLu <= 0) {
+    throw loudnessError("LOUDNESS_TARGET_INVALID", "loudness range must be a positive finite number");
+  }
+  return `loudnorm=I=${targetLufs}:TP=${truePeakDbtp}:LRA=${loudnessRangeLu}`;
+}
+
+/**
  * Decide the attenuation for the NEXT encode round from a measurement of the
  * file that was actually encoded.
  *

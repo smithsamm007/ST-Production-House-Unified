@@ -53,6 +53,7 @@ import {
   DELIVERY_TRUE_PEAK_HEADROOM_DBTP,
   MAX_DELIVERY_CORRECTION_ATTEMPTS,
   QC_MAX_TRUE_PEAK_DBTP,
+  buildDynamicDeliveryFilter,
   buildMeasuredNormalizationFilter,
   planDeliveryAttenuation,
   requiresCorrectiveNormalization,
@@ -117,21 +118,30 @@ function applyCorrectiveNormalization({ videoPath }) {
     ["-y", "-v", "error", "-i", videoPath, "-vn", "-acodec", "pcm_s16le", extractedPath],
     { stdio: ["ignore", "ignore", "inherit"] }
   );
-  const correctedLoudness = normalizeAudioSync({
-    inputPath: extractedPath,
-    outputPath: correctedPath,
-    targetLufs: TARGET_LUFS,
-    maxTruePeak: NORMALIZATION_TRUE_PEAK_DBTP,
-  });
+  const attempts = [];
+  let cumulativeOffsetDb = 0;
+  let pcmLoudness = null;
   // Encode, then MEASURE THE ENCODED FILE. Nothing here may accept the
   // normalized WAV as proof of the deliverable: AAC overshoot happens after
   // that measurement (run 43921087702: WAV inside target, delivered file at
   // +2.04 dBTP). Each round re-encodes the same PCM with cumulative gain, so
   // the correction never stacks lossy generations.
-  const attempts = [];
-  let cumulativeGainDb = 0;
   for (let attempt = 1; attempt <= MAX_DELIVERY_CORRECTION_ATTEMPTS; attempt += 1) {
-    const gainFilter = cumulativeGainDb === 0 ? [] : ["-af", `volume=${cumulativeGainDb}dB`];
+    // Peak limiting, not broadband gain: the delivery targets (loudness AND
+    // true peak) are only jointly reachable by reducing crest factor.
+    const ceilingDbtp = Math.round((NORMALIZATION_TRUE_PEAK_DBTP + cumulativeOffsetDb) * 100) / 100;
+    execFileSync(
+      "ffmpeg",
+      [
+        "-y", "-v", "error",
+        "-i", extractedPath,
+        "-af", buildDynamicDeliveryFilter({ targetLufs: TARGET_LUFS, truePeakDbtp: ceilingDbtp }),
+        "-ar", String(REQUIRED_SAMPLE_RATE),
+        correctedPath,
+      ],
+      { stdio: ["ignore", "ignore", "inherit"] }
+    );
+    pcmLoudness = measureLoudnessSync(correctedPath);
     execFileSync(
       "ffmpeg",
       [
@@ -140,7 +150,6 @@ function applyCorrectiveNormalization({ videoPath }) {
         "-i", correctedPath,
         "-map", "0:v:0", "-map", "1:a:0",
         "-c:v", "copy",
-        ...gainFilter,
         "-c:a", "aac", "-b:a", "128k", "-ar", String(REQUIRED_SAMPLE_RATE),
         "-shortest",
         remuxedPath,
@@ -150,35 +159,47 @@ function applyCorrectiveNormalization({ videoPath }) {
     const delivered = measureLoudnessSync(remuxedPath);
     attempts.push(Object.freeze({
       attempt,
-      cumulativeGainDb,
-      integratedLufs: delivered.integratedLufs,
-      truePeakDbtp: delivered.truePeakDbtp,
-      clippingCount: delivered.clippingCount,
+      limiterCeilingDbtp: ceilingDbtp,
+      pcm: {
+        integratedLufs: pcmLoudness.integratedLufs,
+        truePeakDbtp: pcmLoudness.truePeakDbtp,
+      },
+      delivered: {
+        integratedLufs: delivered.integratedLufs,
+        truePeakDbtp: delivered.truePeakDbtp,
+        clippingCount: delivered.clippingCount,
+      },
     }));
-    const plan = planDeliveryAttenuation({
-      measuredTruePeakDbtp: delivered.truePeakDbtp,
-      targetTruePeakDbtp: NORMALIZATION_TRUE_PEAK_DBTP,
-      cumulativeGainDb,
-    });
-    if (plan.converged) {
+    console.log(JSON.stringify({ code: "REHEARSAL_CORRECTIVE_ROUND", ...attempts[attempts.length - 1] }));
+
+    const peakOk = delivered.truePeakDbtp <= NORMALIZATION_TRUE_PEAK_DBTP;
+    const loudnessOk = Math.abs(delivered.integratedLufs - TARGET_LUFS) <= 2.0;
+    if (peakOk && loudnessOk) {
       renameSync(remuxedPath, videoPath);
       return {
-        correctedLoudness,
+        pcmLoudness,
         extractedPath,
         correctedPath,
         attempts,
-        cumulativeGainDb,
+        cumulativeOffsetDb,
         deliveredLoudness: delivered,
       };
     }
-    cumulativeGainDb = plan.cumulativeGainDb;
-    console.log(JSON.stringify({
-      code: "REHEARSAL_CORRECTIVE_ATTENUATION",
-      attempt,
-      measuredTruePeakDbtp: delivered.truePeakDbtp,
-      additionalAttenuationDb: plan.additionalAttenuationDb,
-      cumulativeGainDb,
-    }));
+    if (!peakOk) {
+      const plan = planDeliveryAttenuation({
+        measuredTruePeakDbtp: delivered.truePeakDbtp,
+        targetTruePeakDbtp: NORMALIZATION_TRUE_PEAK_DBTP,
+        cumulativeGainDb: cumulativeOffsetDb,
+      });
+      cumulativeOffsetDb = plan.cumulativeGainDb;
+      continue;
+    }
+    // Peak is inside the delivery target but the program loudness is not:
+    // further peak work cannot fix that, so report the measured numbers.
+    fail(
+      "REHEARSAL_DELIVERY_LOUDNESS_UNREACHABLE",
+      `delivered file measured ${delivered.integratedLufs} LUFS against a ${TARGET_LUFS} LUFS target with true peak ${delivered.truePeakDbtp} dBTP: ${JSON.stringify(attempts)}`,
+    );
   }
   fail(
     "REHEARSAL_DELIVERY_PEAK_UNREACHABLE",
@@ -412,7 +433,7 @@ function main() {
       correctivePassApplied: correctivePass !== null,
       correctivePass: correctivePass === null ? null : {
         encodeRounds: correctivePass.attempts,
-        settledCumulativeGainDb: correctivePass.cumulativeGainDb,
+        settledPeakCeilingOffsetDb: correctivePass.cumulativeOffsetDb,
       },
       deliveredFile: {
         integratedLufs: longformLoudness.integratedLufs,

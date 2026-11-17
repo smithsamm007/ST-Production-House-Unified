@@ -24,6 +24,7 @@ import {
   DELIVERY_TARGET_LUFS,
   DELIVERY_TRUE_PEAK_HEADROOM_DBTP,
   QC_MAX_TRUE_PEAK_DBTP,
+  buildDynamicDeliveryFilter,
   buildMeasuredNormalizationFilter,
   requiresCorrectiveNormalization,
   planDeliveryAttenuation,
@@ -137,6 +138,21 @@ test("the corrective planner refuses non-measured input and invalid budgets", ()
   assert.throws(() => planDeliveryAttenuation({}), (error) => error.code === "LOUDNESS_MEASUREMENT_INVALID");
   assert.throws(
     () => planDeliveryAttenuation({ measuredTruePeakDbtp: 1, targetTruePeakDbtp: -2.5, maxCumulativeAttenuationDb: 0 }),
+    (error) => error.code === "LOUDNESS_TARGET_INVALID",
+  );
+});
+
+test("the corrective delivery filter targets loudness and a reduced peak ceiling together", () => {
+  assert.equal(
+    buildDynamicDeliveryFilter({ targetLufs: -14, truePeakDbtp: -2.5 }),
+    "loudnorm=I=-14:TP=-2.5:LRA=7",
+  );
+  assert.equal(
+    buildDynamicDeliveryFilter({ targetLufs: -14, truePeakDbtp: -7.24 }),
+    "loudnorm=I=-14:TP=-7.24:LRA=7",
+  );
+  assert.throws(
+    () => buildDynamicDeliveryFilter({ targetLufs: -14, truePeakDbtp: -2.5, loudnessRangeLu: 0 }),
     (error) => error.code === "LOUDNESS_TARGET_INVALID",
   );
 });
