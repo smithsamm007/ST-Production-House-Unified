@@ -15,6 +15,7 @@ import { ConnectionsScreen } from "./screens/ConnectionsScreen";
 import { ApprovalsScreen } from "./screens/ApprovalsScreen";
 import { EvidenceScreen } from "./screens/EvidenceScreen";
 import { HermesScreen } from "./screens/HermesScreen";
+import { ArchitectureScreen } from "./screens/ArchitectureScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 
 export const App: React.FC = () => {
@@ -40,6 +41,7 @@ export const App: React.FC = () => {
         agentCount={store.agents.length}
         channelCount={store.channels.length}
         pendingApprovalsCount={pendingApprovalsCount}
+        ownerAvailability={store.ownerAvailability}
       >
         {store.currentSection === "overview" && (
           <OverviewScreen
@@ -47,6 +49,8 @@ export const App: React.FC = () => {
             releases={store.releases}
             jobs={store.jobs}
             agentCount={store.agents.length}
+            ownerAvailability={store.ownerAvailability}
+            onNavigate={store.navigateTo}
             onAdvanceRelease={store.advancePipelineStage}
             onInspectSlot={store.inspectArtifact}
           />
@@ -144,8 +148,17 @@ export const App: React.FC = () => {
         )}
 
         {store.currentSection === "hermes" && (
-          <HermesScreen decisions={store.hermesDecisions} />
+          <HermesScreen
+            decisions={store.hermesDecisions}
+            ownerAvailability={store.ownerAvailability}
+            delegationPolicies={store.delegationPolicies}
+            onChangeOwnerAvailability={store.setOwnerAvailability}
+            onTogglePolicy={store.toggleDelegatedPolicy}
+            onEvaluateDelegation={store.evaluateHermesDelegation}
+          />
         )}
+
+        {store.currentSection === "architecture" && <ArchitectureScreen />}
 
         {store.currentSection === "settings" && (
           <SettingsScreen

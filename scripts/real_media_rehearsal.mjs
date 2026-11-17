@@ -51,10 +51,11 @@ import { parseLoudnormOutput } from "../src/media/mediaInspectionRunner.js";
 import {
   DELIVERY_TARGET_LUFS,
   DELIVERY_TRUE_PEAK_HEADROOM_DBTP,
+  MAX_CORRECTIVE_NORMALIZATION_ATTEMPTS,
   QC_MAX_TRUE_PEAK_DBTP,
   buildMeasuredNormalizationFilter,
-  requiresCorrectiveNormalization,
   selectGateLoudness,
+  verifyAndCorrectDeliveredAudio,
 } from "../src/media/loudnessNormalization.js";
 
 const OUT_ROOT = "artifacts/rehearsal";
@@ -99,17 +100,28 @@ function measureLoudnessSync(filePath) {
   return parseLoudnormOutput(stderr);
 }
 
+function hashFileSync(file) {
+  return createHash("sha256").update(readFileSync(file)).digest("hex");
+}
+
 /**
  * One corrective pass for a delivered file whose encoded audio still breaches
  * the QC true peak: extract the real audio, two-pass normalize it to the
- * delivery target, and remux it over the original (video stream copied, never
- * re-encoded, so the measured picture properties are untouched).
+ * stepped delivery target, remux it over the original (video stream copied,
+ * never re-encoded), and verify the remuxed audio stream decodes cleanly
+ * before replacing the deliverable.
  */
-function applyCorrectiveNormalization({ videoPath }) {
+function applyCorrectiveNormalization({
+  videoPath,
+  targetLufs = TARGET_LUFS,
+  maxTruePeak = NORMALIZATION_TRUE_PEAK_DBTP,
+  attempt = 1,
+}) {
   const dir = path.dirname(videoPath);
-  const extractedPath = path.join(dir, "delivered_audio.wav");
-  const correctedPath = path.join(dir, "delivered_audio_normalized.wav");
-  const remuxedPath = path.join(dir, "episode_corrected.mp4");
+  const stem = path.basename(videoPath, path.extname(videoPath));
+  const extractedPath = path.join(dir, `${stem}_delivered_audio_attempt_${attempt}.wav`);
+  const correctedPath = path.join(dir, `${stem}_delivered_audio_normalized_attempt_${attempt}.wav`);
+  const remuxedPath = path.join(dir, `${stem}_corrected_attempt_${attempt}.mp4`);
   execFileSync(
     "ffmpeg",
     ["-y", "-v", "error", "-i", videoPath, "-vn", "-acodec", "pcm_s16le", extractedPath],
@@ -118,8 +130,8 @@ function applyCorrectiveNormalization({ videoPath }) {
   const correctedLoudness = normalizeAudioSync({
     inputPath: extractedPath,
     outputPath: correctedPath,
-    targetLufs: TARGET_LUFS,
-    maxTruePeak: NORMALIZATION_TRUE_PEAK_DBTP,
+    targetLufs,
+    maxTruePeak,
   });
   execFileSync(
     "ffmpeg",
@@ -135,8 +147,13 @@ function applyCorrectiveNormalization({ videoPath }) {
     ],
     { stdio: ["ignore", "ignore", "inherit"] }
   );
+  execFileSync(
+    "ffmpeg",
+    ["-v", "error", "-nostdin", "-i", remuxedPath, "-vn", "-f", "null", "-"],
+    { stdio: ["ignore", "ignore", "inherit"] }
+  );
   renameSync(remuxedPath, videoPath);
-  return { correctedLoudness, extractedPath, correctedPath };
+  return { correctedLoudness, extractedPath, correctedPath, headroomDbtp: maxTruePeak };
 }
 
 function normalizeAudioSync({ inputPath, outputPath, targetLufs = TARGET_LUFS, maxTruePeak = NORMALIZATION_TRUE_PEAK_DBTP }) {
@@ -219,12 +236,12 @@ function main() {
   // Real loudness measurement of raw speech synthesis
   const rawSpeechLoudness = measureLoudnessSync(rawAudioPath);
 
-  // Real loudness normalization pass to standard streaming target (-14 LUFS / -1 dBTP, 48 kHz)
+  // Real loudness normalization pass to delivery headroom target (-14 LUFS / -2.5 dBTP, 48 kHz)
   const normSpeechLoudness = normalizeAudioSync({
     inputPath: rawAudioPath,
     outputPath: normAudioPath,
     targetLufs: TARGET_LUFS,
-    maxTruePeak: MAX_TRUE_PEAK_DBTP,
+    maxTruePeak: NORMALIZATION_TRUE_PEAK_DBTP,
   });
 
   // Long-form 16:9 episode assembly (1920x1080, AAC 48 kHz)
@@ -257,8 +274,9 @@ function main() {
     { stdio: ["ignore", "ignore", "inherit"] }
   );
 
-  // Real ffprobe inspections
+  // Real ffprobe inspections bound to the exact on-disk file SHA-256
   const probeFile = (file) => {
+    const contentSha256 = hashFileSync(file);
     const json = execFileSync(
       "ffprobe",
       ["-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,sample_rate,channels,duration", "-show_entries", "format=duration,size", "-of", "json", file],
@@ -267,32 +285,50 @@ function main() {
     const parsed = JSON.parse(json);
     return {
       success: true,
+      contentSha256,
       format: { ...parsed.format, filename: path.basename(file) },
       streams: parsed.streams,
     };
   };
 
-  const longformInspection = probeFile(videoPath);
-  const brandReelInspection = probeFile(brandReelPath);
+  // Finalize delivered files: complete all bounded corrective AAC operations,
+  // re-probe the exact final output, re-measure loudness, and capture the
+  // final SHA-256 from that same delivered file.
+  const longformFinal = verifyAndCorrectDeliveredAudio({
+    filePath: videoPath,
+    targetLufs: TARGET_LUFS,
+    maxTruePeakDbtp: MAX_TRUE_PEAK_DBTP,
+    baseHeadroomDbtp: NORMALIZATION_TRUE_PEAK_DBTP,
+    maxAttempts: MAX_CORRECTIVE_NORMALIZATION_ATTEMPTS,
+    probeFile,
+    measureLoudness: measureLoudnessSync,
+    hashFile: hashFileSync,
+    applyCorrection: applyCorrectiveNormalization,
+    onCorrectionAttempt: (info) => {
+      console.log(JSON.stringify({ code: "REHEARSAL_CORRECTIVE_NORMALIZATION", asset: "longform", ...info }));
+    },
+  });
+  const brandReelFinal = verifyAndCorrectDeliveredAudio({
+    filePath: brandReelPath,
+    targetLufs: TARGET_LUFS,
+    maxTruePeakDbtp: MAX_TRUE_PEAK_DBTP,
+    baseHeadroomDbtp: NORMALIZATION_TRUE_PEAK_DBTP,
+    maxAttempts: MAX_CORRECTIVE_NORMALIZATION_ATTEMPTS,
+    probeFile,
+    measureLoudness: measureLoudnessSync,
+    hashFile: hashFileSync,
+    applyCorrection: applyCorrectiveNormalization,
+    onCorrectionAttempt: (info) => {
+      console.log(JSON.stringify({ code: "REHEARSAL_CORRECTIVE_NORMALIZATION", asset: "brand_reel", ...info }));
+    },
+  });
 
-  // Real loudness measurements of the DELIVERED files. This is the only
-  // measurement the completeness gate may see: the raw synthesis and the
-  // normalized WAV are evidence about inputs, not about what was delivered.
-  let longformLoudness = measureLoudnessSync(videoPath);
-  let correctivePass = null;
-  if (requiresCorrectiveNormalization(longformLoudness, MAX_TRUE_PEAK_DBTP)) {
-    console.log(JSON.stringify({
-      code: "REHEARSAL_CORRECTIVE_NORMALIZATION",
-      measuredTruePeakDbtp: longformLoudness.truePeakDbtp,
-      qcMaxTruePeakDbtp: MAX_TRUE_PEAK_DBTP,
-      deliveryTargetDbtp: NORMALIZATION_TRUE_PEAK_DBTP,
-    }));
-    correctivePass = applyCorrectiveNormalization({ videoPath });
-    longformLoudness = measureLoudnessSync(videoPath);
-  }
-  const brandReelLoudness = measureLoudnessSync(brandReelPath);
+  const longformInspection = longformFinal.inspection;
+  const brandReelInspection = brandReelFinal.inspection;
+  const longformLoudness = longformFinal.loudness;
+  const brandReelLoudness = brandReelFinal.loudness;
 
-  // Conformance gate on long-form
+  // Conformance gate on long-form (evaluated strictly on final post-remux inspection + loudness)
   const longformVerdict = evaluateEpisodeCompleteness({
     inspection: longformInspection,
     targetSeconds,
@@ -312,7 +348,7 @@ function main() {
     fail(`REHEARSAL_GATE_FAILED_${longformVerdict.reasonCode}`, JSON.stringify(longformVerdict));
   }
 
-  // Conformance gate on brand Reel (assert 9:16)
+  // Conformance gate on brand Reel (assert 9:16 on final post-remux inspection + loudness)
   const brandReelVerdict = evaluateEpisodeCompleteness({
     inspection: brandReelInspection,
     targetSeconds: BRAND_REEL_SECONDS,
@@ -320,7 +356,11 @@ function main() {
     expectedHeight: 1920,
     expectedAspectRatio: "9:16",
     requiredSampleRate: REQUIRED_SAMPLE_RATE,
-    loudness: brandReelLoudness,
+    loudness: selectGateLoudness({
+      assembled: brandReelLoudness,
+      rawSpeech: rawSpeechLoudness,
+      normalizedSpeech: normSpeechLoudness,
+    }),
     targetLufs: TARGET_LUFS,
     maxTruePeakDbtp: MAX_TRUE_PEAK_DBTP,
   });
@@ -330,6 +370,14 @@ function main() {
 
   const longformBytes = readFileSync(videoPath);
   const brandReelBytes = readFileSync(brandReelPath);
+  const longformFinalSha256 = createHash("sha256").update(longformBytes).digest("hex");
+  const brandReelFinalSha256 = createHash("sha256").update(brandReelBytes).digest("hex");
+  if (longformFinalSha256 !== longformInspection.contentSha256) {
+    fail("REHEARSAL_FILE_IDENTITY_MISMATCH", "longform file SHA-256 does not match final inspection SHA-256");
+  }
+  if (brandReelFinalSha256 !== brandReelInspection.contentSha256) {
+    fail("REHEARSAL_FILE_IDENTITY_MISMATCH", "brand reel file SHA-256 does not match final inspection SHA-256");
+  }
   const longformTechnical = parseStreamTechnicalProperties(longformInspection);
   const brandReelTechnical = parseStreamTechnicalProperties(brandReelInspection);
 
@@ -359,7 +407,9 @@ function main() {
       targetIntegratedLufs: TARGET_LUFS,
       deliveryTruePeakDbtp: NORMALIZATION_TRUE_PEAK_DBTP,
       qcMaxTruePeakDbtp: MAX_TRUE_PEAK_DBTP,
-      correctivePassApplied: correctivePass !== null,
+      correctivePassApplied: longformFinal.correctivePassApplied,
+      correctivePassCount: longformFinal.correctivePasses.length,
+      brandReelCorrectivePassApplied: brandReelFinal.correctivePassApplied,
       deliveredFile: {
         integratedLufs: longformLoudness.integratedLufs,
         truePeakDbtp: longformLoudness.truePeakDbtp,
@@ -383,14 +433,14 @@ function main() {
         tool: "real ffmpeg (libx264 veryfast crf20, aac 128k 48kHz, 16:9 1920x1080)",
         visualProvenance: "placeholder: flat solid-colour placeholder plate (1920x1080, r=2) — explicitly LABELED placeholder (AGENTS.md Rule 3); valid only for testing assembly, timing, audio coverage, and technical container conformance, NEVER finished creative footage",
         streams: longformInspection.streams,
-        outputSha256: createHash("sha256").update(longformBytes).digest("hex"),
+        outputSha256: longformFinalSha256,
         outputSizeBytes: longformBytes.length,
       },
       brandReel: {
         tool: "real ffmpeg (libx264 veryfast crf21, aac 128k 48kHz, 9:16 1080x1920 standalone brand Reel)",
         visualProvenance: "placeholder: flat solid-colour placeholder plate (1080x1920, r=2) — explicitly LABELED placeholder (AGENTS.md Rule 3); valid only for testing assembly, timing, audio coverage, and technical container conformance, NEVER finished creative footage",
         streams: brandReelInspection.streams,
-        outputSha256: createHash("sha256").update(brandReelBytes).digest("hex"),
+        outputSha256: brandReelFinalSha256,
         outputSizeBytes: brandReelBytes.length,
       },
     },
@@ -465,7 +515,8 @@ function main() {
     measuredLongformTruePeak: longformLoudness.truePeakDbtp,
     qcMaxTruePeakDbtp: MAX_TRUE_PEAK_DBTP,
     deliveryTruePeakDbtp: NORMALIZATION_TRUE_PEAK_DBTP,
-    correctivePassApplied: correctivePass !== null,
+    correctivePassApplied: longformFinal.correctivePassApplied,
+    correctivePassCount: longformFinal.correctivePasses.length,
     measuredBrandReelLufs: brandReelLoudness.integratedLufs,
     measuredBrandReelTruePeak: brandReelLoudness.truePeakDbtp,
     longformResolution: `${longformTechnical.video.width}x${longformTechnical.video.height}`,

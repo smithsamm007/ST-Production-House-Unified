@@ -7,6 +7,7 @@ import {
   Database,
   Film,
   KeyRound,
+  Layers,
   LayoutGrid,
   Link2,
   LogOut,
@@ -22,6 +23,7 @@ import {
   CORE_BOTTOM_TABS,
   NAV_ITEMS,
   Owner,
+  OwnerAvailability,
   ScreenSection,
 } from "../types/models";
 import { StatusBadge } from "./StatusBadge";
@@ -36,6 +38,7 @@ interface AppShellProps {
   agentCount: number;
   channelCount: number;
   pendingApprovalsCount: number;
+  ownerAvailability: OwnerAvailability;
   children: React.ReactNode;
 }
 
@@ -52,6 +55,7 @@ const SECTION_ICONS: Record<ScreenSection, React.ReactNode> = {
   approvals: <CheckCircle2 className="w-4 h-4" />,
   evidence: <Link2 className="w-4 h-4" />,
   hermes: <Bot className="w-4 h-4" />,
+  architecture: <Layers className="w-4 h-4" />,
   settings: <Settings className="w-4 h-4" />,
 };
 
@@ -65,6 +69,7 @@ export const AppShell: React.FC<AppShellProps> = ({
   agentCount,
   channelCount,
   pendingApprovalsCount,
+  ownerAvailability,
   children,
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -135,6 +140,18 @@ export const AppShell: React.FC<AppShellProps> = ({
             <span>Central platform</span>
             <span className="text-[#E8EEF8] font-mono tabular-nums font-semibold">
               1
+            </span>
+          </div>
+          <div className="flex justify-between text-[#8D9AB3]">
+            <span>Owner status</span>
+            <span
+              className={`font-mono font-semibold ${
+                ownerAvailability === "available"
+                  ? "text-[#34D399]"
+                  : "text-[#FBBF24]"
+              }`}
+            >
+              {ownerAvailability}
             </span>
           </div>
           <div className="flex justify-between text-[#8D9AB3]">

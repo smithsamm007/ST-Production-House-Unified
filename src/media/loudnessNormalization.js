@@ -45,6 +45,15 @@ export const QC_MAX_TRUE_PEAK_DBTP = -1.0;
  */
 export const DELIVERY_TRUE_PEAK_HEADROOM_DBTP = -2.5;
 
+/**
+ * Bounded post-encode corrective pass cap and minimum clamped headroom ceiling.
+ * Prevents unbounded remux loops while compensating for rare AAC transient
+ * overshoot beyond DELIVERY_TRUE_PEAK_HEADROOM_DBTP.
+ */
+export const MAX_CORRECTIVE_NORMALIZATION_ATTEMPTS = 3;
+export const MIN_CORRECTIVE_HEADROOM_DBTP = -5.5;
+export const CORRECTIVE_HEADROOM_STEP_DB = 1.0;
+
 function loudnessError(code, message) {
   const error = new Error(message);
   error.code = code;
@@ -96,7 +105,7 @@ export function buildMeasuredNormalizationFilter({
 
 /**
  * Whether a delivered (already encoded) file still breaches the QC true-peak
- * contract and therefore needs one corrective re-normalization pass.
+ * contract and therefore needs corrective re-normalization.
  */
 export function requiresCorrectiveNormalization(
   loudness,
@@ -107,6 +116,125 @@ export function requiresCorrectiveNormalization(
   }
   const truePeakDbtp = requireFinite(loudness.truePeakDbtp, "truePeakDbtp");
   return truePeakDbtp > maxTruePeakDbtp;
+}
+
+/**
+ * Compute the bounded true-peak target for corrective attempt `attempt` (1-based).
+ * Attempt 1 uses `baseHeadroomDbtp` (-2.5 dBTP); subsequent attempts step down
+ * by 1.0 dB (clamped to MIN_CORRECTIVE_HEADROOM_DBTP) if AAC encoding still
+ * overshoots the QC contract.
+ */
+export function planCorrectiveHeadroomTarget({
+  attempt = 1,
+  baseHeadroomDbtp = DELIVERY_TRUE_PEAK_HEADROOM_DBTP,
+} = {}) {
+  if (!Number.isInteger(attempt) || attempt < 1 || attempt > MAX_CORRECTIVE_NORMALIZATION_ATTEMPTS) {
+    throw loudnessError(
+      "LOUDNESS_TARGET_INVALID",
+      `corrective attempt must be an integer between 1 and ${MAX_CORRECTIVE_NORMALIZATION_ATTEMPTS}`,
+    );
+  }
+  if (!Number.isFinite(baseHeadroomDbtp)) {
+    throw loudnessError("LOUDNESS_TARGET_INVALID", "base headroom target must be finite");
+  }
+  const stepped = baseHeadroomDbtp - (attempt - 1) * CORRECTIVE_HEADROOM_STEP_DB;
+  return Math.max(MIN_CORRECTIVE_HEADROOM_DBTP, Number(stepped.toFixed(2)));
+}
+
+/**
+ * Finalize a rendered media file by enforcing post-encode AAC true-peak
+ * compliance BEFORE capturing the authoritative final inspection and SHA-256.
+ *
+ * Guarantees the same final-file identity flows through corrective operations,
+ * FFprobe re-inspection, audio/video QC, and evidence manifest generation:
+ * any corrective remux invalidates prior inspection state and forces a fresh
+ * FFprobe + loudness + hash measurement on the remuxed file. Fails closed with
+ * `REHEARSAL_CORRECTIVE_LIMIT_EXCEEDED` if the file still exceeds the QC
+ * true-peak contract after `maxAttempts` bounded passes.
+ */
+export function verifyAndCorrectDeliveredAudio({
+  filePath,
+  targetLufs = DELIVERY_TARGET_LUFS,
+  maxTruePeakDbtp = QC_MAX_TRUE_PEAK_DBTP,
+  baseHeadroomDbtp = DELIVERY_TRUE_PEAK_HEADROOM_DBTP,
+  maxAttempts = MAX_CORRECTIVE_NORMALIZATION_ATTEMPTS,
+  probeFile,
+  measureLoudness,
+  applyCorrection,
+  hashFile = null,
+  onCorrectionAttempt = null,
+} = {}) {
+  if (typeof probeFile !== "function" || typeof measureLoudness !== "function") {
+    throw loudnessError("LOUDNESS_MEASUREMENT_REQUIRED", "probeFile and measureLoudness functions are required");
+  }
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > MAX_CORRECTIVE_NORMALIZATION_ATTEMPTS) {
+    throw loudnessError(
+      "LOUDNESS_TARGET_INVALID",
+      `maxAttempts must be between 1 and ${MAX_CORRECTIVE_NORMALIZATION_ATTEMPTS}`,
+    );
+  }
+
+  let inspection = probeFile(filePath);
+  let loudness = measureLoudness(filePath);
+  let outputSha256 = typeof hashFile === "function" ? hashFile(filePath) : (inspection?.contentSha256 ?? null);
+  const correctivePasses = [];
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (!requiresCorrectiveNormalization(loudness, maxTruePeakDbtp)) {
+      break;
+    }
+    if (typeof applyCorrection !== "function") {
+      throw loudnessError(
+        "REHEARSAL_CORRECTIVE_LIMIT_EXCEEDED",
+        `Delivered file ${filePath} measured ${loudness.truePeakDbtp} dBTP > ${maxTruePeakDbtp} dBTP and no corrective handler is configured`,
+      );
+    }
+    const headroomDbtp = planCorrectiveHeadroomTarget({ attempt, baseHeadroomDbtp });
+    if (typeof onCorrectionAttempt === "function") {
+      onCorrectionAttempt({
+        attempt,
+        maxAttempts,
+        measuredTruePeakDbtp: loudness.truePeakDbtp,
+        qcMaxTruePeakDbtp: maxTruePeakDbtp,
+        deliveryTargetDbtp: headroomDbtp,
+      });
+    }
+    const passInfo = applyCorrection({
+      videoPath: filePath,
+      targetLufs,
+      maxTruePeak: headroomDbtp,
+      attempt,
+      previousLoudness: loudness,
+    });
+    // Mandatory post-remux re-probe of the exact delivered file identity.
+    inspection = probeFile(filePath);
+    loudness = measureLoudness(filePath);
+    outputSha256 = typeof hashFile === "function" ? hashFile(filePath) : (inspection?.contentSha256 ?? null);
+    correctivePasses.push({
+      attempt,
+      headroomDbtp,
+      postRemuxTruePeakDbtp: loudness.truePeakDbtp,
+      postRemuxIntegratedLufs: loudness.integratedLufs,
+      outputSha256,
+      passInfo: passInfo ?? null,
+    });
+  }
+
+  if (requiresCorrectiveNormalization(loudness, maxTruePeakDbtp)) {
+    throw loudnessError(
+      "REHEARSAL_CORRECTIVE_LIMIT_EXCEEDED",
+      `Delivered file ${filePath} still exceeds QC true peak (${loudness.truePeakDbtp} dBTP > ${maxTruePeakDbtp} dBTP) after ${correctivePasses.length} bounded corrective passes`,
+    );
+  }
+
+  return Object.freeze({
+    filePath,
+    inspection,
+    loudness,
+    outputSha256,
+    correctivePassApplied: correctivePasses.length > 0,
+    correctivePasses: Object.freeze(correctivePasses),
+  });
 }
 
 /**

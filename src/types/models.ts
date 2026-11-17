@@ -11,6 +11,7 @@ export type ScreenSection =
   | "approvals"
   | "evidence"
   | "hermes"
+  | "architecture"
   | "settings";
 
 export interface NavItemConfig {
@@ -24,7 +25,7 @@ export const NAV_ITEMS: NavItemConfig[] = [
   { id: "directors", title: "Directors", shortLabel: "Directors" },
   { id: "schedule", title: "Episode & Schedule", shortLabel: "Schedule" },
   { id: "communication", title: "Director Comm" },
-  { id: "memory", title: "Director Memory" },
+  { id: "memory", title: "Memory & Lore" },
   { id: "production", title: "Production", shortLabel: "Production" },
   { id: "jobs", title: "Active Jobs", shortLabel: "Jobs" },
   { id: "providers", title: "Providers & Quota" },
@@ -32,6 +33,7 @@ export const NAV_ITEMS: NavItemConfig[] = [
   { id: "approvals", title: "Approvals" },
   { id: "evidence", title: "Evidence Ledger" },
   { id: "hermes", title: "Hermes AI Manager" },
+  { id: "architecture", title: "Master Architecture" },
   { id: "settings", title: "Settings" },
 ];
 
@@ -249,3 +251,53 @@ export interface InspectionModalData {
 }
 
 export type PublishingMode = "dry_run" | "live";
+
+export type OwnerAvailability = "available" | "unavailable";
+
+export type DelegationDisposition =
+  | "hermes_decide"
+  | "hermes_within_limits"
+  | "explicit_policy_only"
+  | "owner_only";
+
+export interface DelegationPolicyItem {
+  id: string;
+  category: string;
+  disposition: DelegationDisposition;
+  summary: string;
+  lockedOwnerOnly: boolean;
+  delegatedWhenUnavailable: boolean;
+}
+
+export type CapabilityImplementationStatus =
+  | "demo_fixture"
+  | "policy_gated"
+  | "target_blueprint";
+
+export interface CapabilityDomain {
+  id: string;
+  title: string;
+  summary: string;
+  status: CapabilityImplementationStatus;
+}
+
+export interface MemoryLayerSpec {
+  code: string;
+  title: string;
+  scope: string;
+  isolation: string;
+}
+
+export interface PermissionLevelSpec {
+  code: string;
+  label: string;
+  example: string;
+}
+
+export interface ImplementationPhaseSpec {
+  phase: number;
+  title: string;
+  outcome: string;
+  status: "baseline_audit" | "demo_modeled" | "target_phase";
+}
+

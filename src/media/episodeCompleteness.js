@@ -281,7 +281,7 @@ export function evaluateEpisodeCompleteness({
     if (loudness.clippingCount > 0 || (typeof loudness.truePeakDbtp === "number" && loudness.truePeakDbtp > 0.0)) {
       return deepFreeze({ ...measured, reasonCode: "QC_AUDIO_CLIPPING_DETECTED" });
     }
-    if (maxTruePeakDbtp !== null && typeof loudness.truePeakDbtp === "number" && loudness.truePeakDbtp > maxTruePeakDbtp + 0.1) {
+    if (maxTruePeakDbtp !== null && typeof loudness.truePeakDbtp === "number" && loudness.truePeakDbtp > maxTruePeakDbtp) {
       return deepFreeze({ ...measured, reasonCode: "QC_LOUDNESS_OUT_OF_RANGE" });
     }
     if (targetLufs !== null && typeof loudness.integratedLufs === "number") {

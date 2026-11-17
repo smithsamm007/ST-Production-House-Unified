@@ -202,6 +202,139 @@ export async function measureAudioLoudness(path, { spawnImpl, timeoutMs = DEFAUL
 }
 
 /**
+ * Pure: build FFmpeg argument array for an independent oversampled true-peak
+ * measurement using libsoxr resampling (default 192 kHz = 4x @ 48 kHz) and
+ * astats peak measurement over the decoded PCM stream (CONVENTIONS Rule 2).
+ */
+export function buildOversampledTruePeakArgs(artifactPath, { oversampleHz = 192000 } = {}) {
+  validateArtifactPath(artifactPath);
+  if (!Number.isInteger(oversampleHz) || oversampleHz < 96000) {
+    throw fail("PATH_UNSAFE");
+  }
+  return Object.freeze([
+    "-hide_banner",
+    "-nostdin",
+    "-i", artifactPath,
+    "-vn",
+    "-af", `aresample=${oversampleHz}:resampler=soxr,astats=metadata=0:reset=0`,
+    "-f", "null",
+    "-",
+  ]);
+}
+
+/**
+ * Pure: parse oversampled peak level and RMS/sample statistics emitted by
+ * FFmpeg's astats filter into stderr. Fails closed with FFPROBE_OUTPUT_UNPARSEABLE.
+ */
+export function parseOversampledTruePeakOutput(stderr, { oversampleHz = 192000 } = {}) {
+  if (typeof stderr !== "string" || stderr.trim() === "") {
+    throw fail("FFPROBE_OUTPUT_UNPARSEABLE");
+  }
+  const peakMatch = stderr.match(/Peak level dB:\s*(-?\d+(?:\.\d+)?)/i);
+  if (!peakMatch) {
+    throw fail("FFPROBE_OUTPUT_UNPARSEABLE");
+  }
+  const truePeakDbtp = Number(peakMatch[1]);
+  if (!Number.isFinite(truePeakDbtp)) {
+    throw fail("FFPROBE_OUTPUT_UNPARSEABLE");
+  }
+  const rmsMatch = stderr.match(/RMS level dB:\s*(-?\d+(?:\.\d+)?)/i);
+  const peakCountMatch = stderr.match(/Peak count:\s*(\d+)/i);
+  const flatFactorMatch = stderr.match(/Flat factor:\s*(-?\d+(?:\.\d+)?)/i);
+  const rmsLevelDbfs = rmsMatch && Number.isFinite(Number(rmsMatch[1])) ? Number(rmsMatch[1]) : null;
+  const peakCount = peakCountMatch ? Number.parseInt(peakCountMatch[1], 10) : null;
+  const flatFactor = flatFactorMatch && Number.isFinite(Number(flatFactorMatch[1])) ? Number(flatFactorMatch[1]) : null;
+  return Object.freeze({
+    method: `aresample_${oversampleHz}_soxr_astats`,
+    oversampleHz,
+    truePeakDbtp,
+    rmsLevelDbfs,
+    peakCount: Number.isInteger(peakCount) ? peakCount : null,
+    flatFactor,
+    clippingCount: truePeakDbtp > 0.0 ? 1 : 0,
+  });
+}
+
+/**
+ * Measure oversampled true peak of a decoded media file independently of
+ * FFmpeg's loudnorm filter.
+ */
+export async function measureIndependentTruePeak(
+  path,
+  { spawnImpl, timeoutMs = DEFAULT_TIMEOUT_MS, oversampleHz = 192000 } = {},
+) {
+  validateArtifactPath(path);
+  if (typeof spawnImpl !== "function") {
+    throw fail("FFPROBE_SPAWN_FAILED");
+  }
+  const args = buildOversampledTruePeakArgs(path, { oversampleHz });
+  let result;
+  try {
+    result = await spawnImpl({ command: "ffmpeg", args, timeoutMs });
+  } catch {
+    throw fail("FFPROBE_SPAWN_FAILED");
+  }
+  if (!result || typeof result !== "object") {
+    throw fail("FFPROBE_SPAWN_FAILED");
+  }
+  if (result.timedOut === true) {
+    throw fail("FFPROBE_TIMEOUT");
+  }
+  if (typeof result.exitCode === "number" && result.exitCode !== 0) {
+    throw fail("FFPROBE_EXIT_NONZERO");
+  }
+  const stderr = typeof result.stderr === "string" ? result.stderr : "";
+  return parseOversampledTruePeakOutput(stderr, { oversampleHz });
+}
+
+/**
+ * Pure: build FFmpeg argument array to decode the full audio stream of a muxed
+ * media container to null PCM with error-only logging.
+ */
+export function buildDecodeCheckArgs(artifactPath) {
+  validateArtifactPath(artifactPath);
+  return Object.freeze([
+    "-v", "error",
+    "-nostdin",
+    "-i", artifactPath,
+    "-vn",
+    "-f", "null",
+    "-",
+  ]);
+}
+
+/**
+ * Verify that the final muxed container's audio stream decodes cleanly end to
+ * end with zero FFmpeg decode errors.
+ */
+export async function verifyAudioDecode(path, { spawnImpl, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  validateArtifactPath(path);
+  if (typeof spawnImpl !== "function") {
+    throw fail("FFPROBE_SPAWN_FAILED");
+  }
+  const args = buildDecodeCheckArgs(path);
+  let result;
+  try {
+    result = await spawnImpl({ command: "ffmpeg", args, timeoutMs });
+  } catch {
+    throw fail("FFPROBE_SPAWN_FAILED");
+  }
+  if (!result || typeof result !== "object") {
+    throw fail("FFPROBE_SPAWN_FAILED");
+  }
+  if (result.timedOut === true) {
+    throw fail("FFPROBE_TIMEOUT");
+  }
+  const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
+  const passed = result.exitCode === 0 && stderr.length === 0;
+  return Object.freeze({
+    passed,
+    exitCode: typeof result.exitCode === "number" ? result.exitCode : null,
+    stderr,
+  });
+}
+
+/**
  * Compute the SHA-256 of the REAL file bytes.
  *
  *   readFileImpl: async (path) => Buffer — injectable for tests; production

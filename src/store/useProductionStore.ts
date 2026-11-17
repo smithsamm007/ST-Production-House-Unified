@@ -17,11 +17,13 @@ import {
   STORAGE_MODE,
   STORAGE_STATUS,
 } from "../data/seedData";
+import { getInitialDelegationPolicies } from "../data/architectureBlueprint";
 import {
   ApprovalItem,
   Channel,
   ConnectionSlotStatus,
   CreativeCharter,
+  DelegationPolicyItem,
   DirectorMessage,
   DirectorSchedule,
   EvidenceEvent,
@@ -32,6 +34,7 @@ import {
   MessageKind,
   MessageSender,
   Owner,
+  OwnerAvailability,
   PIPELINE_STAGES,
   PlatformConnection,
   ProductionJob,
@@ -65,6 +68,8 @@ interface PersistedState {
   evidenceEvents: EvidenceEvent[];
   hermesDecisions: HermesDecision[];
   defaultPublishingMode: PublishingMode;
+  ownerAvailability: OwnerAvailability;
+  delegationPolicies: DelegationPolicyItem[];
 }
 
 function getDefaultPersistedState(): PersistedState {
@@ -82,6 +87,8 @@ function getDefaultPersistedState(): PersistedState {
     evidenceEvents: getInitialEvidence(),
     hermesDecisions: getInitialHermesDecisions(),
     defaultPublishingMode: "dry_run",
+    ownerAvailability: "available",
+    delegationPolicies: getInitialDelegationPolicies(),
   };
 }
 
@@ -115,6 +122,13 @@ function loadInitialState(): PersistedState {
         : defaults.hermesDecisions,
       defaultPublishingMode:
         parsed.defaultPublishingMode === "live" ? "live" : "dry_run",
+      ownerAvailability:
+        parsed.ownerAvailability === "unavailable" ? "unavailable" : "available",
+      delegationPolicies:
+        Array.isArray(parsed.delegationPolicies) &&
+        parsed.delegationPolicies.length === defaults.delegationPolicies.length
+          ? parsed.delegationPolicies
+          : defaults.delegationPolicies,
     };
   } catch {
     return getDefaultPersistedState();
@@ -706,6 +720,149 @@ export function useProductionStore() {
     }));
   }, []);
 
+  const setOwnerAvailability = useCallback((availability: OwnerAvailability) => {
+    setState((prev) => {
+      if (prev.ownerAvailability === availability) return prev;
+      const ev = makeEvidence(
+        "OWNER_AVAILABILITY_UPDATED",
+        "owner",
+        "governance",
+        "delegation",
+        computeSha256(`availability:${availability}:${Date.now()}`),
+        `demo://hermes/owner-availability?state=${availability}`
+      );
+      return {
+        ...prev,
+        ownerAvailability: availability,
+        evidenceEvents: [ev, ...prev.evidenceEvents],
+      };
+    });
+  }, []);
+
+  const toggleDelegatedPolicy = useCallback((policyId: string) => {
+    setState((prev) => {
+      const idx = prev.delegationPolicies.findIndex((p) => p.id === policyId);
+      if (idx === -1) return prev;
+      const target = prev.delegationPolicies[idx];
+      if (target.lockedOwnerOnly) return prev;
+      const nextVal = !target.delegatedWhenUnavailable;
+      const updated = [...prev.delegationPolicies];
+      updated[idx] = { ...target, delegatedWhenUnavailable: nextVal };
+
+      const ev = makeEvidence(
+        "DELEGATION_POLICY_UPDATED",
+        "owner",
+        "governance",
+        "delegation",
+        computeSha256(`${policyId}:${nextVal}:${Date.now()}`),
+        `demo://hermes/delegation-policy?id=${policyId}&delegated=${nextVal}`
+      );
+
+      const dec: HermesDecision = {
+        id: createId(),
+        topic: `Delegation Rule: ${target.category}`,
+        decision: nextVal
+          ? "[demo] Explicit unavailability delegation enabled by Owner"
+          : "[demo] Unavailability delegation revoked — requires explicit Owner consent",
+        rationale:
+          "Owner availability policy updated inside the console. No response is never treated as consent.",
+        authorityTier: "Owner Governance",
+        timestamp: getCurrentTimeSimple(),
+      };
+
+      return {
+        ...prev,
+        delegationPolicies: updated,
+        hermesDecisions: [dec, ...prev.hermesDecisions],
+        evidenceEvents: [ev, ...prev.evidenceEvents],
+      };
+    });
+  }, []);
+
+  const evaluateHermesDelegation = useCallback(
+    (
+      policyId: string,
+      requestSummary: string,
+      approvalWindowExpired: boolean
+    ): { outcome: string; detail: string; allowed: boolean } => {
+      const cleanSummary =
+        requestSummary.trim() || "Simulated HERMES action request";
+      const policy = state.delegationPolicies.find((p) => p.id === policyId);
+      if (!policy) {
+        return {
+          outcome: "UNKNOWN_POLICY",
+          detail: "No matching delegation policy found.",
+          allowed: false,
+        };
+      }
+
+      let outcome = "";
+      let detail = "";
+      let allowed = false;
+      let tier = "Tier 2: Policy Governed";
+
+      if (policy.lockedOwnerOnly) {
+        outcome = "BLOCKED_OWNER_ONLY";
+        detail = `[demo] Refused: "${policy.category}" is strictly Owner-only. Even when the Owner is unavailable or an approval window expires, HERMES cannot self-authorize reserved actions.`;
+        tier = "Tier 3: Owner Required";
+      } else if (state.ownerAvailability === "available") {
+        if (policy.disposition === "explicit_policy_only") {
+          outcome = "AWAITING_OWNER_DECISION";
+          detail = `[demo] Owner is AVAILABLE: submitted "${cleanSummary}" to Owner approval queue. HERMES awaits direct Owner consent.`;
+          tier = "Tier 3: Owner Required";
+        } else {
+          outcome = "OWNER_PRECEDENCE_PREPARED";
+          detail = `[demo] Owner is AVAILABLE: HERMES prepared "${cleanSummary}" for routine execution under active Owner precedence.`;
+          allowed = true;
+          tier = "Tier 1: Autonomous";
+        }
+      } else {
+        // Owner unavailable
+        if (approvalWindowExpired && !policy.delegatedWhenUnavailable) {
+          outcome = "PAUSED_NO_ASSUMED_CONSENT";
+          detail = `[demo] Owner UNAVAILABLE + response window expired: No explicit delegation covers "${policy.category}". Silence is not consent — HERMES paused this action and continued unrelated safe work.`;
+          tier = "Paused · No Assumed Consent";
+        } else if (!policy.delegatedWhenUnavailable) {
+          outcome = "PAUSED_AWAITING_EXPLICIT_DELEGATION";
+          detail = `[demo] Owner UNAVAILABLE: "${policy.category}" is not delegated for automatic decision. Action remains paused until Owner responds or updates delegation policy.`;
+          tier = "Tier 3: Owner Required";
+        } else {
+          outcome = "EXECUTED_WITHIN_DELEGATION";
+          detail = `[demo] Owner UNAVAILABLE: "${policy.category}" is explicitly delegated. HERMES authorized "${cleanSummary}", logged reasoning, and queued Owner re-entry notification.`;
+          allowed = true;
+          tier = "Delegated Executive Authority";
+        }
+      }
+
+      const dec: HermesDecision = {
+        id: createId(),
+        topic: `${policy.category} (${outcome})`,
+        decision: `${cleanSummary} → ${outcome}`,
+        rationale: detail,
+        authorityTier: tier,
+        timestamp: getCurrentTimeSimple(),
+      };
+
+      const ev = makeEvidence(
+        "HERMES_DELEGATION_EVALUATED",
+        "hermes",
+        "governance",
+        outcome.toLowerCase(),
+        computeSha256(`${policyId}:${outcome}:${cleanSummary}:${Date.now()}`),
+        `demo://hermes/evaluate?policy=${policyId}&outcome=${outcome}`
+      );
+
+      setState((prev) => ({
+        ...prev,
+        hermesDecisions: [dec, ...prev.hermesDecisions],
+        evidenceEvents: [ev, ...prev.evidenceEvents],
+      }));
+
+      return { outcome, detail, allowed };
+    },
+    [state.delegationPolicies, state.ownerAvailability]
+  );
+
   return {
     // Static metadata
     agents: INITIAL_AGENTS,
@@ -726,6 +883,8 @@ export function useProductionStore() {
     evidenceEvents: state.evidenceEvents,
     hermesDecisions: state.hermesDecisions,
     defaultPublishingMode: state.defaultPublishingMode,
+    ownerAvailability: state.ownerAvailability,
+    delegationPolicies: state.delegationPolicies,
 
     // UI navigation & filter state
     currentSection,
@@ -762,5 +921,8 @@ export function useProductionStore() {
     dismissInspection,
     resetToCanonical,
     setDefaultPublishingMode,
+    setOwnerAvailability,
+    toggleDelegatedPolicy,
+    evaluateHermesDelegation,
   };
 }

@@ -3,8 +3,10 @@ import { Play } from "lucide-react";
 import {
   Channel,
   MediaSlot,
+  OwnerAvailability,
   ProductionJob,
   ProductionRelease,
+  ScreenSection,
 } from "../types/models";
 import {
   MediaSlotItem,
@@ -19,6 +21,8 @@ interface OverviewScreenProps {
   releases: ProductionRelease[];
   jobs: ProductionJob[];
   agentCount: number;
+  ownerAvailability: OwnerAvailability;
+  onNavigate: (section: ScreenSection) => void;
   onAdvanceRelease: (releaseId: string) => void;
   onInspectSlot: (slot: MediaSlot, channelSlug: string) => void;
 }
@@ -28,6 +32,8 @@ export const OverviewScreen: React.FC<OverviewScreenProps> = ({
   releases,
   jobs,
   agentCount,
+  ownerAvailability,
+  onNavigate,
   onAdvanceRelease,
   onInspectSlot,
 }) => {
@@ -45,6 +51,48 @@ export const OverviewScreen: React.FC<OverviewScreenProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Supreme Governance Strip */}
+      <section className="bg-[#0D1420] border border-[#1E2A40] rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="font-mono font-bold text-[#22D3EE]">OWNER</span>
+          <span className="text-[#2C3D5E]">→</span>
+          <span className="text-[#E8EEF8] font-medium">
+            Munder Difflin / Michael
+          </span>
+          <span className="text-[#2C3D5E]">→</span>
+          <span className="text-[#22D3EE] font-semibold">HERMES</span>
+          <span className="text-[#2C3D5E]">→</span>
+          <span className="text-[#8D9AB3]">
+            ST Production House · {agentCount} Independent Directors
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <StatusBadge
+            label={
+              ownerAvailability === "available"
+                ? "Owner Available"
+                : "Owner Unavailable · Delegation Active"
+            }
+            tone={ownerAvailability === "available" ? "ok" : "warn"}
+          />
+          <button
+            type="button"
+            onClick={() => onNavigate("hermes")}
+            className="px-2.5 py-1 rounded-lg border border-[#2C3D5E] hover:border-[#4F8CFF] text-xs font-medium text-[#E8EEF8] transition-colors whitespace-nowrap cursor-pointer"
+          >
+            Delegation
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate("architecture")}
+            className="px-2.5 py-1 rounded-lg border border-[#2C3D5E] hover:border-[#4F8CFF] text-xs font-medium text-[#22D3EE] transition-colors whitespace-nowrap cursor-pointer"
+          >
+            Blueprint
+          </button>
+        </div>
+      </section>
+
       {/* Metrics Strip */}
       <section aria-label="Operational metrics" className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <MetricCard

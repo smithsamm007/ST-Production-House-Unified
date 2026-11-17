@@ -1,0 +1,1282 @@
+# **ST Production House — Complete AI Capability & Infrastructure Architecture**
+
+
+
+Updated master architecture
+
+Owner-governed autonomous system
+
+
+
+The updated architecture combines the complete AI capability hierarchy with two essential ownership rules:
+
+1. **Every Director is an independent creative studio and media business**, owning its universe, identity, context, memory, production decisions, teams, content catalogue and publishing accounts.
+2. **HERMES is the Managing Director and delegated executive authority.** When the Owner is unavailable, HERMES can make decisions and act within explicitly delegated permissions. It never becomes the Owner and cannot override Owner-reserved decisions.
+
+The target is not simply a collection of AI agents. It is a cloud-operated, secure, autonomous, multi-universe production organization.
+
+## **1. Supreme organizational hierarchy**
+
+# **OWNER**
+
+Supreme authority · Founder · Final governance
+
+**MUNDER DIFFLIN / MICHAEL**
+
+Parent organization / top-level management layer
+
+# **HERMES**
+
+**Managing Director · ST AI Manager**
+
+Orchestration · Executive decisions · Delegated authority · Oversight
+
+**ST PRODUCTION HOUSE**
+
+Shared platform, infrastructure, policies and services
+
+**JARVIS**
+
+Independent Director
+
+Own universe · teams · memory · accounts
+
+**COSMOS**
+
+Independent Director
+
+Own universe · teams · memory · accounts
+
+**NEWTON**
+
+Independent Director
+
+Own universe · teams · memory · accounts
+
+**AADI**
+
+Independent Director
+
+Own universe · teams · memory · accounts
+
+**LAKME**
+
+Independent Director
+
+Own universe · teams · memory · accounts
+
+**SHERLOCK**
+
+Independent Director
+
+Own universe · teams · memory · accounts
+
+**CHRONOS**
+
+Independent Director
+
+Own universe · teams · memory · accounts
+
+**AI NEWS**
+
+Independent Director
+
+Own universe · teams · memory · accounts
+
+**TECH MASTER**
+
+Independent Director
+
+Own universe · teams · memory · accounts
+
+**BUTTERFLY**
+
+Independent Director
+
+Own universe · teams · memory · accounts
+
+**DIRECTOR-OWNED SPECIALIST TEAMS**
+
+Independent execution, workflows and production resources
+
+### **Authority hierarchy**
+
+| Level                    | Authority                                                       |
+| ------------------------ | --------------------------------------------------------------- |
+| Owner                    | Final authority over the entire organization                    |
+| MUNDER DIFFLIN / MICHAEL | Parent-level organizational layer under Owner governance        |
+| HERMES                   | Managing Director; delegated executive authority                |
+| Director                 | Independent creative and production authority over its universe |
+| Team leaders             | Manage their specialist teams and assigned work                 |
+| AI agents and workers    | Execute authorized tasks and report results                     |
+
+**Important distinction:** HERMES coordinates the Directors. It does not own their universes, rewrite their creative identities, take their publishing accounts or silently make their creative decisions for them.
+
+## **2. The 24 foundational capability domains**
+
+These are the foundations every part of ST should rely on.
+
+| ID    | Foundation                  | What it provides                                               |
+| ----- | --------------------------- | -------------------------------------------------------------- |
+| ST-01 | Identity & Organization     | Owner, HERMES, Directors, teams, agents and service identities |
+| ST-02 | Governance & Authority      | Roles, delegation, approvals, limits and decision rights       |
+| ST-03 | Intelligence & Reasoning    | Planning, analysis, decision-making and problem-solving        |
+| ST-04 | Models & Providers          | LLMs, image, video, audio, speech and embedding models         |
+| ST-05 | Context Engineering         | Instructions, context assembly, relevance and context limits   |
+| ST-06 | Memory & Knowledge          | Persistent, isolated and searchable memory                     |
+| ST-07 | Skills                      | Reusable specialist capabilities and procedures                |
+| ST-08 | Tools & Toolsets            | Internal and external executable capabilities                  |
+| ST-09 | Messaging & Communication   | Owner, HERMES, Director and team communications                |
+| ST-10 | Automation & Orchestration  | Event-driven, scheduled and conditional execution              |
+| ST-11 | Browser & Web Intelligence  | Research, web navigation and controlled browser actions        |
+| ST-12 | MCP & Interoperability      | Standardized access to tools, resources and external systems   |
+| ST-13 | Workflow & Process Engine   | Durable production workflows and state transitions             |
+| ST-14 | Data & Storage              | Databases, media assets, metadata and structured records       |
+| ST-15 | Evidence & Audit            | Verifiable records of decisions, execution and results         |
+| ST-16 | Security & Privacy          | Authentication, authorization, secrets and tenant isolation    |
+| ST-17 | Reliability & Recovery      | Retries, leases, watchdogs, recovery and fault handling        |
+| ST-18 | Observability & Monitoring  | Logs, metrics, traces, alerts and operational dashboards       |
+| ST-19 | Cost & Resource Management  | Quotas, budgets, usage tracking and provider selection         |
+| ST-20 | Deployment & Infrastructure | Cloud runtime, APIs, workers, databases and storage            |
+| ST-21 | Media Production Engine     | Script, voice, visuals, editing, rendering and QC              |
+| ST-22 | Publishing & Distribution   | Director-owned platform accounts and publishing workflows      |
+| ST-23 | Analytics & Optimization    | Performance, audience insights and controlled improvements     |
+| ST-24 | Learning & Evolution        | Evaluation, feedback, skill improvement and system upgrades    |
+
+These 24 domains are an architecture catalogue, not a claim that all 24 are already implemented or operational.
+
+## **3. Independent Director architecture**
+
+Every Director must receive its own complete operational environment.
+
+### **A. Director identity and creative ownership**
+
+- Unique Director ID and permanent identity.
+- Name, personality, mission, responsibilities and creative charter.
+- Own universe, franchises, intellectual property and story worlds.
+- Own genres, niches, sub-niches and micro-niches.
+- Own themes, storytelling style, formats and production standards.
+- Own supported languages and localization rules.
+- Own audience definition and content strategy.
+- Own content catalogue and production history.
+- Own creative decisions, within global safety and governance policies.
+
+### **B. Independent Director context and memory**
+
+Each Director has its own:
+
+- System instructions and creative constitution.
+- Universe history and world-building knowledge.
+- Character profiles, relationships and continuity.
+- Script, episode and franchise history.
+- Research library and source references.
+- Production decisions and preferences.
+- Team instructions and task history.
+- Mistake history and lessons learned.
+- Audience and channel insights.
+- Long-term and short-term context.
+
+### **C. Independent Director resources**
+
+- Dedicated teams and agents.
+- Own project and production queues.
+- Own schedules and priorities.
+- Own production budgets and allocated quotas.
+- Own asset folders and media manifests.
+- Own credentials and publishing integrations.
+- Own analytics, evidence and audit history.
+- Own approval and escalation policies.
+
+### **D. Director autonomy boundaries**
+
+Directors can independently make creative and routine production decisions. They cannot independently change global security rules, exceed approved spending, transfer account ownership or perform prohibited external actions.
+
+## **4. Director-owned publishing ecosystem**
+
+Every Director has its own social-media presence. The accounts must be separately connected and authorized, even when several Directors use the same platform.
+
+**One Director = One independent media brand**
+
+Instagram
+
+Dedicated account
+
+Facebook
+
+Dedicated account
+
+YouTube
+
+Dedicated account
+
+YouTube Shorts
+
+Dedicated account
+
+Snapchat
+
+Dedicated account
+
+Bilibili
+
+Dedicated account
+
+**Illustrative account ownership**
+
+- JARVIS → JARVIS's Instagram, Facebook, YouTube, Snapchat and Bilibili.
+- AADI → AADI's separate accounts on those platforms.
+- COSMOS → COSMOS's separate accounts on those platforms.
+- Every other Director follows the same model.
+
+YouTube Shorts are published through the Director's own YouTube channel using the Shorts format; they do not require a separate YouTube account.
+
+### **Publishing isolation requirements**
+
+1. Each publishing connection has a `director_id` and platform account ID.
+2. Credentials are encrypted and scoped to the relevant Director.
+3. A publishing job must validate Director, universe, asset and destination ownership.
+4. No Director may publish through another Director's account by default.
+5. Cross-Director publishing requires explicit authorization and an audit trail.
+6. Publishing results, errors, analytics and receipts belong to the correct Director.
+7. A disconnected or unauthorized account must cause an honest failure, never an account substitution.
+
+## **5. Complete tools and toolset hierarchy**
+
+Tools are the executable capabilities. A skill describes how to use capabilities to achieve a goal. A workflow coordinates multiple tools and skills.
+
+### **A. Internal ST tools**
+
+| Tool family         | Capabilities                                                     |
+| ------------------- | ---------------------------------------------------------------- |
+| Organization tools  | Create and manage Directors, teams, roles and projects           |
+| Governance tools    | Approval requests, delegated decisions, policy checks            |
+| Memory tools        | Save, retrieve, update, search and consolidate authorized memory |
+| Context tools       | Build Director-specific and task-specific context                |
+| Knowledge tools     | Search research libraries, documents and evidence                |
+| Planning tools      | Break objectives into plans, milestones and tasks                |
+| Task tools          | Assign, claim, execute, pause, cancel and track work             |
+| Workflow tools      | Start, resume, monitor and recover workflows                     |
+| Communication tools | Send messages, alerts, reports and escalation requests           |
+| File tools          | Read, write, version, organize and validate files                |
+| Database tools      | Read/write authorized records and run governed migrations        |
+| Media tools         | Generate, inspect, transform, encode and package media           |
+| Quality tools       | Run validation, continuity, audio, video and policy checks       |
+| Publishing tools    | Connect, schedule, publish and verify authorized content         |
+| Analytics tools     | Retrieve channel statistics and production metrics               |
+| Operations tools    | Health checks, logs, backups, restore and incident response      |
+
+### **B. External tools and integrations**
+
+- LLM and reasoning providers.
+- Image-generation and image-editing providers.
+- Video-generation and animation providers.
+- Text-to-speech, speech-to-text and voice providers.
+- Music and sound-effect providers.
+- Search engines and research APIs.
+- Social-media publishing APIs.
+- YouTube Data API and analytics.
+- Instagram and Facebook APIs.
+- Snapchat integrations.
+- Bilibili integrations.
+- Email, calendar and notification services.
+- Cloud storage and databases.
+- GitHub, CI/CD and developer tools.
+- Payment, billing and usage services, subject to Owner approval.
+
+### **C. Developer and engineering tools**
+
+- Git and GitHub.
+- Terminal and shell.
+- Code editor and repository browser.
+- Test runner and coverage tools.
+- Linter, formatter and static analysis.
+- Dependency and vulnerability scanners.
+- Build and packaging systems.
+- Container and cloud infrastructure tools.
+- SQL clients and migration runners.
+- API clients and contract testing.
+- Logs, traces and metrics viewers.
+- FFmpeg and FFprobe.
+- Artifact and evidence inspectors.
+
+### **D. Tool permission levels**
+
+| Level | Permission              | Example                                                               |
+| ----- | ----------------------- | --------------------------------------------------------------------- |
+| T0    | Discover                | Find available tools                                                  |
+| T1    | Read                    | Read repository, records or analytics                                 |
+| T2    | Analyze                 | Compare, diagnose and recommend                                       |
+| T3    | Prepare                 | Create a draft, plan or proposed change                               |
+| T4    | Reversible execution    | Run a safe, reversible internal operation                             |
+| T5    | Controlled modification | Modify approved code or operational records                           |
+| T6    | External side effect    | Send, publish, upload or connect an external service                  |
+| T7    | Owner-restricted        | Spending, destructive actions, ownership changes, security governance |
+
+The tool gateway must enforce permission checks on every call. An AI instruction alone is not authorization.
+
+## **6. Memory architecture**
+
+Memory is not one shared database of everything. It must be organized by ownership, purpose, retention and access permission.
+
+### **Memory hierarchy**
+
+**M0 — Owner Memory**
+
+Owner preferences, governance decisions and organization-wide intent
+
+**M1 — Organization Memory**
+
+ST policies, architecture, standards, shared knowledge and procedures
+
+**M2 — HERMES Executive Memory**
+
+Director status, delegated authority, decisions, risks, plans and escalations
+
+**M3 — Director Memory**
+
+Separate universe, identity, creative history, context and decisions for each Director
+
+**M4 — Team Memory**
+
+Team-specific procedures, expertise and execution history
+
+**M5 — Project & Production Memory**
+
+Episodes, assets, scripts, production runs, decisions and QC results
+
+**M6 — Operational & Evidence Memory**
+
+Events, logs, metrics, incidents, receipts and audit records
+
+### **Memory types**
+
+1. Semantic memory — facts and knowledge.
+2. Episodic memory — what happened and when.
+3. Procedural memory — how to perform a task.
+4. Creative memory — storytelling, characters, style and universe continuity.
+5. Technical memory — architecture, code, tools and integrations.
+6. Operational memory — workflows, schedules and execution history.
+7. Evidence memory — verifiable outputs and source references.
+8. Preference memory — authorized preferences and choices.
+9. Negative memory — failures, prohibited approaches and known mistakes.
+10. Temporal memory — current, historical and superseded information.
+
+### **Memory governance**
+
+- Every memory has an owner, scope, source, timestamp and version.
+- Director memories are isolated by default.
+- HERMES can read Director status and approved summaries, not unrestricted private creative memory.
+- Shared memories require explicit sharing rules.
+- Sensitive credentials belong in a secrets manager, never ordinary AI memory.
+- Memory updates should be traceable, reversible where practical and protected from untrusted instructions.
+- Expired or superseded information must not silently override current policy.
+- Memory retrieval must respect authorization and tenant boundaries.
+
+## **7. Context engineering**
+
+Context determines what an agent knows for a particular task. It is assembled dynamically rather than loading every record into every prompt.
+
+**Context stack:**
+
+1. Global ST constitution and security rules.
+2. Owner governance and applicable delegation policy.
+3. HERMES or Director role charter.
+4. Director identity and universe context.
+5. Relevant Director and team memory.
+6. Project, episode or asset context.
+7. Task-specific instructions and acceptance criteria.
+8. Available tools, permissions and provider status.
+9. Recent messages, decisions and workflow state.
+10. Evidence and source material required for the task.
+
+Context must include source provenance, freshness and priority. Untrusted documents, browser pages and messages are data—not higher-priority instructions.
+
+## **8. Skills architecture**
+
+A skill is a reusable, versioned capability package with a defined input, output, procedure, tool requirements, permission scope and tests.
+
+### **Skill hierarchy**
+
+| Level | Skill category      | Examples                                                     |
+| ----- | ------------------- | ------------------------------------------------------------ |
+| S0    | Core skills         | Reasoning, planning, task decomposition                      |
+| S1    | Organization skills | Governance, management, reporting                            |
+| S2    | HERMES skills       | Delegation, coordination, escalation, oversight              |
+| S3    | Director skills     | Universe planning, creative direction, production management |
+| S4    | Specialist skills   | Research, scriptwriting, character design, animation         |
+| S5    | Media skills        | Voice, music, sound, editing, encoding, QC                   |
+| S6    | Distribution skills | Metadata, thumbnails, scheduling, publishing                 |
+| S7    | Engineering skills  | Coding, debugging, testing, deployment                       |
+| S8    | Operations skills   | Monitoring, recovery, incident management                    |
+| S9    | Learning skills     | Evaluation, optimization and improvement                     |
+
+### **Shared and Director-specific skills**
+
+**Shared skills:** security, task planning, evidence recording, communication, cost awareness, quality standards and common engineering procedures.
+
+**Director-specific skills:** genre research, universe continuity, storytelling voice, cultural localization, character rules, production style, audience strategy and brand-specific publishing.
+
+A Director may use a shared skill, but its creative settings and results must remain Director-owned.
+
+### **Skill package requirements**
+
+Each skill should have:
+
+- Unique ID and name.
+- Description and version.
+- Owner and permitted users.
+- Required inputs and expected outputs.
+- Procedure and decision rules.
+- Required tools and permissions.
+- Dependencies and fallback behavior.
+- Safety boundaries.
+- Evaluation examples and automated tests.
+- Changelog and rollback/version selection.
+
+## **9. Messaging and communication architecture**
+
+Messaging must be a durable system, not just chat windows.
+
+### **Communication hierarchy**
+
+OWNER ↔ HERMES
+
+HERMES ↔ DIRECTORS
+
+DIRECTOR ↔ OWN TEAMS
+
+TEAM ↔ SPECIALIST AGENTS / WORKERS
+
+Controlled cross-Director communication is possible through explicit collaboration permissions.
+
+### **Messaging channels**
+
+- Owner–HERMES command and executive channel.
+- Owner–Director private communication.
+- Director–HERMES management channel.
+- Director–team operations channel.
+- Team–team coordination.
+- Production and workflow event channel.
+- Approval and escalation channel.
+- Incident and emergency channel.
+- System alerts and daily reports.
+- Collaboration channel for approved cross-Director projects.
+
+### **Message structure**
+
+Every important message should contain:
+
+`message_id`, sender, recipient, organization, `director_id`, `universe_id`, timestamp, channel, message type, priority, correlation ID, content reference, authorization context, delivery state and audit reference.
+
+Delivery states: created → queued → sent → delivered → acknowledged → completed or failed.
+
+Messages must support acknowledgements, retries, deduplication, escalation and durable history.
+
+## **10. Automation and autonomous orchestration**
+
+Automation is the system that allows ST to operate without requiring the Owner to manually start every task.
+
+### **Automation categories**
+
+| Category     | Responsibility                                    |
+| ------------ | ------------------------------------------------- |
+| Event-driven | Start work when an event occurs                   |
+| Scheduled    | Run at defined dates and times                    |
+| Conditional  | Execute when defined conditions are met           |
+| Workflow     | Coordinate multi-step production processes        |
+| Monitoring   | Detect failures, delays and abnormal behavior     |
+| Recovery     | Retry, resume, reassign or safely stop work       |
+| Governance   | Check approvals, policies and delegated authority |
+| Reporting    | Generate daily, weekly and production reports     |
+| Maintenance  | Backups, health checks and routine housekeeping   |
+| Learning     | Evaluate outcomes and propose improvements        |
+
+### **Autonomous execution lifecycle**
+
+1. **Trigger** — Event, schedule, Owner request or Director request.
+2. **Understand** — Load identity, context, memory and task requirements.
+3. **Authorize** — Check permissions, budgets, approvals and risk.
+4. **Plan** — Create tasks, dependencies, deadlines and acceptance criteria.
+5. **Execute** — Assign skills, tools, agents and workers.
+6. **Observe** — Track progress, costs, logs and provider responses.
+7. **Validate** — Verify actual results against acceptance criteria.
+8. **Recover or escalate** — Apply bounded recovery or request a decision.
+9. **Record** — Save results, evidence, costs and decisions.
+10. **Improve** — Evaluate outcomes and propose safe improvements.
+
+### **HERMES autonomous management**
+
+HERMES should manage:
+
+- Director health and production status.
+- Production priorities and conflicts.
+- Team assignments and capacity.
+- Task dependencies and deadlines.
+- Provider availability and quotas.
+- Routine workflow retries and recovery.
+- Quality and evidence completion.
+- Director performance and analytics.
+- Escalations and Owner notifications.
+- Cross-Director resource coordination.
+
+### **Owner Unavailability & Delegated Decision Authority**
+
+Core executive capability
+
+HERMES needs an explicit delegation engine.
+
+**When the Owner is available:**
+
+- Owner decisions take precedence.
+- HERMES recommends, prepares and executes within its existing authority.
+- Owner can approve, reject, modify or revoke delegated permissions.
+
+**When the Owner is unavailable:**
+
+1. HERMES submits the approval request.
+2. It waits for the policy-defined response window.
+3. It checks whether the decision is covered by a valid delegation.
+4. It assesses risk, budget, policy and operational consequences.
+5. It decides and executes only if authorized.
+6. It records the decision, reasoning, evidence and resulting action.
+7. It informs the Owner when communication is available again.
+
+**Delegation categories:**
+
+| Category                                        | HERMES when Owner is unavailable                  |
+| ----------------------------------------------- | ------------------------------------------------- |
+| Creative and routine production                 | Decide                                            |
+| Scheduling and team assignment                  | Decide                                            |
+| Routine retries and reversible operations       | Decide                                            |
+| Quality rejection and safety refusal            | Decide                                            |
+| Approved budget allocation                      | Decide within limits                              |
+| Cross-Director coordination                     | Decide within policy                              |
+| Publishing                                      | Only under explicitly delegated publishing policy |
+| New paid services or spending above limits      | Owner-only                                        |
+| New account connections or credential ownership | Owner-only                                        |
+| Security and global governance changes          | Owner-only                                        |
+| Destructive deletion and ownership transfer     | Owner-only                                        |
+| Other expressly reserved decisions              | Owner-only                                        |
+
+**No response is not consent.** An expired approval request only activates a delegation policy if the exact decision type is covered. Otherwise, HERMES pauses the affected action and continues unrelated safe work.
+
+### **Automation reliability requirements**
+
+- Durable job queues.
+- Idempotency keys.
+- Bounded retries with exponential backoff.
+- Lease-based worker claims.
+- Stalled-job detection.
+- Dead-letter queues.
+- Watchdogs and controlled resume.
+- Cancellation and timeout handling.
+- Dependency-aware scheduling.
+- Resource and quota limits.
+- Human escalation paths.
+- Full execution evidence.
+
+No infinite retry loops or silent failures.
+
+## **11. Browser and web intelligence**
+
+The browser is an AI capability for research and controlled web interaction—not an unrestricted administrator.
+
+### **Browser hierarchy**
+
+| Level | Capability                                                    |
+| ----- | ------------------------------------------------------------- |
+| B0    | No browser access                                             |
+| B1    | Search and discover information                               |
+| B2    | Read and summarize websites and documents                     |
+| B3    | Navigate pages and collect structured information             |
+| B4    | Fill forms and prepare actions                                |
+| B5    | Execute approved browser actions with controlled side effects |
+
+### **Browser capabilities**
+
+- Search engines and web research.
+- Competitor and market research.
+- Research verification and source comparison.
+- Documentation and API discovery.
+- Website navigation.
+- Form preparation.
+- Controlled downloads and uploads.
+- Dashboard monitoring.
+- Account-status checks.
+- Publishing preparation.
+- Analytics collection.
+- Web-based administrative workflows.
+
+### **Browser safety**
+
+- Separate browser profiles and sessions.
+- Credentials isolated by Director.
+- No cross-Director session sharing by default.
+- Untrusted web content cannot override system instructions.
+- Sensitive actions require the relevant permission.
+- Payment, deletion, account changes and publishing must follow their specific authorization policies.
+- Browser actions must produce logs and verifiable receipts.
+
+## **12. MCP — Model Context Protocol architecture**
+
+MCP is the interoperability layer that allows AI agents to connect to tools, resources and external systems through consistent interfaces.
+
+### **MCP hierarchy**
+
+**HERMES / DIRECTORS / TEAMS**
+
+Authorized AI clients
+
+**ST MCP GATEWAY**
+
+Authentication · Authorization · Routing · Auditing · Rate limits
+
+Internal ST MCP
+
+Research MCP
+
+Developer MCP
+
+Media MCP
+
+Communication MCP
+
+Publishing MCP
+
+Database MCP
+
+Operations MCP
+
+Each MCP server exposes only the tools and resources authorized for the requesting identity.
+
+### **MCP components**
+
+1. **Tools:** actions an agent can call.
+2. **Resources:** structured data and contextual material.
+3. **Prompts:** reusable prompt templates.
+4. **Sampling:** supported model-assisted interactions.
+5. **Roots:** permitted filesystem or workspace boundaries.
+6. **Notifications:** events and updates.
+
+### **Proposed ST MCP servers**
+
+| Server            | Responsibilities                           |
+| ----------------- | ------------------------------------------ |
+| Internal MCP      | Directors, tasks, projects and ST services |
+| Research MCP      | Search, sources, research and verification |
+| Developer MCP     | GitHub, code, testing and CI               |
+| Media MCP         | Image, video, voice and audio operations   |
+| Communication MCP | Messaging, email and notifications         |
+| Publishing MCP    | Platform accounts, scheduling and receipts |
+| Data MCP          | Authorized database and storage access     |
+| Operations MCP    | Health, logs, queues and recovery          |
+
+Every server needs authentication, scoped authorization, input validation, output filtering, audit logging, rate limits, timeout handling and failure behavior.
+
+MCP is a connection protocol—not a permission system by itself. ST must enforce authorization independently.
+
+## **13. Workflow and production engine**
+
+Each Director owns an independent production workflow. Shared infrastructure can provide the underlying execution services.
+
+### **Production lifecycle**
+
+1. Research and topic discovery
+2. Story concept and planning
+3. Scriptwriting and dialogue
+4. Character and universe continuity
+5. Visual design and generation
+6. Animation and scene production
+7. Voice, narration and dubbing
+8. Background music and sound effects
+9. FFmpeg editing and assembly
+10. FFprobe and technical quality control
+11. Evidence and final package generation
+12. Owner or delegated approval gate
+13. Director-owned publishing and distribution
+14. Analytics, learning and optimization
+
+### **Standard production package**
+
+- One main video, normally 30–50 minutes.
+- Exactly two standalone episode-promotion Shorts/Reels.
+- Exactly one brand-promotion Reel.
+- Language and localization variants when configured.
+- Thumbnails, metadata, subtitles and promotional material.
+- Final media manifest and QC report.
+- Publishing package for each authorized Director account.
+
+Production must distinguish a completed file from a verified, approved, published and publicly accessible asset. Each is a separate state requiring evidence.
+
+## **14. Data, storage and knowledge infrastructure**
+
+### **Data architecture**
+
+| Data layer      | Purpose                                                                    |
+| --------------- | -------------------------------------------------------------------------- |
+| PostgreSQL      | Identity, governance, Director records, jobs, schedules and audit metadata |
+| Object storage  | Videos, audio, images, scripts and production packages                     |
+| Vector database | Semantic memory and knowledge retrieval                                    |
+| Search index    | Full-text search across authorized documents and records                   |
+| Cache           | Short-lived, non-authoritative performance data                            |
+| Event store     | Durable events and state transitions                                       |
+| Evidence store  | QC reports, hashes, logs, manifests and publishing receipts                |
+| Secrets manager | API keys, OAuth tokens and credentials                                     |
+| Analytics store | Production, audience and platform performance                              |
+
+### **Ownership and isolation**
+
+Every applicable record should carry the correct organization, Director, universe, project and asset ownership identifiers.
+
+Enforce isolation at multiple levels:
+
+- Database access policies.
+- API authorization.
+- Worker task authorization.
+- Storage access policies.
+- Search and vector retrieval filters.
+- Credential access.
+- Publishing destination validation.
+- Analytics and reporting access.
+
+A user-interface filter alone is not tenant isolation.
+
+## **15. Evidence, verification and audit architecture**
+
+ST needs to know what actually happened, not just what an AI agent claims happened.
+
+### **Evidence categories**
+
+1. Decision evidence.
+2. Authorization and approval evidence.
+3. Task execution evidence.
+4. Provider request and response evidence.
+5. Media-generation evidence.
+6. File integrity and checksum evidence.
+7. FFmpeg and FFprobe reports.
+8. QC and acceptance evidence.
+9. Publishing receipts and public URL evidence.
+10. Analytics retrieval evidence.
+11. Workflow and worker execution records.
+12. Deployment, backup and recovery evidence.
+
+### **Evidence rules**
+
+- Each production run gets a unique ID.
+- Every output references its originating task and Director.
+- Files have cryptographic hashes and version information.
+- QC records identify the exact file tested.
+- Publishing evidence identifies the exact destination account and content.
+- Failed, skipped and unavailable checks remain visible.
+- Evidence cannot be fabricated or retroactively represented as an actual execution.
+- A placeholder must never pass a production verification gate.
+
+**The fundamental rule:** no provider call, generation, rendering, upload, publication, test, deployment or verification claim without durable supporting evidence.
+
+## **16. Security, governance and privacy**
+
+### **Security layers**
+
+- Authentication and MFA.
+- Role-based and attribute-based access control.
+- Director-level tenant isolation.
+- Secure session management.
+- CSRF and API protection.
+- Encryption in transit and at rest.
+- Secret and OAuth token vault.
+- Credential rotation and revocation.
+- Audit logging.
+- Rate limits and abuse protection.
+- Input validation and output sanitization.
+- Supply-chain and dependency security.
+- Backup encryption and access control.
+- Incident response and recovery.
+
+### **Governance hierarchy**
+
+1. Owner constitution and reserved powers.
+2. Global ST security and compliance policies.
+3. HERMES executive delegation.
+4. Director creative charters.
+5. Team operating instructions.
+6. Project and production rules.
+7. Individual task instructions.
+
+Lower-level rules cannot override higher-level security, authorization or Owner-reserved decisions.
+
+## **17. Deployment and cloud infrastructure**
+
+The most important deployment principle: **the production runtime must continue independently of the Owner's Chromebook, laptop, browser or local terminal.**
+
+### **A. Infrastructure hierarchy**
+
+**OWNER CONTROL PLANE**
+
+Web/mobile dashboard · Approvals · Director management · Analytics
+
+**API & IDENTITY GATEWAY**
+
+Authentication · Authorization · Routing · Rate limits
+
+**HERMES ORCHESTRATION SERVICE**
+
+Management · Planning · Delegation · Monitoring
+
+Director services
+
+Automation engine
+
+Durable queues
+
+Scheduler
+
+Cloud workers
+
+MCP gateway
+
+PostgreSQL
+
+Object storage
+
+Memory / search
+
+Secrets manager
+
+Evidence store
+
+Monitoring
+
+**EXTERNAL PROVIDERS & PLATFORMS**
+
+AI models · Media providers · Publishing accounts · Notifications
+
+### **B. Deployment components**
+
+1. Web dashboard and mobile control interface.
+2. Backend API and identity service.
+3. HERMES orchestration runtime.
+4. Independent Director services or isolated execution contexts.
+5. Task queue and scheduler.
+6. Persistent cloud workers.
+7. AI provider gateway.
+8. MCP gateway and MCP servers.
+9. PostgreSQL database.
+10. Object and media storage.
+11. Memory and search infrastructure.
+12. Secret manager.
+13. Media processing and rendering workers.
+14. Evidence ledger.
+15. Publishing and analytics integrations.
+16. Observability and alerting.
+17. Backup and disaster recovery.
+18. CI/CD and deployment management.
+
+### **C. Engineering and production must be separate**
+
+| Engineering plane        | Production plane              |
+| ------------------------ | ----------------------------- |
+| GitHub repository        | Deployed cloud services       |
+| Codespaces               | Persistent cloud workers      |
+| CI and tests             | Production workflow execution |
+| Code review and releases | Director content production   |
+| Developer credentials    | Production secret manager     |
+| Build artifacts          | Production media assets       |
+
+Stopping Codespaces must not stop the deployed runtime. A successful CI build must not be confused with a running production service.
+
+### **D. Cloud reliability requirements**
+
+- Independent process supervision.
+- Persistent queues and workers.
+- Automatic worker restart.
+- Durable state and recovery.
+- Health checks and readiness probes.
+- Monitoring and alerts.
+- Database backups.
+- Restore drills.
+- Storage lifecycle policies.
+- Provider outage handling.
+- Quota and rate-limit handling.
+- Deployment rollback.
+- Disaster recovery.
+- Cost and resource controls.
+
+### **E. Cost-aware infrastructure**
+
+The platform should prefer free and open-source software where practical, support multiple providers, track usage per Director, enforce quotas and avoid paid overages.
+
+No new paid service, subscription or credit-card dependency should be activated without the required Owner authorization.
+
+## **18. Observability, monitoring and operational intelligence**
+
+HERMES needs a unified operational view without taking ownership away from Directors.
+
+### **Monitoring dimensions**
+
+- Director availability and health.
+- Team and agent availability.
+- Task queues and worker utilization.
+- Production completion and failure rates.
+- Provider latency, errors and quota consumption.
+- Rendering time and media-processing capacity.
+- QC pass/fail rates.
+- Publishing success and failure.
+- Account connection and token health.
+- Storage and database capacity.
+- Security incidents and permission violations.
+- Spending and resource consumption.
+- Backup and recovery status.
+
+### **HERMES executive dashboard**
+
+HERMES should have a live view of:
+
+- All Directors and their current status.
+- Production plans and priorities.
+- Delayed or blocked work.
+- Pending Owner approvals.
+- Delegated decisions made during Owner unavailability.
+- Resource and budget utilization.
+- Publishing account health.
+- Production quality.
+- Evidence completeness.
+- Critical incidents and escalations.
+
+Each Director also needs its own dashboard with its own projects, teams, production status, channels and analytics.
+
+## **19. Analytics, growth and optimization**
+
+Each Director owns its own performance data and growth strategy.
+
+### **Analytics capabilities**
+
+- Views, impressions and reach.
+- Watch time and audience retention.
+- Engagement and subscriber/follower growth.
+- Shorts and Reels performance.
+- Thumbnail and title performance.
+- Publishing schedule performance.
+- Language and regional performance.
+- Content and genre performance.
+- Production costs and time.
+- Revenue and monetization data where legitimately available.
+
+### **Optimization intelligence**
+
+- Identify successful content formats.
+- Compare performance across episodes.
+- Detect declining engagement.
+- Recommend new topics and niches.
+- Evaluate thumbnail and metadata experiments.
+- Identify production bottlenecks.
+- Improve publishing schedules.
+- Recommend changes to creative strategy.
+
+Analytics should inform recommendations. They must not silently change a Director's identity or violate its creative charter.
+
+## **20. Best practices and engineering standards**
+
+These are the operating standards that should apply throughout ST.
+
+### **A. Architecture and software engineering**
+
+1. Modular, service-oriented architecture.
+2. Clear boundaries between organization, Director, team and production.
+3. API contracts and versioned schemas.
+4. Reusable components instead of duplicate implementations.
+5. Database migrations with tested rollback procedures.
+6. Backward-compatible changes where possible.
+7. Automated tests and meaningful coverage.
+8. Static analysis, linting and dependency scanning.
+9. Code review and documented acceptance criteria.
+10. No hidden dependencies on a developer's local machine.
+
+### **B. AI and agent engineering**
+
+1. Explicit agent identity and role.
+2. Task-specific context assembly.
+3. Structured tool calling.
+4. Permission checking before tool execution.
+5. Bounded reasoning and execution budgets.
+6. Model routing based on capability, cost and availability.
+7. Provider fallbacks only when compatible and authorized.
+8. Structured outputs with schema validation.
+9. Evaluation datasets and regression testing.
+10. Human oversight for reserved decisions.
+
+### **C. Multi-agent coordination**
+
+1. Every task has one accountable owner.
+2. Shared work uses explicit task contracts.
+3. No two agents unknowingly perform the same work.
+4. Shared resources have locking and concurrency controls.
+5. Cross-Director collaboration is explicitly authorized.
+6. Agents report actual results, not invented progress.
+7. Failed tasks have a defined recovery or escalation path.
+8. HERMES coordinates; Directors retain creative ownership.
+
+### **D. Security and safety**
+
+1. Least-privilege access.
+2. Separate Director credentials and sessions.
+3. MFA and secure token handling.
+4. No secrets in prompts, logs or ordinary memory.
+5. Treat external content as untrusted.
+6. Verify tool inputs and outputs.
+7. Enforce approval and spending boundaries.
+8. Audit sensitive actions.
+9. Protect data deletion and ownership transfer.
+10. Have incident response and recovery procedures.
+
+### **E. Automation and reliability**
+
+1. Durable queues rather than in-memory-only jobs.
+2. Idempotent execution.
+3. Bounded retries and exponential backoff.
+4. Dead-letter queues.
+5. Worker leases and heartbeats.
+6. Watchdogs and stalled-task recovery.
+7. Timeouts and cancellation.
+8. Clear task states and transitions.
+9. Monitoring and alerting.
+10. Regular backup and restore verification.
+
+### **F. Production and media quality**
+
+1. Every output has a production manifest.
+2. The final delivered file is authoritative.
+3. Re-probe after corrective processing.
+4. Verify the same file identity across QC and evidence.
+5. Check audio loudness, true peak and clipping.
+6. Check video duration, frame rate, resolution and codecs.
+7. Check subtitle and language consistency.
+8. Validate content continuity and character consistency.
+9. Verify all promotional assets.
+10. No production approval based solely on placeholder output.
+
+### **G. Evidence and accountability**
+
+1. Every meaningful action has an execution ID.
+2. Every important decision has an authorization record.
+3. Every output has a verifiable artifact or receipt.
+4. Every failure is visible.
+5. Skipped checks remain explicitly skipped.
+6. Every publishing action has a destination and receipt.
+7. Every deployed version has a traceable release.
+8. Reports distinguish implemented, tested, operationally verified and production-proven capabilities.
+
+## **21. Power-user capabilities hierarchy**
+
+This is the advanced capability ladder for HERMES, Directors and specialist agents.
+
+| Level | Capability                      | What it enables                                       |
+| ----- | ------------------------------- | ----------------------------------------------------- |
+| P0    | Basic interaction               | Instructions, questions and responses                 |
+| P1    | Research intelligence           | Search, read, summarize and compare                   |
+| P2    | Context and memory              | Persistent knowledge and continuity                   |
+| P3    | Advanced reasoning              | Planning, analysis and decision-making                |
+| P4    | Tool mastery                    | Multi-tool execution and structured outputs           |
+| P5    | Skill composition               | Combine specialist skills into complete solutions     |
+| P6    | Agent collaboration             | Coordinate specialist agents and teams                |
+| P7    | Workflow autonomy               | Execute durable multi-step workflows                  |
+| P8    | Browser and MCP operations      | Connect and operate external systems                  |
+| P9    | Executive delegation            | Make authorized decisions when Owner is unavailable   |
+| P10   | Independent Director operations | Operate separate creative studios and media brands    |
+| P11   | Production autonomy             | Complete media production and QC workflows            |
+| P12   | Publishing autonomy             | Publish through authorized Director-owned accounts    |
+| P13   | Operational intelligence        | Monitor, diagnose, recover and optimize               |
+| P14   | Continuous improvement          | Evaluate performance and improve skills and workflows |
+| P15   | Enterprise orchestration        | Coordinate the complete organization at scale         |
+
+### **Advanced power-user capabilities**
+
+**Intelligence**
+
+- Multi-model reasoning.
+- Planning and self-evaluation.
+- Parallel research.
+- Structured decision matrices.
+- Long-context management.
+- Knowledge synthesis.
+- Source verification.
+
+**Agent management**
+
+- Agent creation and configuration.
+- Agent specialization.
+- Multi-agent collaboration.
+- Delegation and task handoff.
+- Agent evaluation.
+- Resource and workload management.
+
+**Tool mastery**
+
+- Tool discovery.
+- Tool chaining.
+- Parallel tool execution.
+- Conditional tool selection.
+- Structured API interaction.
+- Error recovery.
+- Permission-aware execution.
+
+**Automation**
+
+- Scheduled autonomous work.
+- Event-driven execution.
+- Multi-stage workflows.
+- Watchdog supervision.
+- Controlled self-recovery.
+- Daily executive reporting.
+
+**Advanced browser and MCP**
+
+- Multi-site research.
+- Structured extraction.
+- Secure browser profiles.
+- API and MCP integration.
+- Resource discovery.
+- Controlled external operations.
+
+**Production intelligence**
+
+- Franchise continuity.
+- Multilingual production.
+- Script-to-video orchestration.
+- Media quality optimization.
+- Promotional asset generation.
+- Platform-specific packaging.
+
+**Executive intelligence**
+
+- Owner unavailability detection.
+- Delegated decision execution.
+- Risk and impact analysis.
+- Budget-aware resource allocation.
+- Escalation and exception handling.
+- Decision history and accountability.
+
+**Continuous improvement**
+
+- Skill evaluation.
+- Workflow performance analysis.
+- Failure pattern detection.
+- Prompt and model evaluation.
+- Safe configuration improvements.
+- Versioned learning and rollback.
+
+## **22. Director-specific organizational template**
+
+Every existing and future Director must be provisioned from the same organizational template while retaining independent ownership.
+
+## **Director Studio Blueprint**
+
+Required standard for every Director
+
+1. Director identity and charter.
+2. Independent universe and intellectual property.
+3. Genres, niches and micro-niches.
+4. Languages and localization.
+5. Audience and creative strategy.
+6. Independent context and memory.
+7. Dedicated production teams.
+8. Skills and tool permissions.
+9. Projects, queues and schedules.
+10. Production workflow and quality standards.
+11. Dedicated publishing accounts.
+12. Credentials and integration health.
+13. Content catalogue and asset storage.
+14. Analytics and growth intelligence.
+15. Evidence, audit and performance history.
+16. Budget, quota and resource allocation.
+17. Approval and escalation rules.
+18. HERMES management and reporting connection.
+
+This template should support adding up to 50 Directors without building a new platform implementation for every Director.
+
+## **23. Implementation hierarchy and priority order**
+
+The capabilities above describe the target system. They should be implemented in a dependency-aware order rather than trying to activate every capability simultaneously.
+
+| Phase | Implementation priority            | Acceptance outcome                                              |
+| ----- | ---------------------------------- | --------------------------------------------------------------- |
+| 0     | Repository and architecture audit  | Accurate baseline and verified gaps                             |
+| 1     | Identity, ownership and governance | Enforced organizational hierarchy                               |
+| 2     | Director isolation                 | Independent identity, memory, universe and accounts model       |
+| 3     | HERMES management and delegation   | Auditable executive authority and Owner-unavailability handling |
+| 4     | Database, storage and evidence     | Durable, isolated and traceable data                            |
+| 5     | Tools and permission gateway       | Secure tool execution                                           |
+| 6     | Memory, context and skills         | Reliable specialist intelligence                                |
+| 7     | Messaging and collaboration        | Durable communication and handoffs                              |
+| 8     | Automation and workflow engine     | Recoverable autonomous execution                                |
+| 9     | Browser and MCP                    | Governed external connectivity                                  |
+| 10    | Media production engine            | Verified end-to-end media production                            |
+| 11    | Publishing and analytics           | Independent Director publishing and measurement                 |
+| 12    | Cloud deployment                   | Persistent independent runtime                                  |
+| 13    | Monitoring, backups and recovery   | Operational reliability                                         |
+| 14    | Advanced autonomy                  | Safe executive and production autonomy                          |
+| 15    | Scaling and optimization           | Multi-Director enterprise operations                            |
+
+### **Acceptance gates**
+
+A phase must not be called complete merely because its code exists.
+
+It must pass the relevant checks:
+
+- Architecture and design acceptance.
+- Database and API verification.
+- Security and authorization tests.
+- Automated tests.
+- Integration tests.
+- Failure and recovery tests.
+- Real dependency verification where applicable.
+- Durable evidence.
+- Owner acceptance for reserved decisions.
+
+## **24. Final operating constitution**
+
+These are the defining rules of the complete ST architecture.
+
+## **ST Production House — 15 Non-Negotiable Principles**
+
+1. **Owner supremacy:** The Owner has final authority over ST.
+2. **Delegated executive authority:** HERMES can act when the Owner is unavailable, but only within explicit delegation.
+3. **No assumed consent:** Silence never automatically authorizes an action.
+4. **Independent Directors:** Each Director owns its own universe and creative identity.
+5. **Independent memory:** Director context and memory are isolated by default.
+6. **Independent production:** Each Director controls its own creative plans and teams.
+7. **Independent publishing:** Each Director has separate platform accounts and credentials.
+8. **Shared infrastructure, isolated ownership:** Services can be shared without sharing private data or authority.
+9. **Permission before execution:** No tool can bypass its authorization policy.
+10. **Durable automation:** Work survives browser closures, laptop shutdowns and Codespace shutdowns.
+11. **Honest failures:** A broken provider or unavailable integration must fail visibly.
+12. **Evidence before claims:** No unsupported claims of production, publishing or verification.
+13. **Quality before distribution:** Content must pass the applicable QC and approval gates.
+14. **Cost discipline:** No unauthorized spending or paid overages.
+15. **Continuous improvement:** The system evaluates performance and improves without violating ownership or governance.
+
+## **25. What ST ultimately becomes**
+
+# **ONE ORGANIZATION**
+
+# **10–50 INDEPENDENT STUDIOS**
+
+# **ONE EXECUTIVE AI MANAGER**
+
+# **SHARED INTELLIGENCE INFRASTRUCTURE**
+
+# **INDEPENDENT CREATIVE OWNERSHIP**
+
+**A continuously operating, cloud-based AI production organization** in which:
+
+- The Owner governs the entire organization.
+- HERMES manages operations and exercises delegated authority.
+- Each Director operates its own universe and media brand.
+- Specialist teams execute production.
+- Tools, skills, memory and automation power the work.
+- Cloud infrastructure keeps the operation running.
+- Evidence proves what has actually happened.
+- Analytics and learning improve future production.
+
+**The most important architectural distinction:** ST should share its infrastructure, standards, security and technical capabilities—but never accidentally merge the creative ownership, memory, credentials, content or publishing identities of independent Directors.
+
+This is the updated target blueprint. It does not mean every capability is currently built, connected, deployed or production-verified in the GitHub repository.
