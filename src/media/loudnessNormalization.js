@@ -50,7 +50,7 @@ export const DELIVERY_TRUE_PEAK_HEADROOM_DBTP = -2.5;
  * spend. Each round re-encodes the SAME normalized PCM (never a previous AAC
  * generation), so this bounds the work without stacking codec losses.
  */
-export const MAX_DELIVERY_CORRECTION_ATTEMPTS = 3;
+export const MAX_DELIVERY_CORRECTION_ATTEMPTS = 5;
 
 /**
  * Refuse to keep attenuating forever: past this much cumulative attenuation the
@@ -80,6 +80,90 @@ export function buildDynamicDeliveryFilter({
     throw loudnessError("LOUDNESS_TARGET_INVALID", "loudness range must be a positive finite number");
   }
   return `loudnorm=I=${targetLufs}:TP=${truePeakDbtp}:LRA=${loudnessRangeLu}`;
+}
+
+/**
+ * Decide the NEXT corrective round from measurements of the delivered file.
+ *
+ * Measured facts driving this (run 44068972407):
+ *   - ceiling -2.5 dBTP, LRA 7 → PCM -2.45 dBTP / -15.87 LUFS, delivered
+ *     +2.04 dBTP / -15.91 LUFS (AAC encode raises the true peak ~4.5 dB)
+ *   - ceiling -7.24 dBTP, LRA 7 → delivered -2.38 dBTP / -20.30 LUFS
+ * Peak and loudness therefore cannot be reached by moving the ceiling alone:
+ * buying peak headroom with broadband gain costs the same loudness. The
+ * second lever is program compression (lower loudness range), which raises
+ * loudness at a fixed peak.
+ */
+export function planCorrectiveRound({
+  delivered,
+  targetLufs = DELIVERY_TARGET_LUFS,
+  targetTruePeakDbtp = DELIVERY_TRUE_PEAK_HEADROOM_DBTP,
+  loudnessToleranceLu = 2.0,
+  ceilingDbtp = DELIVERY_TRUE_PEAK_HEADROOM_DBTP,
+  loudnessRangeLu = 7,
+  minimumCeilingDbtp = -20,
+} = {}) {
+  if (!delivered || typeof delivered !== "object") {
+    throw loudnessError("LOUDNESS_MEASUREMENT_REQUIRED", "a delivered loudness measurement is required");
+  }
+  const truePeakDbtp = requireFinite(delivered.truePeakDbtp, "truePeakDbtp");
+  const integratedLufs = requireFinite(delivered.integratedLufs, "integratedLufs");
+  const ceiling = requireFinite(ceilingDbtp, "ceilingDbtp");
+  const lra = requireFinite(loudnessRangeLu, "loudnessRangeLu");
+
+  const peakOk = truePeakDbtp <= targetTruePeakDbtp;
+  const loudnessOk = Math.abs(integratedLufs - targetLufs) <= loudnessToleranceLu;
+  if (peakOk && loudnessOk) {
+    return Object.freeze({ converged: true, reasonCode: null, nextCeilingDbtp: ceiling, nextLoudnessRangeLu: lra });
+  }
+
+  if (!peakOk) {
+    const overshootDb = truePeakDbtp - targetTruePeakDbtp;
+    const nextCeilingDbtp = Math.round((ceiling - overshootDb - 0.2) * 100) / 100;
+    if (nextCeilingDbtp < minimumCeilingDbtp) {
+      return Object.freeze({
+        converged: false,
+        reasonCode: "DELIVERY_PEAK_UNREACHABLE",
+        nextCeilingDbtp: minimumCeilingDbtp,
+        nextLoudnessRangeLu: lra,
+      });
+    }
+    // Peak is the binding constraint: shave it, and compress a little more so
+    // the loudness lost to that shave is bought back.
+    return Object.freeze({
+      converged: false,
+      reasonCode: null,
+      nextCeilingDbtp,
+      nextLoudnessRangeLu: Math.max(1, Math.round((lra - 1) * 10) / 10),
+    });
+  }
+
+  // Peak already inside target but the program is too quiet: compress harder so
+  // loudness rises without touching the ceiling.
+  if (integratedLufs < targetLufs - loudnessToleranceLu) {
+    if (lra <= 1) {
+      return Object.freeze({
+        converged: false,
+        reasonCode: "DELIVERY_LOUDNESS_UNREACHABLE",
+        nextCeilingDbtp: ceiling,
+        nextLoudnessRangeLu: 1,
+      });
+    }
+    return Object.freeze({
+      converged: false,
+      reasonCode: null,
+      nextCeilingDbtp: ceiling,
+      nextLoudnessRangeLu: Math.max(1, Math.round((lra - 2) * 10) / 10),
+    });
+  }
+
+  // Too loud with an acceptable peak: lower the ceiling slightly.
+  return Object.freeze({
+    converged: false,
+    reasonCode: null,
+    nextCeilingDbtp: Math.max(minimumCeilingDbtp, Math.round((ceiling - 0.5) * 100) / 100),
+    nextLoudnessRangeLu: lra,
+  });
 }
 
 /**

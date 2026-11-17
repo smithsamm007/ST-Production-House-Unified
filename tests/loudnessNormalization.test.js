@@ -27,6 +27,7 @@ import {
   buildDynamicDeliveryFilter,
   buildMeasuredNormalizationFilter,
   requiresCorrectiveNormalization,
+  planCorrectiveRound,
   planDeliveryAttenuation,
   selectGateLoudness,
 } from "../src/media/loudnessNormalization.js";
@@ -155,4 +156,48 @@ test("the corrective delivery filter targets loudness and a reduced peak ceiling
     () => buildDynamicDeliveryFilter({ targetLufs: -14, truePeakDbtp: -2.5, loudnessRangeLu: 0 }),
     (error) => error.code === "LOUDNESS_TARGET_INVALID",
   );
+});
+
+test("the corrective controller converges only when loudness AND true peak are inside target", () => {
+  const plan = planCorrectiveRound({ delivered: { integratedLufs: -14.4, truePeakDbtp: -2.6 } });
+  assert.equal(plan.converged, true);
+  assert.equal(plan.reasonCode, null);
+});
+
+test("a delivered peak over target lowers the ceiling and starts reducing loudness range", () => {
+  // Measured in run 44068972407 round 1: ceiling -2.5 → delivered +2.04 dBTP.
+  const plan = planCorrectiveRound({
+    delivered: { integratedLufs: -15.91, truePeakDbtp: 2.04 },
+    ceilingDbtp: -2.5,
+    loudnessRangeLu: 7,
+  });
+  assert.equal(plan.converged, false);
+  assert.equal(plan.nextCeilingDbtp, -7.24);
+  assert.equal(plan.nextLoudnessRangeLu, 6);
+});
+
+test("a quiet program with an acceptable peak is fixed by compressing, not by more attenuation", () => {
+  // A quiet program whose peak is already inside target: only compression helps.
+  const plan = planCorrectiveRound({
+    delivered: { integratedLufs: -20.3, truePeakDbtp: -2.6 },
+    ceilingDbtp: -7.24,
+    loudnessRangeLu: 7,
+  });
+  assert.equal(plan.converged, false);
+  assert.equal(plan.nextCeilingDbtp, -7.24);
+  assert.equal(plan.nextLoudnessRangeLu, 5);
+});
+
+test("the controller reports unreachable loudness and unreachable peak instead of looping", () => {
+  const quiet = planCorrectiveRound({
+    delivered: { integratedLufs: -20.3, truePeakDbtp: -3.0 },
+    loudnessRangeLu: 1,
+  });
+  assert.equal(quiet.reasonCode, "DELIVERY_LOUDNESS_UNREACHABLE");
+
+  const peaky = planCorrectiveRound({
+    delivered: { integratedLufs: -14.0, truePeakDbtp: 3.0 },
+    ceilingDbtp: -19.5,
+  });
+  assert.equal(peaky.reasonCode, "DELIVERY_PEAK_UNREACHABLE");
 });
