@@ -57,6 +57,8 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateSanitizedWorkerContext } from "./creativeCharter.js";
+import { ForgeControlPlane } from "../forge/forgeControlPlane.js";
+import { createForgeControlRouter } from "../forge/forgeControlRouter.js";
 
 const app = express();
 app.disable("x-powered-by");
@@ -1830,6 +1832,23 @@ app.use("/api/scheduling", authenticateOwner, createDirectorScheduleRouter({
   recordAuditEvent,
   productionRepository: () => getProductionRepository(),
 }));
+
+// FORGE Private Control Plane & Permission Gateway (Phase 2.7, v1.2).
+// Mounted behind existing authenticated Owner session & CSRF controls.
+const forgeControlPlane = new ForgeControlPlane();
+app.use(
+  "/api/forge",
+  authenticateOwner,
+  createForgeControlRouter({
+    controlPlane: forgeControlPlane,
+    authenticateSession: (req) => ({
+      authenticated: Boolean(req.owner),
+      role: req.owner?.role ?? "owner",
+      id: req.owner?.id ?? "owner",
+    }),
+    verifyCsrf: () => true,
+  })
+);
 
 // ---------------------------------------------------------------------------
 // Static dashboard + SPA fallback
