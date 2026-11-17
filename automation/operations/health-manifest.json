@@ -18,6 +18,13 @@
       "description": "Opt-in workflow_dispatch run of a real 30/40/50-minute media rehearsal on a media-capable runner. Retains one sanitized evidence bundle (allowlisted fields, paths and secret-shaped keys removed) and uploads nothing when no evidence exists."
     },
     {
+      "workflowId": "android",
+      "path": ".github/workflows/android.yml",
+      "requiredSecrets": [],
+      "critical": true,
+      "description": "Android Owner console debug build and JVM unit tests on JDK 21, Android SDK 36, and Gradle 9.3.1."
+    },
+    {
       "workflowId": "ci",
       "path": ".github/workflows/ci.yml",
       "requiredSecrets": [],

@@ -153,6 +153,13 @@ export class DemoStorageAdapter {
     // append-only audit tables. UPDATE/DELETE are rejected exactly like the
     // real trigger would (demo emulation, not a new SQL feature).
     this.appendOnlyTables = new Map();
+    // Honest-label contract: DemoStorageAdapter is single-process in-memory
+    // storage and does NOT enforce PostgreSQL Row-Level Security or DB roles.
+    // PostgreSQL-only RLS/privilege DDL statements encountered during demo
+    // migrations are explicitly recorded here rather than silently pretending
+    // that RLS is enforced.
+    this.enforcesPostgresRls = false;
+    this.unappliedPostgresOnlySecurityStatements = [];
   }
 
   // ------------------------------------------------------------------
@@ -211,6 +218,15 @@ export class DemoStorageAdapter {
     // DROP TRIGGER/FUNCTION/INDEX/VIEW: demo storage keeps no such objects,
     // so dropping is a truthful no-op (matches idempotent migrations).
     if (/^DROP\s+(?:TRIGGER|FUNCTION|INDEX|VIEW)\b/i.test(execSql)) {
+      return { rows: [], rowCount: 0 };
+    }
+    // Narrow PostgreSQL-only RLS policy & privilege DDL compatibility boundary:
+    // DemoStorageAdapter does NOT enforce PostgreSQL RLS or DB roles
+    // (`enforcesPostgresRls === false`). Record each statement honestly so
+    // migrations 038–040 can run in demo mode without weakening PostgreSQL
+    // migrations or suppressing arbitrary unsupported SQL.
+    if (/^(?:DROP|CREATE)\s+POLICY\b/is.test(execSql) || /^(?:GRANT|REVOKE)\b/is.test(execSql)) {
+      this.unappliedPostgresOnlySecurityStatements.push(execSql.slice(0, 120));
       return { rows: [], rowCount: 0 };
     }
     if (/^CREATE\s+(?:OR\s+REPLACE\s+)?(?:UNIQUE\s+)?(?:FUNCTION|PROCEDURE|TYPE|TRIGGER|INDEX|EXTENSION|VIEW)\b/is.test(execSql)) {
