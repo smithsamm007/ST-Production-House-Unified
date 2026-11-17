@@ -26,6 +26,7 @@ import {
   QC_MAX_TRUE_PEAK_DBTP,
   buildMeasuredNormalizationFilter,
   requiresCorrectiveNormalization,
+  planDeliveryAttenuation,
   selectGateLoudness,
 } from "../src/media/loudnessNormalization.js";
 
@@ -99,5 +100,43 @@ test("a missing delivered measurement fails closed rather than falling back to a
         rawSpeech: { integratedLufs: -18.62, truePeakDbtp: 0.14 },
       }),
     (error) => error.code === "REHEARSAL_DELIVERED_LOUDNESS_REQUIRED",
+  );
+});
+
+test("a delivered file already inside the target converges with zero attenuation", () => {
+  const plan = planDeliveryAttenuation({ measuredTruePeakDbtp: -2.6, targetTruePeakDbtp: -2.5 });
+  assert.equal(plan.converged, true);
+  assert.equal(plan.additionalAttenuationDb, 0);
+  assert.equal(plan.cumulativeGainDb, 0);
+});
+
+test("an encoded overshoot is corrected from the MEASURED delivered file, with margin", () => {
+  // Run 43921087702 measured +2.04 dBTP on the delivered AAC file. The plan
+  // must derive attenuation from that number, not from the intermediate WAV.
+  const plan = planDeliveryAttenuation({ measuredTruePeakDbtp: 2.04, targetTruePeakDbtp: -2.5 });
+  assert.equal(plan.converged, false);
+  assert.equal(plan.additionalAttenuationDb, -4.74);
+  assert.equal(plan.cumulativeGainDb, -4.74);
+});
+
+test("attenuation accumulates across rounds and stops at the documented budget", () => {
+  const first = planDeliveryAttenuation({ measuredTruePeakDbtp: 1.0, targetTruePeakDbtp: -2.5 });
+  const second = planDeliveryAttenuation({
+    measuredTruePeakDbtp: -1.8,
+    targetTruePeakDbtp: -2.5,
+    cumulativeGainDb: first.cumulativeGainDb,
+  });
+  assert.equal(second.cumulativeGainDb, -4.6);
+  assert.throws(
+    () => planDeliveryAttenuation({ measuredTruePeakDbtp: 6.0, targetTruePeakDbtp: -2.5, cumulativeGainDb: -8.0 }),
+    (error) => error.code === "LOUDNESS_ATTENUATION_EXHAUSTED",
+  );
+});
+
+test("the corrective planner refuses non-measured input and invalid budgets", () => {
+  assert.throws(() => planDeliveryAttenuation({}), (error) => error.code === "LOUDNESS_MEASUREMENT_INVALID");
+  assert.throws(
+    () => planDeliveryAttenuation({ measuredTruePeakDbtp: 1, targetTruePeakDbtp: -2.5, maxCumulativeAttenuationDb: 0 }),
+    (error) => error.code === "LOUDNESS_TARGET_INVALID",
   );
 });

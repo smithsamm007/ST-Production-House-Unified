@@ -51,8 +51,10 @@ import { parseLoudnormOutput } from "../src/media/mediaInspectionRunner.js";
 import {
   DELIVERY_TARGET_LUFS,
   DELIVERY_TRUE_PEAK_HEADROOM_DBTP,
+  MAX_DELIVERY_CORRECTION_ATTEMPTS,
   QC_MAX_TRUE_PEAK_DBTP,
   buildMeasuredNormalizationFilter,
+  planDeliveryAttenuation,
   requiresCorrectiveNormalization,
   selectGateLoudness,
 } from "../src/media/loudnessNormalization.js";
@@ -121,22 +123,67 @@ function applyCorrectiveNormalization({ videoPath }) {
     targetLufs: TARGET_LUFS,
     maxTruePeak: NORMALIZATION_TRUE_PEAK_DBTP,
   });
-  execFileSync(
-    "ffmpeg",
-    [
-      "-y", "-v", "error",
-      "-i", videoPath,
-      "-i", correctedPath,
-      "-map", "0:v:0", "-map", "1:a:0",
-      "-c:v", "copy",
-      "-c:a", "aac", "-b:a", "128k", "-ar", String(REQUIRED_SAMPLE_RATE),
-      "-shortest",
-      remuxedPath,
-    ],
-    { stdio: ["ignore", "ignore", "inherit"] }
+  // Encode, then MEASURE THE ENCODED FILE. Nothing here may accept the
+  // normalized WAV as proof of the deliverable: AAC overshoot happens after
+  // that measurement (run 43921087702: WAV inside target, delivered file at
+  // +2.04 dBTP). Each round re-encodes the same PCM with cumulative gain, so
+  // the correction never stacks lossy generations.
+  const attempts = [];
+  let cumulativeGainDb = 0;
+  for (let attempt = 1; attempt <= MAX_DELIVERY_CORRECTION_ATTEMPTS; attempt += 1) {
+    const gainFilter = cumulativeGainDb === 0 ? [] : ["-af", `volume=${cumulativeGainDb}dB`];
+    execFileSync(
+      "ffmpeg",
+      [
+        "-y", "-v", "error",
+        "-i", videoPath,
+        "-i", correctedPath,
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-c:v", "copy",
+        ...gainFilter,
+        "-c:a", "aac", "-b:a", "128k", "-ar", String(REQUIRED_SAMPLE_RATE),
+        "-shortest",
+        remuxedPath,
+      ],
+      { stdio: ["ignore", "ignore", "inherit"] }
+    );
+    const delivered = measureLoudnessSync(remuxedPath);
+    attempts.push(Object.freeze({
+      attempt,
+      cumulativeGainDb,
+      integratedLufs: delivered.integratedLufs,
+      truePeakDbtp: delivered.truePeakDbtp,
+      clippingCount: delivered.clippingCount,
+    }));
+    const plan = planDeliveryAttenuation({
+      measuredTruePeakDbtp: delivered.truePeakDbtp,
+      targetTruePeakDbtp: NORMALIZATION_TRUE_PEAK_DBTP,
+      cumulativeGainDb,
+    });
+    if (plan.converged) {
+      renameSync(remuxedPath, videoPath);
+      return {
+        correctedLoudness,
+        extractedPath,
+        correctedPath,
+        attempts,
+        cumulativeGainDb,
+        deliveredLoudness: delivered,
+      };
+    }
+    cumulativeGainDb = plan.cumulativeGainDb;
+    console.log(JSON.stringify({
+      code: "REHEARSAL_CORRECTIVE_ATTENUATION",
+      attempt,
+      measuredTruePeakDbtp: delivered.truePeakDbtp,
+      additionalAttenuationDb: plan.additionalAttenuationDb,
+      cumulativeGainDb,
+    }));
+  }
+  fail(
+    "REHEARSAL_DELIVERY_PEAK_UNREACHABLE",
+    `the encoded deliverable still breached ${NORMALIZATION_TRUE_PEAK_DBTP} dBTP after ${MAX_DELIVERY_CORRECTION_ATTEMPTS} measured encode rounds: ${JSON.stringify(attempts)}`,
   );
-  renameSync(remuxedPath, videoPath);
-  return { correctedLoudness, extractedPath, correctedPath };
 }
 
 function normalizeAudioSync({ inputPath, outputPath, targetLufs = TARGET_LUFS, maxTruePeak = NORMALIZATION_TRUE_PEAK_DBTP }) {
@@ -272,7 +319,7 @@ function main() {
     };
   };
 
-  const longformInspection = probeFile(videoPath);
+  let longformInspection = probeFile(videoPath);
   const brandReelInspection = probeFile(brandReelPath);
 
   // Real loudness measurements of the DELIVERED files. This is the only
@@ -289,6 +336,9 @@ function main() {
     }));
     correctivePass = applyCorrectiveNormalization({ videoPath });
     longformLoudness = measureLoudnessSync(videoPath);
+    // The corrective pass replaces the delivered file; the gate must describe
+    // and measure THAT file, never the pre-correction probe taken above.
+    longformInspection = probeFile(videoPath);
   }
   const brandReelLoudness = measureLoudnessSync(brandReelPath);
 
@@ -360,6 +410,10 @@ function main() {
       deliveryTruePeakDbtp: NORMALIZATION_TRUE_PEAK_DBTP,
       qcMaxTruePeakDbtp: MAX_TRUE_PEAK_DBTP,
       correctivePassApplied: correctivePass !== null,
+      correctivePass: correctivePass === null ? null : {
+        encodeRounds: correctivePass.attempts,
+        settledCumulativeGainDb: correctivePass.cumulativeGainDb,
+      },
       deliveredFile: {
         integratedLufs: longformLoudness.integratedLufs,
         truePeakDbtp: longformLoudness.truePeakDbtp,

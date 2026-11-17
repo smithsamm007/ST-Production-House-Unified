@@ -45,6 +45,75 @@ export const QC_MAX_TRUE_PEAK_DBTP = -1.0;
  */
 export const DELIVERY_TRUE_PEAK_HEADROOM_DBTP = -2.5;
 
+/**
+ * How many encode→measure→attenuate rounds a corrective delivery pass may
+ * spend. Each round re-encodes the SAME normalized PCM (never a previous AAC
+ * generation), so this bounds the work without stacking codec losses.
+ */
+export const MAX_DELIVERY_CORRECTION_ATTEMPTS = 3;
+
+/**
+ * Refuse to keep attenuating forever: past this much cumulative attenuation the
+ * program is no longer the intended delivery, so the run must fail honestly
+ * instead of quietly shipping a much quieter episode that happens to pass QC.
+ */
+export const MAX_CUMULATIVE_ATTENUATION_DB = 12;
+
+/**
+ * Decide the attenuation for the NEXT encode round from a measurement of the
+ * file that was actually encoded.
+ *
+ * WHY THIS EXISTS (measured, not theoretical):
+ *   Run 43921087702 applied the two-pass delivery normalization, verified the
+ *   intermediate WAV against the -2.5 dBTP target, then re-encoded that WAV to
+ *   AAC 128k and never measured the result. The completeness gate measured the
+ *   delivered file at +2.04 dBTP / -15.91 LUFS and rejected it. The pass
+ *   corrected bytes, not the deliverable, so nothing in the pipeline caught
+ *   the lossy encode overshoot before the gate.
+ *
+ * The caller measures the encoded file, passes that number here, and gets back
+ * either "converged" or the cumulative gain for another round. Attenuating in
+ * whole decibels of program gain is exactly how a delivery chain compensates
+ * for encoder overshoot; it is not a QC relaxation, because the gate still
+ * measures the delivered file against the unchanged -1.0 dBTP contract.
+ */
+export function planDeliveryAttenuation({
+  measuredTruePeakDbtp,
+  targetTruePeakDbtp = DELIVERY_TRUE_PEAK_HEADROOM_DBTP,
+  cumulativeGainDb = 0,
+  maxCumulativeAttenuationDb = MAX_CUMULATIVE_ATTENUATION_DB,
+  safetyMarginDb = 0.2,
+} = {}) {
+  const measured = requireFinite(measuredTruePeakDbtp, "measuredTruePeakDbtp");
+  const target = requireFinite(targetTruePeakDbtp, "targetTruePeakDbtp");
+  const cumulative = requireFinite(cumulativeGainDb, "cumulativeGainDb");
+  if (!Number.isFinite(maxCumulativeAttenuationDb) || maxCumulativeAttenuationDb <= 0) {
+    throw loudnessError("LOUDNESS_TARGET_INVALID", "maxCumulativeAttenuationDb must be a positive finite number");
+  }
+  if (!Number.isFinite(safetyMarginDb) || safetyMarginDb < 0) {
+    throw loudnessError("LOUDNESS_TARGET_INVALID", "safetyMarginDb must be a non-negative finite number");
+  }
+
+  if (measured <= target) {
+    return Object.freeze({ converged: true, additionalAttenuationDb: 0, cumulativeGainDb: cumulative });
+  }
+
+  const overshootDb = measured - target;
+  const additionalAttenuationDb = -Math.round((overshootDb + safetyMarginDb) * 100) / 100;
+  const nextCumulativeGainDb = Math.round((cumulative + additionalAttenuationDb) * 100) / 100;
+  if (nextCumulativeGainDb < -Math.abs(maxCumulativeAttenuationDb)) {
+    throw loudnessError(
+      "LOUDNESS_ATTENUATION_EXHAUSTED",
+      `encoded file measured ${measured} dBTP against a ${target} dBTP delivery target; the required ${nextCumulativeGainDb} dB cumulative attenuation exceeds the ${-Math.abs(maxCumulativeAttenuationDb)} dB budget`,
+    );
+  }
+  return Object.freeze({
+    converged: false,
+    additionalAttenuationDb,
+    cumulativeGainDb: nextCumulativeGainDb,
+  });
+}
+
 function loudnessError(code, message) {
   const error = new Error(message);
   error.code = code;
