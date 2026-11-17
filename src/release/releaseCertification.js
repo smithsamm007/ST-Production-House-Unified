@@ -38,6 +38,25 @@ export const DEFAULT_ALLOWED_LICENSES = Object.freeze([
   "CC0-1.0",
 ]);
 
+/**
+ * Licenses accepted ONLY for dev-scope build tooling that never ships in the
+ * production runtime bundle.
+ *
+ * The web console migration pinned this exact set as transitive build inputs:
+ *   - MPL-2.0      lightningcss (+ its platform binaries), via the Tailwind Vite
+ *                  plugin's CSS pipeline
+ *   - CC-BY-4.0    caniuse-lite, the browser-support dataset browserslist reads
+ *   - BlueOak-1.0.0 graceful-fs
+ * Production scope stays on DEFAULT_ALLOWED_LICENSES: a copyleft or
+ * content-licensed package is still denied the moment it ships, and the SBOM
+ * test asserts that boundary.
+ */
+export const DEV_ONLY_ALLOWED_LICENSES = Object.freeze([
+  "MPL-2.0",
+  "CC-BY-4.0",
+  "BlueOak-1.0.0",
+]);
+
 /** Rule 12: file extensions that count as bundled media/fonts/binaries. */
 export const BUNDLED_MEDIA_EXTENSIONS = Object.freeze(new Set([
   ".mp3", ".mp4", ".wav", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac",
@@ -106,16 +125,30 @@ export function buildSbomFromLockfile(lockContent) {
 }
 
 /** License policy gate: permissive-by-default, explicit exceptions, fail-closed. */
-export function applyLicensePolicy(components, { allowedLicenses = DEFAULT_ALLOWED_LICENSES, licenseExceptions = {} } = {}) {
+export function applyLicensePolicy(
+  components,
+  {
+    allowedLicenses = DEFAULT_ALLOWED_LICENSES,
+    devAllowedLicenses = DEV_ONLY_ALLOWED_LICENSES,
+    licenseExceptions = {},
+  } = {},
+) {
   const allowed = new Set(allowedLicenses);
+  const devAllowed = new Set(devAllowedLicenses);
   const exceptions = new Map(Object.entries(licenseExceptions));
   const denied = [];
   for (const component of components) {
     if (allowed.has(component.license)) continue;
+    if (component.scope === "dev" && devAllowed.has(component.license)) continue;
     if (exceptions.has(component.license)) continue;
     denied.push({ name: component.name, version: component.version, license: component.license });
   }
-  return { allowedLicenses: [...allowed], denied, verdict: denied.length === 0 ? "PASS" : "FAIL" };
+  return {
+    allowedLicenses: [...allowed],
+    devAllowedLicenses: [...devAllowed],
+    denied,
+    verdict: denied.length === 0 ? "PASS" : "FAIL",
+  };
 }
 
 function mediaExtension(fileName) {

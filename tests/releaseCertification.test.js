@@ -6,6 +6,7 @@ import os from "node:os";
 
 import {
   DEFAULT_ALLOWED_LICENSES,
+  DEV_ONLY_ALLOWED_LICENSES,
   RELEASE_CERT_ERROR_CODES,
   applyLicensePolicy,
   buildReleaseCertification,
@@ -20,8 +21,19 @@ test("SBOM reflects the real lockfile: complete inventory, scopes, licenses, no 
   assert.ok(components.length > 100, "every packaged dependency is inventoried");
   const seen = new Set(components.map((c) => `${c.name}@${c.version}`));
   assert.equal(seen.size, components.length, "no duplicate components");
+  const devAllowed = new Set(DEV_ONLY_ALLOWED_LICENSES);
   for (const component of components) {
-    assert.ok(DEFAULT_ALLOWED_LICENSES.includes(component.license), `${component.name} must be permissively licensed`);
+    if (component.scope === "production") {
+      assert.ok(
+        DEFAULT_ALLOWED_LICENSES.includes(component.license),
+        `${component.name} ships in production and must be permissively licensed`,
+      );
+      continue;
+    }
+    assert.ok(
+      DEFAULT_ALLOWED_LICENSES.includes(component.license) || devAllowed.has(component.license),
+      `${component.name} is dev-scope but its license is neither permissive nor a documented build-tooling allowance`,
+    );
   }
   const express = components.find((c) => c.name === "express");
   assert.ok(express, "express is inventoried");
@@ -29,6 +41,15 @@ test("SBOM reflects the real lockfile: complete inventory, scopes, licenses, no 
   const supertest = components.find((c) => c.name === "supertest");
   assert.ok(supertest, "supertest is inventoried");
   assert.equal(supertest.scope, "dev", "supertest is a declared dev dependency");
+});
+
+test("the build-tooling license allowance never covers a production component", () => {
+  const policy = applyLicensePolicy([
+    { name: "bundler", version: "1", scope: "dev", license: "MPL-2.0" },
+    { name: "ships-at-runtime", version: "1", scope: "production", license: "MPL-2.0" },
+  ]);
+  assert.equal(policy.verdict, "FAIL");
+  assert.deepEqual(policy.denied.map((entry) => entry.name), ["ships-at-runtime"]);
 });
 
 test("SBOM fails closed on a missing or empty license declaration", () => {
