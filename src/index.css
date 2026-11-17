@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    --bg-canvas: #070B12;
+    --bg-panel: #0D1420;
+    --bg-panel-alt: #101A2B;
+    --border-subtle: #1E2A40;
+    --border-bright: #2C3D5E;
+    --text-primary: #E8EEF8;
+    --text-muted: #8D9AB3;
+    --accent-blue: #4F8CFF;
+    --accent-cyan: #22D3EE;
+    --status-ok: #34D399;
+    --status-warn: #FBBF24;
+    --status-bad: #F87171;
+    --accent-purple: #A78BFA;
+  }
+
+  html,
+  body,
+  #root {
+    min-height: 100%;
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    font-family: "DM Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  .font-display {
+    font-family: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  }
+
+  code,
+  pre,
+  .font-mono {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

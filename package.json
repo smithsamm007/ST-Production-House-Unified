@@ -8,10 +8,11 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "node server.js",
-    "build": "node --check server.js && node --check src/catalog/server.js",
-    "start": "node server.js",
-    "lint": "node .github/scripts/repo-lint.mjs",
+    "dev": "vite --host 0.0.0.0 --port 3000",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 3000",
+    "start": "vite preview --host 0.0.0.0 --port 3000",
+    "lint": "tsc --noEmit && node .github/scripts/repo-lint.mjs",
     "ci": "npm run lint && npm run verify",
     "test": "node --test --test-concurrency=1",
     "plan:check": "node automation/validate-plan.mjs",
@@ -28,9 +29,19 @@
   "dependencies": {
     "argon2": "^0.45.1",
     "express": "^5.2.1",
-    "pg": "^8.22.0"
+    "lucide-react": "^0.475.0",
+    "pg": "^8.22.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "supertest": "^7.2.2"
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "supertest": "^7.2.2",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.11"
   }
 }
