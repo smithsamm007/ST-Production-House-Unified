@@ -60,6 +60,8 @@ import { generateSanitizedWorkerContext } from "./creativeCharter.js";
 import { ForgeControlPlane } from "../forge/forgeControlPlane.js";
 import { createForgeControlRouter } from "../forge/forgeControlRouter.js";
 import { createDirectorCommunicationRouter } from "../communication/directorCommunicationRouter.js";
+import { DirectorCommunicationService } from "../communication/directorCommunicationService.js";
+import { PostgresConversationRepository } from "../communication/postgresConversationRepository.js";
 
 const app = express();
 app.disable("x-powered-by");
@@ -610,14 +612,20 @@ setInterval(() => {
   }
 }, RATE_WINDOW_MS).unref();
 
+let rateLimiterSequence = 0;
 function rateLimit(maxRequests) {
+  // Each limiter keeps its own buckets. Sharing one map per client address made
+  // every limiter count every other limiter's requests, so a tight per-route
+  // limit (for example Director communication) also throttled unrelated routes.
+  const limiterKey = `limiter-${++rateLimiterSequence}`;
   return (req, res, next) => {
     const ip = req.ip || "unknown";
+    const bucketKey = `${limiterKey}:${ip}`;
     const now = Date.now();
-    let bucket = rateBuckets.get(ip);
+    let bucket = rateBuckets.get(bucketKey);
     if (!bucket || now - bucket.windowStart > RATE_WINDOW_MS) {
       bucket = { count: 1, windowStart: now, updatedAt: now };
-      rateBuckets.set(ip, bucket);
+      rateBuckets.set(bucketKey, bucket);
     } else {
       bucket.count += 1;
       bucket.updatedAt = now;
@@ -635,6 +643,13 @@ function rateLimit(maxRequests) {
 
 const generalLimiter = rateLimit(RATE_MAX);
 const authLimiter = rateLimit(AUTH_RATE_MAX);
+// Director communication spends provider quota per message, so it gets its own
+// tighter bucket (per client address, same window) on top of the global limit.
+const DIRECTOR_COMM_RATE_MAX = (() => {
+  const parsed = Number.parseInt(process.env.DIRECTOR_COMM_RATE_LIMIT_PER_MINUTE || "30", 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 30;
+})();
+const directorCommLimiter = rateLimit(DIRECTOR_COMM_RATE_MAX);
 app.use("/api", generalLimiter);
 
 function publicError(error, fallback = "REQUEST_FAILED") {
@@ -879,7 +894,18 @@ app.get("/api/auth/me", authenticateOwner, async (req, res) => {
   try {
     const owner = await ownersRepo.findById(req.ownerId);
     if (!owner) return res.status(404).json({ error: "OWNER_NOT_FOUND" });
-    return res.json({ id: owner.id, email: owner.email, role: owner.role, status: owner.status, mfaEnabled: owner.mfaEnabled });
+    // The per-session CSRF token is returned only to the holder of this session,
+    // so the owner console can perform the double-submit check on mutations.
+    const csrfToken = req.session?.id ? await generateCsrfToken(req.session.id) : null;
+    return res.json({
+      id: owner.id,
+      email: owner.email,
+      role: owner.role,
+      status: owner.status,
+      mfaEnabled: owner.mfaEnabled,
+      csrfToken,
+      session: req.session?.id ? { id: req.session.id } : null,
+    });
   } catch (err) {
     logInternalError("OWNER_LOOKUP_FAILED", err);
     return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
@@ -1852,7 +1878,52 @@ app.use(
 );
 
 // Director Communication Studio (Owner -> Director AI via server-side Gemini).
-app.use("/api/director-comm", createDirectorCommunicationRouter());
+//
+// Mounted behind the SAME Owner session and CSRF controls as every other Owner
+// route, plus a dedicated limiter: an unauthenticated caller must never read a
+// Director conversation or spend the Owner's provider quota. The router itself
+// resolves every :agentId against the agents repository and fails closed (404)
+// for unknown Directors; charter/channel context is loaded server-side.
+let directorCommRouter = null;
+function getDirectorCommRouter() {
+  if (directorCommRouter) return directorCommRouter;
+  if (!postgres) throw new Error("STORAGE_NOT_CONFIGURED");
+  // Durable custody in postgres mode. The demo adapter is explicitly
+  // NON-DURABLE and process-local, and is never used as a silent local file.
+  const repository =
+    storageMode === "postgres" ? new PostgresConversationRepository(postgres) : null;
+  directorCommRouter = createDirectorCommunicationRouter({
+    service: new DirectorCommunicationService({ repository }),
+    resolveDirector: (agentId) => agentsRepo.get(agentId),
+    loadDirectorContext: async (ownerId, agentId) => {
+      const agent = await agentsRepo.get(agentId);
+      return { channelName: agent?.name ?? null, charter: null };
+    },
+    csrf: requireCsrf,
+    onOutcome: (event) => {
+      // Structured outcome record: no message bodies, no provider payload, no
+      // credentials. Correlation id links the HTTP request to the provider call.
+      console.log(JSON.stringify({ level: "info", code: "DIRECTOR_COMM_OUTCOME", ...event }));
+    },
+  });
+  return directorCommRouter;
+}
+
+app.use(
+  "/api/director-comm",
+  authenticateOwner,
+  directorCommLimiter,
+  (req, res, next) => {
+    let handler;
+    try {
+      handler = getDirectorCommRouter();
+    } catch (error) {
+      logInternalError("DIRECTOR_COMM_UNAVAILABLE", error);
+      return res.status(503).json({ error: "STORAGE_NOT_CONFIGURED" });
+    }
+    return handler(req, res, next);
+  }
+);
 
 // ---------------------------------------------------------------------------
 // Static dashboard + SPA fallback
