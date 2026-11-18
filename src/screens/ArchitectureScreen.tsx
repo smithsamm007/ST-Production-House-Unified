@@ -5,6 +5,8 @@ import {
   CAPABILITY_DOMAINS,
   DIRECTOR_PLATFORM_MODEL,
   DIRECTOR_STUDIO_BLUEPRINT,
+  EIGHT_STAGE_PIPELINE_SPEC,
+  FEEDBACK_TELEMETRY_LOOPS,
   IMPLEMENTATION_PHASES,
   MCP_SERVERS,
   OPERATING_PRINCIPLES,
@@ -57,9 +59,9 @@ export const ArchitectureScreen: React.FC = () => {
             Master AI Capability &amp; Infrastructure Architecture
           </h1>
           <p className="text-xs text-[#8D9AB3] mt-0.5 max-w-3xl">
-            Target architectural blueprint for ST Production House: Owner supremacy,
-            Munder Difflin / Michael parent governance, HERMES executive delegation,
-            24 capability domains, and isolated Director creative studios (up to 50).
+            Canonical operational architecture for ST Production House: OWNER governance,
+            FORGE engineering executive, HERMES fleet orchestration, 50 Independent Directors,
+            and isolated 8-stage Director-owned production pipelines.
           </p>
         </div>
         <StatusBadge label="Target Blueprint Reference" tone="info" />
@@ -141,6 +143,68 @@ export const ArchitectureScreen: React.FC = () => {
                 </div>
               ))}
             </div>
+          </section>
+
+          <section className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-bold font-display text-[#E8EEF8]">
+                  Tier 3 · Director-Owned Teams (8-Stage Execution Pipeline)
+                </h2>
+                <p className="text-xs text-[#8D9AB3] mt-0.5">
+                  Every Independent Director commands an isolated, sequential 8-stage pipeline from raw prompt to finalized master package.
+                </p>
+              </div>
+              <StatusBadge label="50 Isolated Pipelines" tone="ok" />
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-[#1E2A40] text-[#8D9AB3]">
+                    <th className="py-2 pr-3 font-semibold w-16">Stage</th>
+                    <th className="py-2 pr-3 font-semibold w-52">Unit Name</th>
+                    <th className="py-2 font-semibold">Core Function &amp; Deliverables</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#1E2A40]/70">
+                  {EIGHT_STAGE_PIPELINE_SPEC.map((st) => (
+                    <tr key={st.key}>
+                      <td className="py-2.5 pr-3 font-mono font-bold text-[#22D3EE] tabular-nums">
+                        {String(st.stage).padStart(2, "0")}
+                      </td>
+                      <td className="py-2.5 pr-3 font-semibold text-[#E8EEF8]">
+                        {st.unit}
+                      </td>
+                      <td className="py-2.5 text-[#8D9AB3] leading-relaxed">
+                        {st.deliverables}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {FEEDBACK_TELEMETRY_LOOPS.map((loop) => (
+              <div
+                key={loop.title}
+                className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-5 space-y-2"
+              >
+                <div className="text-[11px] font-mono uppercase tracking-wider text-[#22D3EE]">
+                  Feedback &amp; Telemetry Loop
+                </div>
+                <h3 className="text-sm font-bold font-display text-[#E8EEF8]">
+                  {loop.title}
+                </h3>
+                <div className="text-xs font-mono text-[#34D399]">
+                  {loop.route}
+                </div>
+                <p className="text-xs text-[#8D9AB3] leading-relaxed">
+                  {loop.detail}
+                </p>
+              </div>
+            ))}
           </section>
 
           <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">

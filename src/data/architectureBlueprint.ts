@@ -8,46 +8,113 @@ import {
 
 export const SUPREME_HIERARCHY = [
   {
-    tier: "Layer 1 · Supreme Authority",
+    tier: "Tier 1 · Strategic & Executive Command (1)",
     name: "OWNER",
-    subtitle: "Founder · Final governance · Reserved powers",
+    subtitle: "Founder & Visionary · Top-level governance & capital allocation",
     detail:
-      "Final authority over spending, credential ownership, security rules, and brand transfers. Silence or non-response is never consent.",
+      "Defines system guardrails (output cadence, quality thresholds), approves major engineering roadmaps for FORGE, and sets overarching production targets for HERMES. Silence or non-response is never consent.",
   },
   {
-    tier: "Layer 2 · Parent Organization",
-    name: "MUNDER DIFFLIN / MICHAEL",
-    subtitle: "Parent management layer under Owner governance",
+    tier: "Tier 1 · Strategic & Executive Command (2)",
+    name: "FORGE",
+    subtitle: "Engineering Executive · Builder of ST Production House",
     detail:
-      "Top-level organizational parent governing institutional alignment and cross-studio oversight under the Owner constitution.",
+      "Chief systems architect and engineering lead responsible for building, maintaining, and scaling ST Production House: control plane, worker queues, PostgreSQL schemas, lease/lock systems, LLM/media integrations, CI/CD, and self-healing codebase loops. Deploys stable releases to HERMES.",
   },
   {
-    tier: "Layer 3 · Managing Director",
+    tier: "Tier 1 · Strategic & Executive Command (3)",
     name: "HERMES",
-    subtitle: "ST AI Manager · Orchestration · Delegated executive authority",
+    subtitle: "Production Executive · Floor & Fleet Manager",
     detail:
-      "Coordinates operations, queues, failover, and explicitly delegated decisions when Owner is unavailable. Cannot overwrite Director creative identity or Owner-reserved domains.",
+      "Operational orchestrator managing the live production floor across all 50 creative universes: job scheduling, worker queue distribution, rate limits, API budget pacing, global cadences, and QC failure escalation back to FORGE. Dispatches production slots and resource leases to the 50 Independent Directors.",
   },
   {
-    tier: "Layer 4 · Shared Platform",
-    name: "ST PRODUCTION HOUSE",
-    subtitle: "Shared infrastructure, policies, MCP gateway & cloud workers",
+    tier: "Tier 2 · Creative Universe Ownership",
+    name: "50 INDEPENDENT DIRECTORS",
+    subtitle: "Autonomous Universe & Channel Owners (strictly isolated · Rule 15 internal IDs)",
     detail:
-      "Shared intelligence, tool gateways, PostgreSQL, queues, FFmpeg/FFprobe QC, and audit ledger—without merging private Director ownership.",
+      "50 isolated creative entities—each owning a distinct narrative universe, brand identity, audience niche, lore, character consistency, credentials, and publishing channel without cross-contaminating the other 49 Directors. Supervises its own dedicated 8-stage Director-Owned Team pipeline.",
   },
   {
-    tier: "Layer 5 · Independent Creative Studios (up to 50)",
-    name: "INDEPENDENT DIRECTORS",
-    subtitle: "Internal examples: JARVIS, COSMOS, NEWTON, AADI, LAKME, SHERLOCK, CHRONOS, AI NEWS, TECH MASTER, BUTTERFLY",
+    tier: "Tier 3 · Director-Owned Teams",
+    name: "8-STAGE EXECUTION PIPELINE",
+    subtitle: "Story · Visual · Audio · Assembly · Reels · Packaging · QC · Complete",
     detail:
-      "Each Director is an independent creative business owning its universe, lore, M3 memory, teams, queues, credentials, and 6-platform accounts. Names stay strictly internal (Rule 15).",
+      "Every Independent Director commands an isolated, sequential 8-stage pipeline taking a concept from raw prompt to archived, QC-verified master package queued for Rule 7 approved publishing.",
+  },
+] as const;
+
+export const EIGHT_STAGE_PIPELINE_SPEC = [
+  {
+    stage: 1,
+    key: "story",
+    unit: "Story (Story & Beats)",
+    deliverables:
+      "Generates narrative arcs, scripts, scene-by-scene breakdowns, dialogue, and visual/audio prompts tailored to the Director's universe.",
   },
   {
-    tier: "Layer 6 · Execution Units",
-    name: "DIRECTOR-OWNED SPECIALIST TEAMS",
-    subtitle: "Research · Scripting · Visuals · Animation · Audio · Packaging",
+    stage: 2,
+    key: "visual",
+    unit: "Visual (Scene Visuals)",
+    deliverables:
+      "Generates consistent character frames, environments, and motion clips based on Stage 1 scene prompts while enforcing visual style locks.",
+  },
+  {
+    stage: 3,
+    key: "audio",
+    unit: "Audio (Voice & Sound)",
+    deliverables:
+      "Synthesizes character voiceovers/narration, scores background music (BGM), and layers spatial sound effects (SFX) timed to scene beats.",
+  },
+  {
+    stage: 4,
+    key: "assembly",
+    unit: "Assembly (FFmpeg Assembly)",
+    deliverables:
+      "Executes programmatic media stitching—syncing visual tracks, voiceovers, BGM, transitions, and dynamic subtitles into a unified master render.",
+  },
+  {
+    stage: 5,
+    key: "reels",
+    unit: "Reels (Short-Form Reels)",
+    deliverables:
+      "Extracts high-retention hooks, crops/reframes aspect ratios (9:16), and renders vertical micro-content derivatives for cross-platform reach.",
+  },
+  {
+    stage: 6,
+    key: "packaging",
+    unit: "Packaging (Packaging)",
+    deliverables:
+      "Generates high-CTR thumbnails, SEO-optimized titles, episodic descriptions, tags, and structured metadata payloads.",
+  },
+  {
+    stage: 7,
+    key: "qc",
+    unit: "QC (QC Gate)",
+    deliverables:
+      "Automated verification checkpoint—validates video/audio stream integrity (catching blank screens, missing BGM, or corrupt frames) and checks metadata completeness before release.",
+  },
+  {
+    stage: 8,
+    key: "complete",
+    unit: "Complete (Complete)",
+    deliverables:
+      "Marks the job state as finalized in the database, archives master assets, releases worker leases, and queues the package for publishing.",
+  },
+] as const;
+
+export const FEEDBACK_TELEMETRY_LOOPS = [
+  {
+    title: "QC Gate Failure → Retry / Escalation",
+    route: "Stage 7 (QC Gate) → Director Retry | HERMES (Quota/API) | FORGE (Code/FFmpeg)",
     detail:
-      "Specialist workers scoped to their Director's charter, team M4 memory, and bounded T0–T5 tool permissions.",
+      "If Stage 7 flags a rendering defect, the job is retried locally by the Director's pipeline or escalated to HERMES (if quota/API-related) or FORGE (if a structural FFmpeg/code bug).",
+  },
+  {
+    title: "Complete → HERMES → OWNER",
+    route: "Stage 8 (Complete) → 50 Directors → HERMES Fleet Roll-Up → OWNER",
+    detail:
+      "Completion metrics, throughput logs, and channel performance roll up from the 50 Independent Directors to HERMES for fleet-level reporting back to the OWNER.",
   },
 ] as const;
 

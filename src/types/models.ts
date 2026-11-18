@@ -53,7 +53,7 @@ export const PIPELINE_STAGES = [
   { key: "reels", label: "Short-Form Reels" },
   { key: "packaging", label: "Packaging" },
   { key: "qc", label: "QC Gate" },
-  { key: "complete", label: "Published" },
+  { key: "complete", label: "Complete" },
 ] as const;
 
 export type PipelineStageKey = (typeof PIPELINE_STAGES)[number]["key"];
@@ -136,12 +136,29 @@ export interface DirectorSchedule {
 
 export type MessageKind = "conversation" | "proposal" | "instruction" | "decision";
 export type MessageSender = "owner" | "director";
+export type MessageSource =
+  | "owner"
+  | "director_ai"
+  | "system_delivery_ack"
+  | "system_error";
+
+export type DirectorOutcome =
+  | "DIRECTOR_RESPONDED"
+  | "DIRECTOR_NEEDS_CLARIFICATION"
+  | "TASK_ACCEPTED"
+  | "TASK_REJECTED_WITH_REASON"
+  | "PROVIDER_UNAVAILABLE"
+  | "ROUTING_FAILED";
 
 export interface DirectorMessage {
   id: string;
   agentId: string;
   kind: MessageKind;
   sender: MessageSender;
+  source?: MessageSource;
+  outcome?: DirectorOutcome;
+  model?: string;
+  clientMessageId?: string;
   body: string;
   timestamp: string;
 }

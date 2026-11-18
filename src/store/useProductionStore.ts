@@ -401,58 +401,56 @@ export function useProductionStore() {
       const trimmed = body.trim();
       if (!trimmed) return;
 
+      const clientMessageId = createId();
+      const ownerMsg: DirectorMessage = {
+        id: createId(),
+        agentId,
+        kind,
+        sender,
+        source: sender === "owner" ? "owner" : "director_ai",
+        clientMessageId,
+        body: trimmed,
+        timestamp: getCurrentTimeSimple(),
+      };
+
+      const ackId = createId();
+      const ackMsg: DirectorMessage | null =
+        sender === "owner"
+          ? {
+              id: ackId,
+              agentId,
+              kind: "conversation",
+              sender: "director",
+              source: "system_delivery_ack",
+              clientMessageId,
+              body: `[System Delivery Ack] Message received and routed to Director ${agentId}. Awaiting AI Director response...`,
+              timestamp: getCurrentTimeSimple(),
+            }
+          : null;
+
+      let charterSnapshot: CreativeCharter | undefined;
+      let channelNameSnapshot: string | undefined;
+
       setState((prev) => {
-        const msg: DirectorMessage = {
-          id: createId(),
-          agentId,
-          kind,
-          sender,
-          body: trimmed,
-          timestamp: getCurrentTimeSimple(),
-        };
-        const newMessages: DirectorMessage[] = [msg];
+        charterSnapshot = prev.charters[agentId];
+        channelNameSnapshot = prev.channels.find(
+          (c) => c.agentId === agentId
+        )?.displayName;
+
+        const newMessages: DirectorMessage[] = ackMsg
+          ? [ownerMsg, ackMsg]
+          : [ownerMsg];
+
         const newEvidence: EvidenceEvent[] = [
           makeEvidence(
             "COMMUNICATION_RECORDED",
             agentId,
             "studio",
             kind,
-            computeSha256(msg.id + trimmed),
-            `demo://communication/logged?sender=${sender}&kind=${kind}`
+            computeSha256(ownerMsg.id + trimmed),
+            `comm://director/${agentId}?sender=${sender}&kind=${kind}`
           ),
         ];
-
-        if (sender === "owner" && (kind === "instruction" || kind === "proposal")) {
-          const charter = prev.charters[agentId];
-          const replyKind: MessageKind =
-            kind === "instruction" ? "decision" : "proposal";
-          const replyBody =
-            kind === "instruction"
-              ? `[demo simulated reply] Confirmed. Aligning scene pacing and audio loudness to charter guidelines (${
-                  charter?.pacing ?? "cinematic rhythm"
-                }).`
-              : "[demo simulated reply] Evaluated proposal against continuity rules. Ready to generate 3 alternative visual scene variations for review.";
-
-          const replyMsg: DirectorMessage = {
-            id: createId(),
-            agentId,
-            kind: replyKind,
-            sender: "director",
-            body: replyBody,
-            timestamp: getCurrentTimeSimple(),
-          };
-          newMessages.push(replyMsg);
-          newEvidence.unshift(
-            makeEvidence(
-              "DIRECTOR_REPLY_RECORDED",
-              agentId,
-              "studio",
-              replyKind,
-              computeSha256(replyMsg.id + replyBody),
-              "demo://communication/simulated_reply"
-            )
-          );
-        }
 
         return {
           ...prev,
@@ -460,6 +458,89 @@ export function useProductionStore() {
           evidenceEvents: [...newEvidence, ...prev.evidenceEvents],
         };
       });
+
+      if (sender !== "owner") return;
+
+      void (async () => {
+        try {
+          const res = await fetch(
+            `/api/director-comm/${encodeURIComponent(agentId)}/messages`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                body: trimmed,
+                kind,
+                clientMessageId,
+                channelName: channelNameSnapshot,
+                charter: charterSnapshot,
+              }),
+            }
+          );
+
+          const data = await res.json().catch(() => null);
+          const reply: DirectorMessage =
+            data?.directorResponse ?? {
+              id: createId(),
+              agentId,
+              kind: "conversation",
+              sender: "director",
+              source: "system_error",
+              outcome: "PROVIDER_UNAVAILABLE",
+              clientMessageId,
+              body: `[Provider Unavailable] ${
+                data?.error ||
+                `Communication endpoint returned HTTP ${res.status}. Your message was recorded, and no AI response was fabricated.`
+              }`,
+              timestamp: getCurrentTimeSimple(),
+            };
+
+          setState((prev) => ({
+            ...prev,
+            messages: [
+              ...prev.messages.filter((m) => m.id !== ackId),
+              {
+                ...reply,
+                timestamp: getCurrentTimeSimple(),
+              },
+            ],
+            evidenceEvents: [
+              makeEvidence(
+                reply.source === "director_ai"
+                  ? "DIRECTOR_AI_RESPONDED"
+                  : "DIRECTOR_PROVIDER_UNAVAILABLE",
+                agentId,
+                "studio",
+                reply.outcome ?? "PROVIDER_UNAVAILABLE",
+                computeSha256(reply.id + reply.body),
+                `comm://director/${agentId}/outcome/${reply.outcome ?? "PROVIDER_UNAVAILABLE"}`
+              ),
+              ...prev.evidenceEvents,
+            ],
+          }));
+        } catch (err) {
+          const errMsg: DirectorMessage = {
+            id: createId(),
+            agentId,
+            kind: "conversation",
+            sender: "director",
+            source: "system_error",
+            outcome: "PROVIDER_UNAVAILABLE",
+            clientMessageId,
+            body: `[Provider Unavailable] Could not reach the Director AI backend (${
+              err instanceof Error ? err.message : "network error"
+            }). Your message was delivered and saved locally; no AI response was fabricated.`,
+            timestamp: getCurrentTimeSimple(),
+          };
+          setState((prev) => ({
+            ...prev,
+            messages: [
+              ...prev.messages.filter((m) => m.id !== ackId),
+              errMsg,
+            ],
+          }));
+        }
+      })();
     },
     []
   );

@@ -27,6 +27,7 @@
     "evidence:sanitize": "node scripts/sanitize_rehearsal_evidence.mjs"
   },
   "dependencies": {
+    "@google/genai": "^3.6.0",
     "argon2": "^0.45.1",
     "express": "^5.2.1",
     "lucide-react": "^0.475.0",

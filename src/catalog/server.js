@@ -59,6 +59,7 @@ import { fileURLToPath } from "node:url";
 import { generateSanitizedWorkerContext } from "./creativeCharter.js";
 import { ForgeControlPlane } from "../forge/forgeControlPlane.js";
 import { createForgeControlRouter } from "../forge/forgeControlRouter.js";
+import { createDirectorCommunicationRouter } from "../communication/directorCommunicationRouter.js";
 
 const app = express();
 app.disable("x-powered-by");
@@ -1849,6 +1850,9 @@ app.use(
     verifyCsrf: () => true,
   })
 );
+
+// Director Communication Studio (Owner -> Director AI via server-side Gemini).
+app.use("/api/director-comm", createDirectorCommunicationRouter());
 
 // ---------------------------------------------------------------------------
 // Static dashboard + SPA fallback

@@ -118,23 +118,46 @@ export const CommunicationScreen: React.FC<CommunicationScreenProps> = ({
                 }`}
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span
                       className={`text-xs font-bold ${
-                        isOwner ? "text-[#E8EEF8]" : "text-[#22D3EE]"
+                        isOwner
+                          ? "text-[#E8EEF8]"
+                          : msg.source === "system_error"
+                          ? "text-[#F87171]"
+                          : msg.source === "system_delivery_ack"
+                          ? "text-[#FBBF24]"
+                          : "text-[#22D3EE]"
                       }`}
                     >
                       {isOwner
                         ? "Owner (Console)"
-                        : `Director ${msg.agentId}`}
+                        : msg.source === "system_delivery_ack"
+                        ? `System Ack · Director ${msg.agentId}`
+                        : msg.source === "system_error"
+                        ? `Provider Notice · Director ${msg.agentId}`
+                        : `Director ${msg.agentId} (AI)`}
                     </span>
                     <StatusBadge label={msg.kind} tone={kindTone(msg.kind)} />
+                    {msg.outcome && (
+                      <StatusBadge
+                        label={msg.outcome}
+                        tone={
+                          msg.outcome === "PROVIDER_UNAVAILABLE" ||
+                          msg.outcome === "ROUTING_FAILED"
+                            ? "bad"
+                            : msg.outcome === "DIRECTOR_NEEDS_CLARIFICATION"
+                            ? "warn"
+                            : "ok"
+                        }
+                      />
+                    )}
                   </div>
                   <span className="text-[11px] font-mono text-[#8D9AB3] tabular-nums">
                     {msg.timestamp}
                   </span>
                 </div>
-                <p className="text-sm text-[#E8EEF8] leading-relaxed">
+                <p className="text-sm text-[#E8EEF8] leading-relaxed whitespace-pre-wrap">
                   {msg.body}
                 </p>
               </div>
