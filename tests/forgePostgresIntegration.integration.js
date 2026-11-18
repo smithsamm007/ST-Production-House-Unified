@@ -105,6 +105,9 @@ test(
           /row-level security policy/i
         );
         await client.query("ROLLBACK TO SAVEPOINT before_spoofed_insert");
+        // End the role-B transaction: role creation and session-identity changes
+        // belong to the control-plane session user, not to the assumed role.
+        await client.query("ROLLBACK");
 
         // PostgreSQL authorises SET ROLE against the SESSION user, and a
         // superuser session may assume any role: role assumption is therefore
@@ -112,7 +115,6 @@ test(
         // runtime identity is a non-superuser that belongs to exactly one
         // st_dir_* role, so model that pooler identity and prove it cannot
         // assume the other Director's role.
-        await client.query("SAVEPOINT before_role_escalation");
         await client.query(`
           DO $$
           BEGIN
@@ -122,6 +124,7 @@ test(
           END $$;
         `);
         await client.query(`GRANT ${roleB} TO st_test_director_pooler`);
+        await client.query("BEGIN");
         await client.query("SET LOCAL SESSION AUTHORIZATION st_test_director_pooler");
         await assert.rejects(
           () => client.query(`SET LOCAL ROLE ${roleA}`),
@@ -129,7 +132,6 @@ test(
           "Director B must not be able to SET ROLE to Director A"
         );
         await client.query("RESET SESSION AUTHORIZATION");
-        await client.query("ROLLBACK TO SAVEPOINT before_role_escalation");
         await client.query("ROLLBACK");
 
         // Generic non-st_dir_* runtime role must NOT bypass Director RLS (closed allowlist check)
