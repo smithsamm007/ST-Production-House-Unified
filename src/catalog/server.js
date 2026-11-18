@@ -720,6 +720,80 @@ async function requireCsrf(req, res, next) {
   next();
 }
 
+/**
+ * FORGE Owner-session gate (control plane only).
+ *
+ * The identity is taken exclusively from the session that `authenticateOwner`
+ * already validated (`req.ownerId`). Nothing supplied by the client — body
+ * fields, `x-owner-*` headers or query parameters — is ever consulted, so a
+ * caller cannot claim to be another Owner.
+ *
+ * Only the `owner` role may operate the control plane; `operator` and `viewer`
+ * sessions are refused with 403. An unknown/deleted Owner fails closed with 401.
+ */
+export function createForgeOwnerSessionGate({ findOwnerById } = {}) {
+  if (typeof findOwnerById !== "function") {
+    throw new Error("OWNER_LOOKUP_REQUIRED");
+  }
+  return async function forgeOwnerSessionGate(req, res, next) {
+    try {
+      if (!req.ownerId) {
+        return res.status(401).json({
+          code: "UNAUTHORIZED",
+          message: "Authenticated Owner session required.",
+        });
+      }
+      const owner = await findOwnerById(req.ownerId);
+      if (!owner) {
+        return res.status(401).json({
+          code: "UNAUTHORIZED",
+          message: "Authenticated Owner session required.",
+        });
+      }
+      if (owner.role !== "owner") {
+        return res.status(403).json({
+          code: "FORBIDDEN",
+          message: "Owner role required for the FORGE control plane.",
+        });
+      }
+      req.forgeSession = {
+        authenticated: true,
+        role: owner.role,
+        id: owner.id,
+      };
+      return next();
+    } catch (err) {
+      logInternalError("FORGE_OWNER_SESSION_LOOKUP_FAILED", err);
+      return res.status(503).json({
+        code: "FORGE_SESSION_UNAVAILABLE",
+        message: "Owner session could not be verified.",
+      });
+    }
+  };
+}
+
+/**
+ * CSRF for FORGE mutations.
+ *
+ * Uses the same per-session token validation as every other Owner route
+ * (`verifyCsrfToken`), but does not take the bearer-token exemption: control
+ * plane writes must always present the session's CSRF token. The router then
+ * only accepts the request when this guard recorded a successful validation.
+ */
+async function forgeCsrfGuard(req, res, next) {
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) return next();
+  try {
+    if (!req.session?.id) {
+      return res.status(403).json({ error: "SESSION_ID_REQUIRED_FOR_CSRF" });
+    }
+    await verifyCsrfToken(req.session.id, req.headers["x-csrf-token"]);
+    req.forgeCsrfVerified = true;
+    return next();
+  } catch (err) {
+    return res.status(403).json({ error: publicError(err, "CSRF_REJECTED") });
+  }
+}
+
 function secureCookieHeader(name, value, maxAgeSeconds) {
   const secure = process.env.NODE_ENV === "production" || process.env.FORCE_SECURE_COOKIES === "1";
   return `${name}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeSeconds}${secure ? "; Secure" : ""}`;
@@ -1861,19 +1935,22 @@ app.use("/api/scheduling", authenticateOwner, createDirectorScheduleRouter({
 }));
 
 // FORGE Private Control Plane & Permission Gateway (Phase 2.7, v1.2).
-// Mounted behind existing authenticated Owner session & CSRF controls.
+//
+// Every route requires the real Owner session (`authenticateOwner`), the
+// `owner` role resolved from that session's Owner record, and a cryptographically
+// validated CSRF token on mutations. The router is handed the resolved session
+// and a verifier that only passes when the guard above actually validated the
+// token — there is no unconditional bypass.
 const forgeControlPlane = new ForgeControlPlane();
 app.use(
   "/api/forge",
   authenticateOwner,
+  createForgeOwnerSessionGate({ findOwnerById: (id) => ownersRepo.findById(id) }),
+  forgeCsrfGuard,
   createForgeControlRouter({
     controlPlane: forgeControlPlane,
-    authenticateSession: (req) => ({
-      authenticated: Boolean(req.owner),
-      role: req.owner?.role ?? "owner",
-      id: req.owner?.id ?? "owner",
-    }),
-    verifyCsrf: () => true,
+    authenticateSession: (req) => req.forgeSession ?? null,
+    verifyCsrf: (req) => req.forgeCsrfVerified === true,
   })
 );
 

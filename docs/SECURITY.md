@@ -86,6 +86,19 @@ The following surfaces are continuously exercised by the offline adversarial sui
 
 Operational response guidance for these surfaces lives in `docs/RUNBOOK.md` (alert triage, emergency pause, rotation drill, migration rollback policy).
 
+## FORGE control plane access control
+
+`/api/forge/*` (control plane, permission gateway, delegation evaluation, evidence reads) is Owner-only and fails closed by construction:
+
+1. `authenticateOwner` validates the session (bearer token or `session_token` cookie) and sets `req.ownerId` from the **validated session**, never from client input.
+2. `createForgeOwnerSessionGate` re-reads that Owner record and requires role `owner`. `operator`/`viewer` sessions get `403 FORBIDDEN`; unknown or vanished Owners get `401 UNAUTHORIZED`.
+3. Every mutation (`POST`/`PUT`/`PATCH`/`DELETE`) passes `forgeCsrfGuard`, which validates the session's per-session CSRF token with the same `verifyCsrfToken` used by every other Owner route. FORGE writes do **not** take the bearer-token CSRF exemption, so a control-plane write always requires `x-csrf-token`.
+4. The router only accepts a request whose CSRF guard recorded a successful validation; it never receives an unconditional `verifyCsrf: () => true`.
+
+Token spoofing (`x-owner-id`, `x-owner-session`, body `ownerId`/`role`/`authenticated`) is ignored: identity comes only from the session. Permission tiers T0–T7, fencing checks and Owner-reserved denials are unchanged. Regression coverage: `tests/forgeControlApi.test.js` (real app mount, real middleware) plus the existing `tests/forgePhase2.test.js`.
+
+Known, out-of-scope limitation observed while testing: in demo storage the logout path does not persist a revocation, so a demo session token stays valid until expiry. PostgreSQL sessions enforce revocation and expiry; demo storage remains explicitly non-production.
+
 ## Durable Recovery Semantics
 
 - A restarted worker detects completed stages from the checkpoint store and never regenerates or republishes finished artifacts; duplicate prevention is enforced by checkpoint replay, not operator discipline.

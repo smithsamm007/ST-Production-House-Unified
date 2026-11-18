@@ -3,8 +3,14 @@
  *
  * Enforces:
  *   - Owner session authentication on all routes
- *   - CSRF token check on mutating requests (POST/PUT/PATCH/DELETE)
+ *   - CSRF validation on mutating requests (POST/PUT/PATCH/DELETE)
  *   - Input validation & safe-DTO allowlisted responses (Rule 17)
+ *
+ * The application mounts this router behind its real Owner authentication and
+ * CSRF validation and supplies `verifyCsrf` as an async verifier that consults
+ * the validated session token; `await` is required, so an async verifier is
+ * supported. The default below (token header present) is only a fallback for
+ * standalone mounting and is NOT used by the application mount.
  */
 
 import express from "express";
@@ -42,10 +48,16 @@ export function createForgeControlRouter({
     return next();
   });
 
-  // Require CSRF header on browser mutations
-  router.use((req, res, next) => {
+  // Require a validated CSRF token on mutations (async-capable verifier)
+  router.use(async (req, res, next) => {
     if (req.method !== "GET" && req.method !== "HEAD") {
-      if (!verifyCsrf(req)) {
+      let csrfOk = false;
+      try {
+        csrfOk = (await verifyCsrf(req)) === true;
+      } catch {
+        csrfOk = false;
+      }
+      if (!csrfOk) {
         return res.status(403).json({ code: "CSRF_TOKEN_REQUIRED", message: "Valid CSRF token required for mutations." });
       }
     }
