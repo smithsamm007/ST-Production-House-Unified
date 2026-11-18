@@ -64,21 +64,35 @@ export function createForgeControlRouter({
     return next();
   });
 
-  router.get("/status", (_req, res) => {
-    return res.status(200).json(controlPlane.getStatusSnapshot());
+  router.get("/status", async (req, res, next) => {
+    try {
+      const snapshot = await controlPlane.getFullStatusSnapshot();
+      return res.status(200).json(snapshot);
+    } catch (error) {
+      return next(error);
+    }
   });
 
-  router.get("/tasks", (_req, res) => {
-    return res.status(200).json({ tasks: controlPlane.listTasks() });
+  router.get("/tasks", async (req, res, next) => {
+    try {
+      const tasks = await controlPlane.listTasks();
+      return res.status(200).json({ tasks });
+    } catch (error) {
+      return next(error);
+    }
   });
 
-  router.post("/tasks", (req, res) => {
+  router.post("/tasks", async (req, res, next) => {
     const { issueNumber, slug, title, idempotencyKey } = req.body ?? {};
     if (!issueNumber || !slug || !title || !idempotencyKey) {
       return res.status(400).json({ code: "INVALID_TASK_ENVELOPE", message: "issueNumber, slug, title, and idempotencyKey are required." });
     }
-    const result = controlPlane.enqueueTask({ issueNumber, slug, title, idempotencyKey });
-    return res.status(result.deduplicated ? 200 : 201).json(result);
+    try {
+      const result = await controlPlane.enqueueTask({ issueNumber, slug, title, idempotencyKey });
+      return res.status(result.deduplicated ? 200 : 201).json(result);
+    } catch (error) {
+      return next(error);
+    }
   });
 
   router.post("/authorize", (req, res) => {

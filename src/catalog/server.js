@@ -59,6 +59,7 @@ import { fileURLToPath } from "node:url";
 import { generateSanitizedWorkerContext } from "./creativeCharter.js";
 import { ForgeControlPlane } from "../forge/forgeControlPlane.js";
 import { createForgeControlRouter } from "../forge/forgeControlRouter.js";
+import { PostgresForgeRepository } from "../forge/postgresForgeRepository.js";
 import { createDirectorCommunicationRouter } from "../communication/directorCommunicationRouter.js";
 import { DirectorCommunicationService } from "../communication/directorCommunicationService.js";
 import { PostgresConversationRepository } from "../communication/postgresConversationRepository.js";
@@ -363,6 +364,29 @@ export async function finalizeRuntimeStartup() {
       logInternalError("DEMO_SEED_FAILED", error);
     }
   }
+  // FORGE durable runtime (D3): reconcile unfinished durable state on boot.
+  // No authoritative GitHub client exists server-side, so the probe is absent:
+  // uncertain operations stay IN_FLIGHT and an uncertain PR slot is never
+  // released. Every decision is recorded, including "unverified".
+  if (getForgeControlPlane().isDurable()) {
+    try {
+      const reconciliation = await getForgeControlPlane().reconcileOnBoot({
+        instanceId: process.env.STPH_INSTANCE_ID || `forge-${process.pid}`,
+      });
+      console.log(
+        JSON.stringify({
+          level: reconciliation.durable ? "info" : "warn",
+          code: "FORGE_BOOT_RECONCILED",
+          durable: reconciliation.durable,
+          decisions: (reconciliation.decisions ?? []).map((decision) => decision.code),
+          degradedReason: reconciliation.degradedReason ?? null,
+        })
+      );
+    } catch (error) {
+      logInternalError("FORGE_BOOT_RECONCILIATION_FAILED", error);
+    }
+  }
+
   if (process.env.STPH_ENABLE_WORKERS === "1" && postgres) {
     try {
       const { ProductionWorkerLoop } = await import("../pipeline/workerLoop.js");
@@ -1941,18 +1965,66 @@ app.use("/api/scheduling", authenticateOwner, createDirectorScheduleRouter({
 // validated CSRF token on mutations. The router is handed the resolved session
 // and a verifier that only passes when the guard above actually validated the
 // token — there is no unconditional bypass.
-const forgeControlPlane = new ForgeControlPlane();
+//
+// Durable state (D3): the control plane is bound to the PostgreSQL repository
+// whenever a real pool exists. Demo mode keeps the explicitly labelled
+// local-memory adapter. In production a missing pool fails closed with 503 —
+// durable-looking operation is never served from memory.
+// Lazy: this module is evaluated before `configureRuntime()` chooses the
+// storage adapter, so the control plane is created on first use and bound to
+// whatever pool actually exists at that moment.
+let forgeControlPlane = null;
+function getForgeControlPlane() {
+  if (!forgeControlPlane) {
+    forgeControlPlane = new ForgeControlPlane({
+      repository: postgres?.pool ? new PostgresForgeRepository(postgres.pool) : null,
+    });
+  }
+  return forgeControlPlane;
+}
+
+/**
+ * Fail closed: a production runtime without durable FORGE persistence must not
+ * accept control-plane calls at all (no silent memory fallback).
+ */
+export function createForgePersistenceGuard({ isProduction, isDurable }) {
+  return function forgePersistenceGuard(req, res, next) {
+    const durable = typeof isDurable === "function" ? isDurable() : isDurable;
+    if (isProduction && !durable) {
+      return res.status(503).json({
+        code: "FORGE_PERSISTENCE_UNAVAILABLE",
+        message: "FORGE requires durable PostgreSQL persistence and it is not available.",
+      });
+    }
+    return next();
+  };
+}
+
 app.use(
   "/api/forge",
+  createForgePersistenceGuard({
+    isProduction: process.env.NODE_ENV === "production",
+    isDurable: () => getForgeControlPlane().isDurable(),
+  }),
   authenticateOwner,
   createForgeOwnerSessionGate({ findOwnerById: (id) => ownersRepo.findById(id) }),
   forgeCsrfGuard,
-  createForgeControlRouter({
-    controlPlane: forgeControlPlane,
-    authenticateSession: (req) => req.forgeSession ?? null,
-    verifyCsrf: (req) => req.forgeCsrfVerified === true,
-  })
+  (req, res, next) => getForgeControlRouter()(req, res, next)
 );
+
+// The router is built once, against the control plane that exists after the
+// runtime was configured (never against a pre-configuration memory instance).
+let forgeControlRouter = null;
+function getForgeControlRouter() {
+  if (!forgeControlRouter) {
+    forgeControlRouter = createForgeControlRouter({
+      controlPlane: getForgeControlPlane(),
+      authenticateSession: (req) => req.forgeSession ?? null,
+      verifyCsrf: (req) => req.forgeCsrfVerified === true,
+    });
+  }
+  return forgeControlRouter;
+}
 
 // Director Communication Studio (Owner -> Director AI via server-side Gemini).
 //
