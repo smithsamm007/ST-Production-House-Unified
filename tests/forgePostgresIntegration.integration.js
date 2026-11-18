@@ -126,11 +126,15 @@ test(
         await client.query(`GRANT ${roleB} TO st_test_director_pooler`);
         await client.query("BEGIN");
         await client.query("SET LOCAL SESSION AUTHORIZATION st_test_director_pooler");
+        // The expected rejection aborts the transaction, so keep it behind a
+        // savepoint before restoring the control-plane session identity.
+        await client.query("SAVEPOINT before_escalation_attempt");
         await assert.rejects(
           () => client.query(`SET LOCAL ROLE ${roleA}`),
           /permission denied/i,
           "Director B must not be able to SET ROLE to Director A"
         );
+        await client.query("ROLLBACK TO SAVEPOINT before_escalation_attempt");
         await client.query("RESET SESSION AUTHORIZATION");
         await client.query("ROLLBACK");
 
