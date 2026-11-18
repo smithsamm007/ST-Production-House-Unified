@@ -78,7 +78,13 @@ export function evaluateMergeEligibility({
     }
     if (run.head_sha !== expectedHeadSha) reasons.push(`stale_workflow:${name}`);
     if (!ALLOWED_EVENTS.has(run.event)) reasons.push(`wrong_event:${name}`);
-    if (run.status !== COMPLETED) reasons.push(`incomplete_workflow:${name}:${run.status ?? 'missing'}`);
+    // A run that has not finished is incomplete, never unsuccessful: reporting
+    // `unsuccessful_workflow:…:missing` for it made the merge gate fail on its
+    // first poll instead of waiting for the gate it was checking.
+    if (run.status !== COMPLETED) {
+      reasons.push(`incomplete_workflow:${name}:${run.status ?? 'missing'}`);
+      continue;
+    }
     if (run.conclusion !== SUCCESS) reasons.push(`unsuccessful_workflow:${name}:${run.conclusion ?? 'missing'}`);
   }
 
