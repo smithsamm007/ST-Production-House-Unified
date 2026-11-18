@@ -351,8 +351,12 @@ test("concurrent migration attempts serialise: exactly one applies, the other is
   try {
     const runners = pools.map((p) => new MigrationRunner(new PostgresAdapter({}, p)));
     const results = await Promise.all(runners.map((r) => r.runMigrations()));
-    const applied = results.map((r) => r.appliedCount).sort();
-    assert.deepEqual(applied, [0, 34], "one runner applies all migrations, the other applies none");
+    // The canonical sequence grows with every new sql/NNN_*.sql file; the
+    // assertion is about serialisation, so it derives the count instead of
+    // pinning today's number (a hardcoded 34 broke when 035-040 landed).
+    const migrationCount = (await fs.readdir(path.join(ROOT, "sql"))).filter((f) => f.endsWith(".sql")).length;
+    const applied = results.map((r) => r.appliedCount).sort((a, b) => a - b);
+    assert.deepEqual(applied, [0, migrationCount], "one runner applies all migrations, the other applies none");
     const count = await pools[0].query("SELECT count(*)::int AS c FROM director_legacy_retirements");
     assert.equal(count.rows[0].c, 17, "no duplicate retirement rows from concurrent application");
   } finally {
@@ -444,5 +448,12 @@ test("migration 032 is untouched and the seed is reproducible", async () => {
   assert.equal(checksum, "c8def789fa311702bbba71da4073884c1b35cf5e68ca3f4b499427d1ff97336f",
     "migration 032 must remain byte-identical");
   const files = (await fs.readdir(path.join(ROOT, "sql"))).filter((f) => f.endsWith(".sql")).sort();
-  assert.equal(files.length, 34, "the canonical sequence is contiguous 001..034");
+  // Contiguity, not a pinned length: every file must be numbered 001..N with
+  // no gaps or duplicates, however many migrations the repository carries.
+  const numbers = files.map((f) => Number(f.slice(0, 3)));
+  assert.deepEqual(
+    numbers,
+    numbers.map((_, index) => index + 1),
+    `the canonical sequence is contiguous 001..${String(files.length).padStart(3, "0")}`
+  );
 });

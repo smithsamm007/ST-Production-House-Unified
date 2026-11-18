@@ -92,6 +92,10 @@ test(
         );
         assert.equal(crossDelete.rowCount, 0, "Director B cannot DELETE Director A rows");
 
+        // A rejected statement aborts the transaction, so the privilege
+        // assertion below needs a savepoint to run in a usable transaction
+        // (otherwise it observes 25P02 instead of a permission decision).
+        await client.query("SAVEPOINT before_spoofed_insert");
         await assert.rejects(
           () =>
             client.query(
@@ -100,11 +104,32 @@ test(
             ),
           /row-level security policy/i
         );
+        await client.query("ROLLBACK TO SAVEPOINT before_spoofed_insert");
+
+        // PostgreSQL authorises SET ROLE against the SESSION user, and a
+        // superuser session may assume any role: role assumption is therefore
+        // constrained by the connection identity, not by RLS. A Director
+        // runtime identity is a non-superuser that belongs to exactly one
+        // st_dir_* role, so model that pooler identity and prove it cannot
+        // assume the other Director's role.
+        await client.query("SAVEPOINT before_role_escalation");
+        await client.query(`
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'st_test_director_pooler') THEN
+              CREATE ROLE st_test_director_pooler NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOLOGIN;
+            END IF;
+          END $$;
+        `);
+        await client.query(`GRANT ${roleB} TO st_test_director_pooler`);
+        await client.query("SET LOCAL SESSION AUTHORIZATION st_test_director_pooler");
         await assert.rejects(
           () => client.query(`SET LOCAL ROLE ${roleA}`),
           /permission denied/i,
           "Director B must not be able to SET ROLE to Director A"
         );
+        await client.query("RESET SESSION AUTHORIZATION");
+        await client.query("ROLLBACK TO SAVEPOINT before_role_escalation");
         await client.query("ROLLBACK");
 
         // Generic non-st_dir_* runtime role must NOT bypass Director RLS (closed allowlist check)
