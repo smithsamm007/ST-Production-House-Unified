@@ -81,6 +81,26 @@ test('rejects pending workflows', () => {
   assert.ok(result.reasons.some((reason) => reason.startsWith('incomplete_workflow:ST Production House CI')));
 });
 
+// Incident 2026-11-18 (PR #287): the merge gate polls, but an in-progress run
+// also produced `unsuccessful_workflow:…:missing`, which the workflow treats as
+// a hard failure, so the gate failed on its first poll while the CI it awaited
+// was still running and could never reach the green state it was checking for.
+test('a pending workflow is incomplete, not unsuccessful', () => {
+  const result = evaluateMergeEligibility({
+    pullRequest: pull(),
+    expectedHeadSha: HEAD,
+    workflowRuns: successfulRuns({
+      'ST Production House CI': { status: 'in_progress', conclusion: null },
+      'Autonomous Merge Referee': { status: 'queued', conclusion: null }
+    })
+  });
+  assert.equal(result.eligible, false);
+  assert.deepEqual(result.reasons, [
+    'incomplete_workflow:ST Production House CI:in_progress',
+    'incomplete_workflow:Autonomous Merge Referee:queued'
+  ]);
+});
+
 test('accepts explicitly dispatched exact-head verification', () => {
   const result = evaluateMergeEligibility({
     pullRequest: pull(),
