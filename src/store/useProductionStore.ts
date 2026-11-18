@@ -135,6 +135,43 @@ function loadInitialState(): PersistedState {
   }
 }
 
+/**
+ * Per-session CSRF token for cookie-authenticated Owner mutations.
+ * The token is scoped to the caller's own session; no provider credential is
+ * ever fetched, stored or displayed in the browser.
+ */
+let ownerCsrfToken: string | null = null;
+async function getOwnerCsrfToken(): Promise<string | null> {
+  if (ownerCsrfToken) return ownerCsrfToken;
+  try {
+    const res = await fetch("/api/auth/me", { credentials: "same-origin" });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    ownerCsrfToken =
+      typeof data?.csrfToken === "string" ? data.csrfToken : null;
+    return ownerCsrfToken;
+  } catch {
+    return null;
+  }
+}
+
+/** Honest Owner-visible wording for an HTTP failure of the comm endpoint. */
+function describeCommFailure(status: number, error?: string): string {
+  if (status === 401)
+    return "[Authentication Required] The Owner session is missing or expired. Sign in to the console and retry; no AI response was fabricated.";
+  if (status === 403)
+    return "[Authentication Required] The request was refused by CSRF or authorization checks. Reload the console and retry; no AI response was fabricated.";
+  if (status === 404)
+    return "[Routing Failed] No such Director is registered, so the message was not routed.";
+  if (status === 413)
+    return "[Message Rejected] The message exceeds the 4000 character limit; nothing was sent to the Director.";
+  if (status === 429)
+    return "[Rate Limited] Too many messages in a short window. Wait a minute and retry; no AI response was fabricated.";
+  return `[Provider Unavailable] ${
+    error || `Communication endpoint returned HTTP ${status}.`
+  } No AI response was fabricated.`;
+}
+
 export function useProductionStore() {
   const [state, setState] = useState<PersistedState>(() => loadInitialState());
   const [currentSection, setCurrentSection] = useState<ScreenSection>("overview");
@@ -428,15 +465,7 @@ export function useProductionStore() {
             }
           : null;
 
-      let charterSnapshot: CreativeCharter | undefined;
-      let channelNameSnapshot: string | undefined;
-
       setState((prev) => {
-        charterSnapshot = prev.charters[agentId];
-        channelNameSnapshot = prev.channels.find(
-          (c) => c.agentId === agentId
-        )?.displayName;
-
         const newMessages: DirectorMessage[] = ackMsg
           ? [ownerMsg, ackMsg]
           : [ownerMsg];
@@ -463,17 +492,24 @@ export function useProductionStore() {
 
       void (async () => {
         try {
+          // The endpoint is an authenticated, CSRF-protected Owner route.
+          // Cookie sessions need the per-session token (double submit); the
+          // token is fetched only for the session holder that is already logged
+          // in. This never exposes a provider key to the browser.
+          const csrfToken = await getOwnerCsrfToken();
           const res = await fetch(
             `/api/director-comm/${encodeURIComponent(agentId)}/messages`,
             {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              credentials: "same-origin",
+              headers: {
+                "Content-Type": "application/json",
+                ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+              },
               body: JSON.stringify({
                 body: trimmed,
                 kind,
                 clientMessageId,
-                channelName: channelNameSnapshot,
-                charter: charterSnapshot,
               }),
             }
           );
@@ -486,12 +522,12 @@ export function useProductionStore() {
               kind: "conversation",
               sender: "director",
               source: "system_error",
-              outcome: "PROVIDER_UNAVAILABLE",
+              outcome:
+                res.status === 401 || res.status === 403
+                  ? "ROUTING_FAILED"
+                  : "PROVIDER_UNAVAILABLE",
               clientMessageId,
-              body: `[Provider Unavailable] ${
-                data?.error ||
-                `Communication endpoint returned HTTP ${res.status}. Your message was recorded, and no AI response was fabricated.`
-              }`,
+              body: describeCommFailure(res.status, data?.error),
               timestamp: getCurrentTimeSimple(),
             };
 
@@ -529,7 +565,7 @@ export function useProductionStore() {
             clientMessageId,
             body: `[Provider Unavailable] Could not reach the Director AI backend (${
               err instanceof Error ? err.message : "network error"
-            }). Your message was delivered and saved locally; no AI response was fabricated.`,
+            }). No AI response was fabricated.`,
             timestamp: getCurrentTimeSimple(),
           };
           setState((prev) => ({
