@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import {
   Activity,
+  Bell,
   Bot,
   CalendarClock,
   CheckCircle2,
@@ -53,6 +54,7 @@ const SECTION_ICONS: Record<ScreenSection, React.ReactNode> = {
   providers: <Film className="w-4 h-4" />,
   connections: <KeyRound className="w-4 h-4" />,
   approvals: <CheckCircle2 className="w-4 h-4" />,
+  notifications: <Bell className="w-4 h-4" />,
   evidence: <Link2 className="w-4 h-4" />,
   hermes: <Bot className="w-4 h-4" />,
   architecture: <Layers className="w-4 h-4" />,

@@ -9,6 +9,7 @@ export type ScreenSection =
   | "providers"
   | "connections"
   | "approvals"
+  | "notifications"
   | "evidence"
   | "hermes"
   | "architecture"
@@ -31,6 +32,7 @@ export const NAV_ITEMS: NavItemConfig[] = [
   { id: "providers", title: "Providers & Quota" },
   { id: "connections", title: "OAuth & Secrets" },
   { id: "approvals", title: "Approvals" },
+  { id: "notifications", title: "Inbox & Reports" },
   { id: "evidence", title: "Evidence Ledger" },
   { id: "hermes", title: "Hermes AI Manager" },
   { id: "architecture", title: "Master Architecture" },

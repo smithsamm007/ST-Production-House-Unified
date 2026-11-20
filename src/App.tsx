@@ -13,6 +13,7 @@ import { JobsScreen } from "./screens/JobsScreen";
 import { ProvidersQuotasScreen } from "./screens/ProvidersQuotasScreen";
 import { ConnectionsScreen } from "./screens/ConnectionsScreen";
 import { ApprovalsScreen } from "./screens/ApprovalsScreen";
+import { NotificationsScreen } from "./screens/NotificationsScreen";
 import { EvidenceScreen } from "./screens/EvidenceScreen";
 import { HermesScreen } from "./screens/HermesScreen";
 import { ArchitectureScreen } from "./screens/ArchitectureScreen";
@@ -138,6 +139,8 @@ export const App: React.FC = () => {
             onReject={store.rejectItem}
           />
         )}
+
+        {store.currentSection === "notifications" && <NotificationsScreen />}
 
         {store.currentSection === "evidence" && (
           <EvidenceScreen

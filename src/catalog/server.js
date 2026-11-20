@@ -66,6 +66,14 @@ import {
   createOwnerInboxNotifier,
 } from "../publishing/publishingApprovalDeadlineWorker.js";
 import { createPublishingApprovalRouter } from "../api/publishingApprovalRouter.js";
+import { PostgresNotificationRepository } from "../notifications/notificationRepository.js";
+import { createChannelRegistry } from "../notifications/notificationChannels.js";
+import { NotificationDeliveryWorker } from "../notifications/notificationDeliveryWorker.js";
+import { PostgresDailyReportRepository } from "../reporting/dailyReportRepository.js";
+import { DailyReportService } from "../reporting/dailyReportService.js";
+import { DailyReportSchedulerWorker } from "../reporting/dailyReportScheduler.js";
+import { createNotificationRouter } from "../api/notificationRouter.js";
+import { createForgeReportRouter } from "../api/forgeReportRouter.js";
 import { createDirectorCommunicationRouter } from "../communication/directorCommunicationRouter.js";
 import { DirectorCommunicationService } from "../communication/directorCommunicationService.js";
 import { PostgresConversationRepository } from "../communication/postgresConversationRepository.js";
@@ -410,6 +418,36 @@ export async function finalizeRuntimeStartup() {
       );
     } catch (error) {
       logInternalError("PUBLISHING_APPROVAL_WORKER_START_FAILED", error);
+    }
+  }
+
+  // D6: durable notification delivery + daily report scheduler. Intervals only
+  // trigger cycles; all due decisions and transitions are re-checked in
+  // PostgreSQL, so a missed tick or a restart never changes the outcome.
+  if (storageMode === "postgres" && postgres?.pool && process.env.STPH_NOTIFICATION_WORKER !== "disabled") {
+    try {
+      const runtime = getNotificationRuntime();
+      if (runtime) {
+        runtime.worker.start({
+          intervalMs: Number(process.env.STPH_NOTIFICATION_WORKER_INTERVAL_MS) || 15_000,
+        });
+        const reportSchedulerEnabled = process.env.STPH_REPORT_SCHEDULER !== "disabled";
+        if (reportSchedulerEnabled) {
+          runtime.scheduler.start({
+            intervalMs: Number(process.env.STPH_REPORT_SCHEDULER_INTERVAL_MS) || 60_000,
+          });
+        }
+        console.log(
+          JSON.stringify({
+            level: "info",
+            code: "NOTIFICATION_WORKERS_STARTED",
+            notificationIntervalMs: Number(process.env.STPH_NOTIFICATION_WORKER_INTERVAL_MS) || 15_000,
+            reportScheduler: reportSchedulerEnabled,
+          })
+        );
+      }
+    } catch (error) {
+      logInternalError("NOTIFICATION_WORKER_START_FAILED", error);
     }
   }
 
@@ -2143,6 +2181,92 @@ app.use(
   }
 );
 
+// ---------------------------------------------------------------------------
+// Durable notifications + autonomous daily FORGE report (sql/044).
+//
+// Two Owner-only surfaces share one lazy runtime: the notification outbox
+// worker (inbox delivery, bounded retries, dead letters) and the daily report
+// scheduler (08:00 Asia/Kolkata by default, database-time due decisions).
+// Both are mounted behind the same authenticated session, Owner-role gate and
+// CSRF guard as every other Owner route, and both fail closed (503) when
+// durable PostgreSQL is not configured.
+// ---------------------------------------------------------------------------
+let notificationRuntime = null;
+function getNotificationRuntime() {
+  if (notificationRuntime) return notificationRuntime;
+  if (!postgres?.pool) return null;
+  const instanceBase = process.env.STPH_INSTANCE_ID || `stph-${process.pid}`;
+  const repository = new PostgresNotificationRepository(postgres.pool);
+  const channels = createChannelRegistry({ repository });
+  const worker = new NotificationDeliveryWorker({
+    repository,
+    channels,
+    instanceId: `${instanceBase}-notify`,
+  });
+  const reportRepository = new PostgresDailyReportRepository(postgres.pool);
+  const service = new DailyReportService({ pool: postgres.pool, reportRepository });
+  const scheduler = new DailyReportSchedulerWorker({
+    reportRepository,
+    service,
+    notifier: worker,
+    instanceId: `${instanceBase}-report`,
+  });
+  const ownerOptions = {
+    verifyCsrf: (req) => req.forgeCsrfVerified === true,
+    getOwnerId: (req) => req.forgeSession?.id ?? null,
+  };
+  notificationRuntime = {
+    repository,
+    worker,
+    channels,
+    reportRepository,
+    service,
+    scheduler,
+    notificationRouter: createNotificationRouter({ repository, worker, channels, ...ownerOptions }),
+    reportRouter: createForgeReportRouter({ reportRepository, service, scheduler, ...ownerOptions }),
+  };
+  return notificationRuntime;
+}
+
+function notificationUnavailable(res) {
+  return res.status(503).json({
+    code: "NOTIFICATIONS_UNAVAILABLE",
+    message: "Notifications and daily reports require durable PostgreSQL persistence.",
+  });
+}
+
+app.use(
+  "/api/notifications",
+  (req, res, next) => {
+    if (process.env.NODE_ENV === "production" && !postgres?.pool) return notificationUnavailable(res);
+    return next();
+  },
+  authenticateOwner,
+  createForgeOwnerSessionGate({ findOwnerById: (id) => ownersRepo.findById(id) }),
+  forgeCsrfGuard,
+  (req, res, next) => {
+    const runtime = getNotificationRuntime();
+    if (!runtime) return notificationUnavailable(res);
+    return runtime.notificationRouter(req, res, next);
+  }
+);
+
+app.use(
+  "/api/forge-reports",
+  (req, res, next) => {
+    if (process.env.NODE_ENV === "production" && !postgres?.pool) return notificationUnavailable(res);
+    return next();
+  },
+  authenticateOwner,
+  createForgeOwnerSessionGate({ findOwnerById: (id) => ownersRepo.findById(id) }),
+  forgeCsrfGuard,
+  (req, res, next) => {
+    const runtime = getNotificationRuntime();
+    if (!runtime) return notificationUnavailable(res);
+    return runtime.reportRouter(req, res, next);
+  }
+);
+
 // Director Communication Studio (Owner -> Director AI via server-side Gemini).
 //
 // Mounted behind the SAME Owner session and CSRF controls as every other Owner
@@ -2218,6 +2342,14 @@ app.use((err, req, res, next) => {
 
 /** Graceful shutdown helper for tests and the entrypoint. */
 export async function closeRuntime() {
+  try {
+    if (notificationRuntime) {
+      notificationRuntime.worker.stop();
+      notificationRuntime.scheduler.stop();
+    }
+  } catch {
+    // already stopped
+  }
   try {
     if (scheduleTrigger) scheduleTrigger.stop();
   } catch {
