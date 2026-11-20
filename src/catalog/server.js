@@ -60,6 +60,12 @@ import { generateSanitizedWorkerContext } from "./creativeCharter.js";
 import { ForgeControlPlane } from "../forge/forgeControlPlane.js";
 import { createForgeControlRouter } from "../forge/forgeControlRouter.js";
 import { PostgresForgeRepository } from "../forge/postgresForgeRepository.js";
+import { PostgresPublishingApprovalRepository } from "../publishing/publishingApprovalRepository.js";
+import {
+  PublishingApprovalDeadlineWorker,
+  createOwnerInboxNotifier,
+} from "../publishing/publishingApprovalDeadlineWorker.js";
+import { createPublishingApprovalRouter } from "../api/publishingApprovalRouter.js";
 import { createDirectorCommunicationRouter } from "../communication/directorCommunicationRouter.js";
 import { DirectorCommunicationService } from "../communication/directorCommunicationService.js";
 import { PostgresConversationRepository } from "../communication/postgresConversationRepository.js";
@@ -384,6 +390,26 @@ export async function finalizeRuntimeStartup() {
       );
     } catch (error) {
       logInternalError("FORGE_BOOT_RECONCILIATION_FAILED", error);
+    }
+  }
+
+  // D5: durable deadline worker. The interval only triggers a cycle; every
+  // deadline and transition is re-checked in PostgreSQL, so a missed tick or a
+  // restart never changes the outcome.
+  if (storageMode === "postgres" && postgres?.pool && process.env.STPH_APPROVAL_WORKER !== "disabled") {
+    try {
+      const runtime = getPublishingApprovals();
+      const intervalMs = Number(process.env.STPH_APPROVAL_WORKER_INTERVAL_MS) || 30_000;
+      runtime.worker.start({ intervalMs });
+      console.log(
+        JSON.stringify({
+          level: "info",
+          code: "PUBLISHING_APPROVAL_WORKER_STARTED",
+          intervalMs,
+        })
+      );
+    } catch (error) {
+      logInternalError("PUBLISHING_APPROVAL_WORKER_START_FAILED", error);
     }
   }
 
@@ -2025,6 +2051,97 @@ function getForgeControlRouter() {
   }
   return forgeControlRouter;
 }
+
+// ---------------------------------------------------------------------------
+// HERMES five-hour Owner publishing approvals (D5).
+//
+// The five-hour clock, the decision and the notification outbox are durable
+// PostgreSQL state. The interval below only TRIGGERS a cycle; the deadline is
+// always re-read from the database inside the finalizing transaction.
+//
+// Evidence is gathered from real tables only (the canonical artifacts row and
+// its ffprobe verification). Every check the platform cannot verify stays
+// unverified — HERMES then rejects rather than treating absence as a pass.
+async function loadPublishingEvidence({ request }) {
+  const checks = {};
+  if (!postgres?.pool) return checks;
+  const { rows } = await postgres.pool.query(
+    `SELECT sha256, ffprobe_verified
+       FROM artifacts
+      WHERE sha256 = $1
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [request.artifactSha256]
+  );
+  const artifact = rows[0];
+  if (artifact && artifact.sha256 === request.artifactSha256) {
+    checks.artifactIntegrity = {
+      passed: true,
+      evidence: `artifacts:sha256:${artifact.sha256}`,
+    };
+    checks.productionQc = artifact.ffprobe_verified === true
+      ? { passed: true, evidence: `artifacts:ffprobe_verified:${artifact.sha256}` }
+      : { passed: false, reasonCode: "FFPROBE_NOT_VERIFIED" };
+  }
+  // Checks without a durable source in this repository (rights, disclosures,
+  // metadata, platform policy, duplicate protection, owner restrictions) are
+  // intentionally absent: absence is a REJECT, never an implicit pass.
+  return checks;
+}
+
+let publishingApprovals = null;
+function getPublishingApprovals() {
+  if (publishingApprovals) return publishingApprovals;
+  if (!postgres?.pool) return null;
+  const repository = new PostgresPublishingApprovalRepository(postgres.pool);
+  const worker = new PublishingApprovalDeadlineWorker({
+    repository,
+    checksProvider: loadPublishingEvidence,
+    notifier: createOwnerInboxNotifier({ repository }),
+    instanceId: process.env.STPH_INSTANCE_ID || `approval-${process.pid}`,
+  });
+  const router = createPublishingApprovalRouter({
+    repository,
+    worker,
+    verifyCsrf: (req) => req.forgeCsrfVerified === true,
+    getOwnerId: (req) => req.forgeSession?.id ?? null,
+    appendEvidence: (event) => evidenceRepo.append(event),
+  });
+  publishingApprovals = { repository, worker, router };
+  return publishingApprovals;
+}
+
+app.use(
+  "/api/publishing-approvals",
+  (req, res, next) => {
+    if (process.env.NODE_ENV === "production" && !postgres?.pool) {
+      return res.status(503).json({
+        code: "PUBLISHING_APPROVALS_UNAVAILABLE",
+        message: "Publishing approvals require durable PostgreSQL persistence.",
+      });
+    }
+    return next();
+  },
+  authenticateOwner,
+  createForgeOwnerSessionGate({ findOwnerById: (id) => ownersRepo.findById(id) }),
+  forgeCsrfGuard,
+  (req, res, next) => {
+    let runtime;
+    try {
+      runtime = getPublishingApprovals();
+    } catch (error) {
+      logInternalError("PUBLISHING_APPROVALS_WIRING_FAILED", error);
+      return res.status(503).json({ code: "PUBLISHING_APPROVALS_UNAVAILABLE" });
+    }
+    if (!runtime) {
+      return res.status(503).json({
+        code: "PUBLISHING_APPROVALS_UNAVAILABLE",
+        message: "Publishing approvals require durable PostgreSQL persistence.",
+      });
+    }
+    return runtime.router(req, res, next);
+  }
+);
 
 // Director Communication Studio (Owner -> Director AI via server-side Gemini).
 //
