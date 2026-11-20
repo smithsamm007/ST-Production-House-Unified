@@ -63,9 +63,15 @@ test(
   async () => {
     const created = await createDisposableDatabase(POSTGRES_URL, "stph_acceptance");
     const pool = new pg.Pool({ connectionString: created.connectionString, max: 12 });
+    // Teardown drops this disposable database WITH (FORCE). A client socket that is
+    // still closing can receive the backend's 57P01 right then; that idle-client
+    // error is teardown noise, not a suite failure, so it is observed rather than
+    // left to crash the process as an unhandled emitter error.
+    pool.on("error", () => {});
     const auxiliaryPools = [];
     const auxPool = () => {
       const poolInstance = new pg.Pool({ connectionString: created.connectionString, max: 4 });
+      poolInstance.on("error", () => {});
       auxiliaryPools.push(poolInstance);
       return poolInstance;
     };

@@ -114,6 +114,50 @@ interface DirectorDetail {
   audit: AuditEntry[];
 }
 
+interface WorkerRow {
+  workerKey: string;
+  instanceId: string;
+  state: string;
+  stageTypes: string[];
+  capabilities: string[];
+  directorScope: string[];
+  currentTaskId: string | null;
+  currentDirectorId: string | null;
+  lastHeartbeatAt: string | null;
+  heartbeatAgeSeconds: number | null;
+  lastCompletedAt: string | null;
+  failureCount: number;
+  leaseViolationCount: number;
+  online: boolean;
+  expired: boolean;
+}
+
+interface WorkerMetrics {
+  workers: { registered: number; online: number; offline: number; busy: number; draining: number; degraded: number };
+  tasks: {
+    claimed: number;
+    handlerStarted: number;
+    completed: number;
+    failed: number;
+    retried: number;
+    deadLettered: number;
+    recoveredAfterRestart: number;
+    providerBlocked: number;
+    oldestPendingSeconds: number | null;
+  };
+  evidence: { records: number; productionEligible: number; testFixtures: number; stageTypesExecuted: string[] };
+  leaseViolations: { recorded: number };
+}
+
+interface DeadLetterRow {
+  taskId: string;
+  directorId: string;
+  stage: string;
+  attemptCount: number;
+  maxAttempts: number;
+  lastError: string | null;
+}
+
 let csrfToken: string | null = null;
 async function ownerCsrfToken(): Promise<string | null> {
   if (csrfToken) return csrfToken;
@@ -184,6 +228,39 @@ export const FleetScreen: React.FC = () => {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [workers, setWorkers] = useState<WorkerRow[]>([]);
+  const [metrics, setMetrics] = useState<WorkerMetrics | null>(null);
+  const [deadLetters, setDeadLetters] = useState<DeadLetterRow[]>([]);
+
+  const refreshWorkers = useCallback(async () => {
+    try {
+      const registry = await api<{ workers: WorkerRow[] }>("/api/fleet/workers/registry");
+      setWorkers(registry.workers ?? []);
+      setMetrics(await api<WorkerMetrics>("/api/fleet/workers/metrics"));
+      const dead = await api<{ tasks: DeadLetterRow[] }>("/api/fleet/tasks/dead-letters?limit=10");
+      setDeadLetters(dead.tasks ?? []);
+    } catch (caught) {
+      // The worker registry failing must not blank the fleet view; it is reported.
+      setNotice(caught instanceof Error ? `Worker registry unavailable: ${caught.message}` : null);
+    }
+  }, []);
+
+  const runWorkerAction = async (workerKey: string, action: "drain" | "restart") => {
+    if (!window.confirm(`${action === "drain" ? "Drain" : "Request restart of"} "${workerKey}"? This is audited.`)) return;
+    setBusy(`${action}:${workerKey}`);
+    try {
+      await api(`/api/fleet/workers/${encodeURIComponent(workerKey)}/${action}`, {
+        method: "POST",
+        body: JSON.stringify({ reason: `Owner ${action} from the worker operations panel.` }),
+      });
+      setNotice(`${action === "drain" ? "Drain recorded" : "Restart requested"} for ${workerKey}.`);
+      await refreshWorkers();
+    } catch (caught) {
+      setNotice(`${action} refused: ${caught instanceof Error ? caught.message : "UNKNOWN"}`);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const refreshFleet = useCallback(async () => {
     setError(null);
@@ -215,7 +292,8 @@ export const FleetScreen: React.FC = () => {
 
   useEffect(() => {
     void refreshFleet();
-  }, [refreshFleet]);
+    void refreshWorkers();
+  }, [refreshFleet, refreshWorkers]);
 
   useEffect(() => {
     if (selected) void refreshDetail(selected);
@@ -318,6 +396,126 @@ export const FleetScreen: React.FC = () => {
           ))}
         </section>
       )}
+
+      <section className="rounded-lg border border-[#2A3550] bg-[#111A2B] p-4 space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-semibold text-[#E6EDF7]">Worker Operations</h2>
+            <p className="text-[11px] text-[#8D9AB3]">
+              A registered runtime with a live heartbeat. Counts are separate facts: claimed, handler started,
+              completed, evidence verified.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void refreshWorkers()}
+            className="rounded-md border border-[#2A3550] px-3 py-1.5 text-xs text-[#E6EDF7] hover:bg-[#1A2338]"
+          >
+            Refresh workers
+          </button>
+        </div>
+
+        {metrics && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+            {[
+              { label: "Registered", value: metrics.workers.registered },
+              { label: "Online", value: metrics.workers.online },
+              { label: "Busy", value: metrics.workers.busy },
+              { label: "Tasks claimed", value: metrics.tasks.claimed },
+              { label: "Handler started", value: metrics.tasks.handlerStarted },
+              { label: "Completed", value: metrics.tasks.completed },
+              { label: "Dead-lettered", value: metrics.tasks.deadLettered },
+              { label: "Lease violations", value: metrics.leaseViolations.recorded },
+              { label: "Evidence records", value: metrics.evidence.records },
+              { label: "Fixture evidence", value: metrics.evidence.testFixtures },
+              { label: "Recovered after restart", value: metrics.tasks.recoveredAfterRestart },
+              { label: "Oldest pending (s)", value: metrics.tasks.oldestPendingSeconds ?? 0 },
+            ].map((card) => (
+              <div key={card.label} className="rounded border border-[#1F2A41] px-2 py-1.5">
+                <div className="text-[10px] uppercase tracking-wide text-[#8D9AB3]">{card.label}</div>
+                <div className="text-sm text-[#E6EDF7]">{card.value}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="overflow-auto">
+          <table className="w-full text-xs">
+            <thead className="text-[#8D9AB3]">
+              <tr>
+                {["Worker", "State", "Stages", "Director", "Current task", "Heartbeat", "Failures", "Lease", "Controls"].map(
+                  (heading) => (
+                    <th key={heading} className="text-left font-medium px-2 py-1.5">
+                      {heading}
+                    </th>
+                  )
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {workers.length === 0 && (
+                <tr>
+                  <td colSpan={9} className="px-2 py-3 text-[#8D9AB3]">
+                    No worker runtime is registered. A browser session is never counted as a worker.
+                  </td>
+                </tr>
+              )}
+              {workers.map((worker) => (
+                <tr key={worker.workerKey} className="border-t border-[#1F2A41]">
+                  <td className="px-2 py-1.5 text-[#E6EDF7]">{worker.workerKey}</td>
+                  <td className={`px-2 py-1.5 ${worker.online ? "text-[#4ADE80]" : "text-[#8D9AB3]"}`}>
+                    {worker.state}
+                    {worker.online ? " · online" : " · offline"}
+                  </td>
+                  <td className="px-2 py-1.5 text-[#C7D2E5]">{worker.stageTypes.join(", ") || "—"}</td>
+                  <td className="px-2 py-1.5 text-[#C7D2E5]">{worker.currentDirectorId ?? (worker.directorScope.join(", ") || "—")}</td>
+                  <td className="px-2 py-1.5 text-[#8D9AB3]">{worker.currentTaskId ?? "—"}</td>
+                  <td className="px-2 py-1.5 text-[#8D9AB3]">
+                    {worker.heartbeatAgeSeconds === null ? "—" : `${worker.heartbeatAgeSeconds}s ago`}
+                  </td>
+                  <td className="px-2 py-1.5 text-[#C7D2E5]">{worker.failureCount}</td>
+                  <td className="px-2 py-1.5 text-[#C7D2E5]">{worker.leaseViolationCount}</td>
+                  <td className="px-2 py-1.5 space-x-1">
+                    <button
+                      type="button"
+                      onClick={() => void runWorkerAction(worker.workerKey, "drain")}
+                      disabled={busy !== null}
+                      className="rounded border border-[#2A3550] px-2 py-0.5 text-[10px] text-[#E6EDF7] hover:bg-[#1A2338] disabled:opacity-50"
+                    >
+                      Drain
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void runWorkerAction(worker.workerKey, "restart")}
+                      disabled={busy !== null}
+                      className="rounded border border-[#2A3550] px-2 py-0.5 text-[10px] text-[#E6EDF7] hover:bg-[#1A2338] disabled:opacity-50"
+                    >
+                      Restart
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-[#8D9AB3]">
+            Dead-letter queue ({deadLetters.length})
+          </div>
+          {deadLetters.length === 0 ? (
+            <p className="text-xs text-[#8D9AB3] mt-1">No task reached the dead-letter state.</p>
+          ) : (
+            <ul className="mt-1 space-y-1">
+              {deadLetters.map((task) => (
+                <li key={task.taskId} className="text-[11px] text-[#F87171]">
+                  {task.directorId} · {task.stage} · {task.attemptCount}/{task.maxAttempts} · {task.lastError ?? "—"}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
 
       <section className="rounded-lg border border-[#2A3550] bg-[#111A2B] overflow-hidden">
         <table className="w-full text-xs">
