@@ -14,6 +14,7 @@ import { ProvidersQuotasScreen } from "./screens/ProvidersQuotasScreen";
 import { ConnectionsScreen } from "./screens/ConnectionsScreen";
 import { ApprovalsScreen } from "./screens/ApprovalsScreen";
 import { NotificationsScreen } from "./screens/NotificationsScreen";
+import { FleetScreen } from "./screens/FleetScreen";
 import { EvidenceScreen } from "./screens/EvidenceScreen";
 import { HermesScreen } from "./screens/HermesScreen";
 import { ArchitectureScreen } from "./screens/ArchitectureScreen";
@@ -141,6 +142,8 @@ export const App: React.FC = () => {
         )}
 
         {store.currentSection === "notifications" && <NotificationsScreen />}
+
+        {store.currentSection === "fleet" && <FleetScreen />}
 
         {store.currentSection === "evidence" && (
           <EvidenceScreen

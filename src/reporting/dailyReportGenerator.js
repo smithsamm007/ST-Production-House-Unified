@@ -249,6 +249,87 @@ export async function collectForgeDailyReport({
     )
   );
 
+  // ---------------------------------------------------------- Director fleet
+  // Day 5 fleet metrics. Every number below is a GROUP BY over durable rows; a
+  // Director with no activity reports zero, never planned work.
+  const fleetDirectors = await guard(() =>
+    queryRows(pool, "SELECT lifecycle_state, count(*)::int AS count FROM director_fleet GROUP BY lifecycle_state")
+  );
+  const fleetTaskStatus = await guard(() =>
+    queryRows(pool, "SELECT status, count(*)::int AS count FROM director_tasks GROUP BY status")
+  );
+  const fleetStageStatus = await guard(() =>
+    queryRows(
+      pool,
+      "SELECT stage, status, count(*)::int AS count FROM director_tasks GROUP BY stage, status"
+    )
+  );
+  const fleetPerDirector = await guard(() =>
+    queryRows(
+      pool,
+      `SELECT director_id,
+              count(*) FILTER (WHERE status IN ('ASSIGNED','RUNNING','QUEUED','RETRY_SCHEDULED'))::int AS active_or_queued,
+              count(*) FILTER (WHERE status = 'BLOCKED')::int AS blocked,
+              count(*) FILTER (WHERE status IN ('FAILED','DEAD_LETTER'))::int AS failed
+         FROM director_tasks
+        GROUP BY director_id`
+    )
+  );
+  const fleetProviderBlocked = await guard(() =>
+    queryRows(
+      pool,
+      `SELECT count(DISTINCT director_id)::int AS count
+         FROM director_tasks
+        WHERE provider_state IN ('UNAVAILABLE','QUOTA_EXHAUSTED')
+          AND status NOT IN ('COMPLETED','CANCELLED','DEAD_LETTER')`
+    )
+  );
+  const fleetProjects = await guard(() =>
+    queryRows(
+      pool,
+      "SELECT director_id, count(*)::int AS projects FROM director_projects GROUP BY director_id"
+    )
+  );
+  const fleetEvidence = await guard(() =>
+    queryRows(
+      pool,
+      `SELECT count(*)::int AS total,
+              count(*) FILTER (WHERE artifact_hash IS NOT NULL)::int AS verified
+         FROM director_task_evidence
+        WHERE created_at >= $1 AND created_at < $2`,
+      params
+    )
+  );
+  const fleetAudit = await guard(() =>
+    queryRows(
+      pool,
+      `SELECT action, count(*)::int AS count
+         FROM director_fleet_audit
+        WHERE created_at >= $1 AND created_at < $2
+        GROUP BY action`,
+      params
+    )
+  );
+  const fleetEscalations = await guard(() =>
+    queryRows(
+      pool,
+      `SELECT code, count(*)::int AS count
+         FROM director_fleet_escalations
+        WHERE created_at >= $1 AND created_at < $2
+        GROUP BY code`,
+      params
+    )
+  );
+  const fleetWorkerHeartbeats = await guard(() =>
+    queryRows(
+      pool,
+      `SELECT count(*)::int AS total,
+              count(*) FILTER (WHERE status <> 'offline'
+                                 AND last_heartbeat_at > clock_timestamp() - interval '90 seconds')::int AS live
+         FROM director_workers`
+    )
+  );
+
   const approvalsInWindow = await guard(() =>
     queryRows(
       pool,
@@ -595,7 +676,147 @@ export async function collectForgeDailyReport({
   if (approvalsInWindow.ok) whatChanged.push(`${count(approvalsInWindow) ?? 0} publishing approval request(s) created.`);
   if (notificationEvents.ok) whatChanged.push(`${count(notificationEvents) ?? 0} notification event(s) persisted.`);
 
+  const lifecycleCount = (state) => {
+    if (!fleetDirectors.ok) return blocked(fleetDirectors.code, { source: "director_fleet" });
+    const row = fleetDirectors.value.find((entry) => entry.lifecycle_state === state);
+    return metric(Number(row?.count ?? 0), {
+      source: "director_fleet",
+      verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+      evidence: { state },
+    });
+  };
+  const stageCount = (statuses) => {
+    if (!fleetStageStatus.ok) return blocked(fleetStageStatus.code, { source: "director_tasks" });
+    const total = fleetStageStatus.value
+      .filter((row) => statuses.includes(row.status))
+      .reduce((sum, row) => sum + Number(row.count ?? 0), 0);
+    return metric(total, {
+      source: "director_tasks",
+      verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+      evidence: { statuses },
+    });
+  };
+  const auditCount = (actions) => {
+    if (!fleetAudit.ok) return blocked(fleetAudit.code, { source: "director_fleet_audit" });
+    const total = fleetAudit.value
+      .filter((row) => actions.includes(row.action))
+      .reduce((sum, row) => sum + Number(row.count ?? 0), 0);
+    return metric(total, {
+      source: "director_fleet_audit",
+      verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+      evidence: { actions, window: windowRef },
+    });
+  };
+
+  const directorFleetSection = {
+    directorFleetOverview: {
+      totalRegistered: fleetDirectors.ok
+        ? metric(
+            fleetDirectors.value.reduce((sum, row) => sum + Number(row.count ?? 0), 0),
+            { source: "director_fleet", verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED }
+          )
+        : blocked(fleetDirectors.code, { source: "director_fleet" }),
+      active: lifecycleCount("ACTIVE"),
+      ready: lifecycleCount("READY"),
+      paused: lifecycleCount("PAUSED"),
+      suspended: lifecycleCount("SUSPENDED"),
+      retired: lifecycleCount("RETIRED"),
+      withActiveTasks: fleetPerDirector.ok
+        ? metric(fleetPerDirector.value.filter((row) => Number(row.active_or_queued ?? 0) > 0).length, {
+            source: "director_tasks",
+            verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+          })
+        : blocked(fleetPerDirector.code, { source: "director_tasks" }),
+      withBlockedTasks: fleetPerDirector.ok
+        ? metric(fleetPerDirector.value.filter((row) => Number(row.blocked ?? 0) > 0).length, {
+            source: "director_tasks",
+            verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+          })
+        : blocked(fleetPerDirector.code, { source: "director_tasks" }),
+      withFailedTasks: fleetPerDirector.ok
+        ? metric(fleetPerDirector.value.filter((row) => Number(row.failed ?? 0) > 0).length, {
+            source: "director_tasks",
+            verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+          })
+        : blocked(fleetPerDirector.code, { source: "director_tasks" }),
+      providerBlocked: fleetProviderBlocked.ok
+        ? metric(Number(fleetProviderBlocked.value[0]?.count ?? 0), {
+            source: "director_tasks",
+            verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+            evidence: { predicate: "provider_state IN ('UNAVAILABLE','QUOTA_EXHAUSTED')" },
+          })
+        : blocked(fleetProviderBlocked.code, { source: "director_tasks" }),
+      liveWorkerRuntimes: fleetWorkerHeartbeats.ok
+        ? metric(Number(fleetWorkerHeartbeats.value[0]?.live ?? 0), {
+            source: "director_workers",
+            verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+            note: "A registered runtime heartbeat only; a closed browser is never counted.",
+          })
+        : blocked(fleetWorkerHeartbeats.code, { source: "director_workers" }),
+    },
+    universeProductionOverview: {
+      projectsPerDirector: fleetProjects.ok
+        ? metric(
+            Object.fromEntries(fleetProjects.value.map((row) => [row.director_id, Number(row.projects ?? 0)])),
+            { source: "director_projects", verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED }
+          )
+        : blocked(fleetProjects.code, { source: "director_projects" }),
+      completedStages: stageCount(["COMPLETED"]),
+      blockedStages: stageCount(["BLOCKED"]),
+      failedStages: stageCount(["FAILED", "DEAD_LETTER"]),
+      inFlightStages: stageCount(["QUEUED", "RETRY_SCHEDULED", "ASSIGNED", "RUNNING"]),
+      verifiedMediaArtifacts: fleetEvidence.ok
+        ? metric(Number(fleetEvidence.value[0]?.verified ?? 0), {
+            source: "director_task_evidence",
+            verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+            evidence: { predicate: "artifact_hash IS NOT NULL", window: windowRef },
+          })
+        : blocked(fleetEvidence.code, { source: "director_task_evidence" }),
+      confirmedPublishingActivity: notRun("NO_PLATFORM_RECEIPT_IN_FLEET_TASKS", {
+        source: "publishing_receipts",
+        note: "A PUBLISHING stage task completing is not a platform receipt; only receipts are counted as publishing.",
+      }),
+    },
+    hermesManagementOverview: {
+      assignmentsMade: auditCount(["DIRECTOR_TASK_ASSIGNED"]),
+      lifecycleDecisions: auditCount(["DIRECTOR_STATE_CHANGED"]),
+      escalationsRaised: fleetEscalations.ok
+        ? metric(
+            fleetEscalations.value.reduce((sum, row) => sum + Number(row.count ?? 0), 0),
+            {
+              source: "director_fleet_escalations",
+              verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+              evidence: { window: windowRef },
+            }
+          )
+        : blocked(fleetEscalations.code, { source: "director_fleet_escalations" }),
+      ownerApprovalRequests: fleetStageStatus.ok
+        ? metric(
+            fleetStageStatus.value
+              .filter((row) => row.stage === "OWNER_APPROVAL")
+              .reduce((sum, row) => sum + Number(row.count ?? 0), 0),
+            {
+              source: "director_tasks",
+              verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+              evidence: { stage: "OWNER_APPROVAL" },
+            }
+          )
+        : blocked(fleetStageStatus.code, { source: "director_tasks" }),
+      unresolvedOwnerDecisions: notRun("NO_OWNER_DECISION_LEDGER_FOR_FLEET", {
+        source: "forge_publishing_approvals",
+        note: "Fleet-level owner decisions are counted per approval record elsewhere; no fleet ledger is inferred.",
+      }),
+      fleetLevelBlockers: fleetEscalations.ok
+        ? metric(
+            fleetEscalations.value.map((row) => ({ code: row.code, count: Number(row.count ?? 0) })),
+            { source: "director_fleet_escalations", verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED }
+          )
+        : blocked(fleetEscalations.code, { source: "director_fleet_escalations" }),
+    },
+  };
+
   const sections = {
+    directorFleet: directorFleetSection,
     executiveSummary: {
       overallCondition: blockers.length === 0 ? "NOMINAL" : "DEGRADED",
       whatChanged,
@@ -925,6 +1146,15 @@ export async function collectForgeDailyReport({
       evidence: { table: "artifacts", predicate: "ffprobe_verified = true", window: windowRef },
     },
     {
+      claimId: "fleet.isolation",
+      statement: "Director fleet lifecycle, task counters and stage evidence are read from durable rows",
+      verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+      evidence: {
+        tables: ["director_fleet", "director_tasks", "director_task_evidence", "director_fleet_audit"],
+        note: "A queued task is never reported as a completed stage.",
+      },
+    },
+    {
       claimId: "notifications.delivery",
       statement: "Notification delivery outcomes per channel",
       verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
@@ -955,6 +1185,13 @@ export async function collectForgeDailyReport({
         "forge_notification_events",
         "forge_notification_deliveries",
         "forge_notification_channels",
+        "director_fleet",
+        "director_fleet_audit",
+        "director_projects",
+        "director_tasks",
+        "director_task_evidence",
+        "director_workers",
+        "director_fleet_escalations",
         "agents",
         "jobs",
         "artifacts",
