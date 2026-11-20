@@ -74,6 +74,10 @@ import { DailyReportService } from "../reporting/dailyReportService.js";
 import { DailyReportSchedulerWorker } from "../reporting/dailyReportScheduler.js";
 import { createNotificationRouter } from "../api/notificationRouter.js";
 import { createForgeReportRouter } from "../api/forgeReportRouter.js";
+import { createFleetRouter } from "../api/fleetRouter.js";
+import { PostgresDirectorFleetRepository } from "../fleet/fleetRepository.js";
+import { HermesFleetManager } from "../fleet/hermesFleetManager.js";
+import { FleetHealthService } from "../fleet/fleetHealthService.js";
 import { createDirectorCommunicationRouter } from "../communication/directorCommunicationRouter.js";
 import { DirectorCommunicationService } from "../communication/directorCommunicationService.js";
 import { PostgresConversationRepository } from "../communication/postgresConversationRepository.js";
@@ -2267,8 +2271,74 @@ app.use(
   }
 );
 
-// Director Communication Studio (Owner -> Director AI via server-side Gemini).
+// ---------------------------------------------------------------------------
+// Director Fleet management (Day 5, sql/045).
 //
+// HERMES coordinates independently owned Director universes over durable
+// PostgreSQL records. Mounted behind the same Owner session, Owner-role gate and
+// CSRF guard as every other Owner route; fails closed (503) without a pool.
+// Fleet health escalations reuse the Day 4 notification outbox when it is
+// available, and are persisted durably even when it is not.
+// ---------------------------------------------------------------------------
+let fleetRuntime = null;
+function getFleetRuntime() {
+  if (fleetRuntime) return fleetRuntime;
+  if (!postgres?.pool) return null;
+  const repository = new PostgresDirectorFleetRepository(postgres.pool);
+  const manager = new HermesFleetManager({ repository });
+  let notifier = null;
+  try {
+    notifier = getNotificationRuntime()?.worker ?? null;
+  } catch {
+    // Delivery is optional; the escalation itself is always persisted.
+    notifier = null;
+  }
+  const healthService = new FleetHealthService({ repository, notifier });
+  fleetRuntime = {
+    repository,
+    manager,
+    healthService,
+    router: createFleetRouter({
+      repository,
+      manager,
+      healthService,
+      verifyCsrf: (req) => req.forgeCsrfVerified === true,
+      getOwnerId: (req) => req.forgeSession?.id ?? null,
+    }),
+  };
+  return fleetRuntime;
+}
+
+function fleetUnavailable(res) {
+  return res.status(503).json({
+    code: "DIRECTOR_FLEET_UNAVAILABLE",
+    message: "Director fleet management requires durable PostgreSQL persistence.",
+  });
+}
+
+app.use(
+  "/api/fleet",
+  (req, res, next) => {
+    if (process.env.NODE_ENV === "production" && !postgres?.pool) return fleetUnavailable(res);
+    return next();
+  },
+  authenticateOwner,
+  createForgeOwnerSessionGate({ findOwnerById: (id) => ownersRepo.findById(id) }),
+  forgeCsrfGuard,
+  (req, res, next) => {
+    let runtime;
+    try {
+      runtime = getFleetRuntime();
+    } catch (error) {
+      logInternalError("DIRECTOR_FLEET_WIRING_FAILED", error);
+      return fleetUnavailable(res);
+    }
+    if (!runtime) return fleetUnavailable(res);
+    return runtime.router(req, res, next);
+  }
+);
+
+// Director Communication Studio (Owner -> Director AI via server-side Gemini).
 // Mounted behind the SAME Owner session and CSRF controls as every other Owner
 // route, plus a dedicated limiter: an unauthenticated caller must never read a
 // Director conversation or spend the Owner's provider quota. The router itself
