@@ -86,9 +86,13 @@ test(
   async () => {
     const created = await createDisposableDatabase(POSTGRES_URL, "stph_acceptance");
     const pool = new pg.Pool({ connectionString: created.connectionString, max: 12 });
+    // Teardown drops the disposable database WITH (FORCE); observe the idle-client
+    // 57P01 a closing socket can receive instead of failing on teardown noise.
+    pool.on("error", () => {});
     const extraPools = [];
     const newPool = () => {
       const instance = new pg.Pool({ connectionString: created.connectionString, max: 4 });
+      instance.on("error", () => {});
       extraPools.push(instance);
       return instance;
     };

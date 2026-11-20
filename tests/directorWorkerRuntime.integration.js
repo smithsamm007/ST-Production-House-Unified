@@ -129,6 +129,10 @@ test(
   async () => {
     const created = await createDisposableDatabase(POSTGRES_URL, "stph_acceptance");
     const pool = new pg.Pool({ connectionString: created.connectionString, max: 16 });
+    // The disposable database is dropped WITH (FORCE) in teardown; a closing client
+    // socket can receive the backend's 57P01 as an idle-client error. Observe it so
+    // teardown cannot masquerade as a suite failure.
+    pool.on("error", () => {});
     const artifactsRoot = mkdtempSync(path.join(os.tmpdir(), "stph-worker-acceptance-"));
     mkdirSync(path.join(artifactsRoot, "inputs"), { recursive: true });
     writeFileSync(path.join(artifactsRoot, "inputs", "alpha-source.md"), SOURCE);

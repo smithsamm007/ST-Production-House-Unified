@@ -220,6 +220,9 @@ test(
 
       // -------------------------------------------------------- migrations
       const admin = new pg.Pool({ connectionString: created.connectionString, max: 2 });
+      // The server's disposable database is dropped WITH (FORCE) after shutdown; a
+      // closing socket can receive 57P01 as an idle-client error during teardown.
+      admin.on("error", () => {});
       try {
         const applied = await admin.query("SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1");
         assert.equal(applied.rows[0].filename, "046_director_worker_runtime.sql");
