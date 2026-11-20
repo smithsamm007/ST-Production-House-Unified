@@ -41,6 +41,16 @@
  *   POST   /tasks/recover                          expire leases / requeue
  *   POST   /tasks/:taskId/complete                 evidence-gated completion
  *   POST   /tasks/:taskId/fail                     bounded retry / dead letter
+ *   GET    /workers/registry                       runtime registry + capabilities
+ *   POST   /workers/register                       durable runtime registration
+ *   POST   /workers/:workerKey/heartbeat           instance-checked heartbeat
+ *   GET    /workers/:workerKey/history             append-only worker audit
+ *   POST   /workers/:workerKey/drain               Owner drain control
+ *   POST   /workers/:workerKey/restart             Owner restart request
+ *   GET    /workers/metrics                        execution metrics from SQL
+ *   GET    /tasks/dead-letters                     dead-letter inspection
+ *   GET    /tasks/:taskId/checkpoints              durable checkpoints
+ *   GET    /directors/:directorId/tasks/:taskId/execution  evidence + checkpoints + worker
  *
  * Nothing here publishes, spends money or contacts a provider.
  */
@@ -67,6 +77,8 @@ export function createFleetRouter({
   repository,
   manager,
   healthService = null,
+  workerRepository = null,
+  workerRuntimeProvider = () => null,
   getOwnerId = (req) => req?.forgeSession?.id ?? null,
   verifyCsrf = () => false,
   logger = console,
@@ -301,6 +313,7 @@ export function createFleetRouter({
         maxAttempts: body.maxAttempts,
         providerRequirement: body.providerRequirement ?? null,
         assignmentReason: body.assignmentReason ?? null,
+        input: body.input ?? {},
       });
       return res.status(result.deduplicated ? 200 : 201).json(result);
     })
@@ -367,6 +380,152 @@ export function createFleetRouter({
     })
   );
 
+  // ------------------------------------------------------------ worker runtime
+  // A registered runtime may only claim within its stage types, capabilities and
+  // Director scope. These routes require the same Owner session + CSRF as every
+  // other fleet mutation; a browser is never accepted as a worker heartbeat.
+  const requireWorkerRepository = (res) => {
+    if (workerRepository) return true;
+    fail(res, "WORKER_RUNTIME_UNAVAILABLE", "The durable worker registry is not configured.", 503);
+    return false;
+  };
+
+  router.get(
+    "/workers/registry",
+    guard(async (req, res) => {
+      if (!requireWorkerRepository(res)) return undefined;
+      const workers = await workerRepository.listWorkers();
+      return res.status(200).json({
+        count: workers.length,
+        workers,
+        runtime: workerRuntimeProvider?.()?.status?.() ?? null,
+      });
+    })
+  );
+
+  router.get(
+    "/workers/metrics",
+    guard(async (req, res) => {
+      if (!requireWorkerRepository(res)) return undefined;
+      return res.status(200).json(await workerRepository.metrics());
+    })
+  );
+
+  router.post(
+    "/workers/register",
+    guard(async (req, res) => {
+      if (!requireWorkerRepository(res)) return undefined;
+      const body = req.body ?? {};
+      const registration = await workerRepository.registerWorker({
+        workerKey: body.workerKey,
+        workerType: body.workerType ?? "production_worker",
+        instanceId: body.instanceId ?? instanceId,
+        runtimeInstanceId: body.runtimeInstanceId ?? null,
+        role: body.role ?? "production",
+        stageTypes: Array.isArray(body.stageTypes) ? body.stageTypes : [],
+        capabilities: Array.isArray(body.capabilities) ? body.capabilities : [],
+        directorScope: Array.isArray(body.directorScope) ? body.directorScope : [],
+        configVersion: body.configVersion ?? 1,
+        metadata: body.metadata ?? {},
+        actor: { id: "forge-runtime", role: "FORGE" },
+        correlationId: correlationOf(req),
+      });
+      return res.status(registration.registered ? 201 : 200).json(registration);
+    })
+  );
+
+  router.post(
+    "/workers/:workerKey/heartbeat",
+    guard(async (req, res) => {
+      if (!requireWorkerRepository(res)) return undefined;
+      const beat = await workerRepository.heartbeat({
+        workerKey: req.params.workerKey,
+        instanceId: req.body?.instanceId ?? instanceId,
+        state: req.body?.state ?? null,
+        metadata: req.body?.metadata ?? null,
+      });
+      return res.status(200).json({ worker: beat });
+    })
+  );
+
+  router.get(
+    "/workers/:workerKey/history",
+    guard(async (req, res) => {
+      if (!requireWorkerRepository(res)) return undefined;
+      const history = await workerRepository.workerHistory({
+        workerKey: req.params.workerKey,
+        limit: req.query.limit,
+      });
+      return res.status(200).json({ count: history.length, history });
+    })
+  );
+
+  router.post(
+    "/workers/:workerKey/drain",
+    guard(async (req, res, ownerId) => {
+      if (!requireWorkerRepository(res)) return undefined;
+      const result = await workerRepository.drain({
+        workerKey: req.params.workerKey,
+        reason: req.body?.reason ?? "Owner requested drain through the console",
+        actor: actorOf(ownerId),
+        correlationId: correlationOf(req),
+      });
+      return res.status(200).json(result);
+    })
+  );
+
+  router.post(
+    "/workers/:workerKey/restart",
+    guard(async (req, res, ownerId) => {
+      if (!requireWorkerRepository(res)) return undefined;
+      const result = await workerRepository.requestRestart({
+        workerKey: req.params.workerKey,
+        reason: req.body?.reason ?? "Owner requested restart through the console",
+        actor: actorOf(ownerId),
+        correlationId: correlationOf(req),
+      });
+      return res.status(200).json(result);
+    })
+  );
+
+  router.get(
+    "/tasks/dead-letters",
+    guard(async (req, res) => {
+      if (!requireWorkerRepository(res)) return undefined;
+      const tasks = await workerRepository.listDeadLetters({
+        directorId: typeof req.query.directorId === "string" ? req.query.directorId : null,
+        limit: req.query.limit,
+      });
+      return res.status(200).json({ count: tasks.length, tasks });
+    })
+  );
+
+  router.get(
+    "/tasks/:taskId/checkpoints",
+    guard(async (req, res) => {
+      if (!requireWorkerRepository(res)) return undefined;
+      const checkpoints = await workerRepository.listCheckpoints(req.params.taskId);
+      return res.status(200).json({ count: checkpoints.length, checkpoints });
+    })
+  );
+
+  router.get(
+    "/directors/:directorId/tasks/:taskId/execution",
+    guard(async (req, res) => {
+      const task = await repository.getTask({
+        directorId: req.params.directorId,
+        taskId: req.params.taskId,
+      });
+      if (!task) return fail(res, "TASK_NOT_FOUND", "Task not found for this Director.", 404);
+      const evidence = await repository.listEvidence({
+        directorId: req.params.directorId,
+        taskId: req.params.taskId,
+      });
+      const checkpoints = workerRepository ? await workerRepository.listCheckpoints(req.params.taskId) : [];
+      return res.status(200).json({ task, evidence, checkpoints });
+    })
+  );
+
   // ------------------------------------------------------------ fleet health
   router.get(
     "/health",
@@ -429,11 +588,21 @@ export function createFleetRouter({
   router.post(
     "/tasks/claim",
     guard(async (req, res) => {
-      const claim = await repository.claimTask({
-        workerKey: req.body?.workerKey,
-        leaseSeconds: req.body?.leaseSeconds,
-        directorId: req.body?.directorId ?? null,
-      });
+      // Claims go through the worker registry when it exists: worker state,
+      // capability and Director scope are enforced here, and the atomic claim
+      // itself remains the fenced Day 5 operation.
+      const claim = workerRepository
+        ? await workerRepository.claimTask({
+            workerKey: req.body?.workerKey,
+            leaseSeconds: req.body?.leaseSeconds,
+            directorId: req.body?.directorId ?? null,
+            maxPerDirector: req.body?.maxPerDirector ?? null,
+          })
+        : await repository.claimTask({
+            workerKey: req.body?.workerKey,
+            leaseSeconds: req.body?.leaseSeconds,
+            directorId: req.body?.directorId ?? null,
+          });
       if (!claim) return res.status(204).end();
       return res.status(claim.claimed ? 200 : 409).json(claim);
     })

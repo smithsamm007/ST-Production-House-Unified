@@ -132,6 +132,9 @@ export function taskDto(row) {
     cancelRequested: row.cancel_requested === true,
     providerRequirement: row.provider_requirement ?? null,
     providerState: row.provider_state,
+    input: row.input ?? {},
+    claimedWorkerKey: row.claimed_worker_key ?? null,
+    claimCount: Number(row.claim_count ?? 0),
     blockedReason: row.blocked_reason ?? null,
     lastError: row.last_error ?? null,
     resultRef: row.result_ref ?? null,
@@ -150,6 +153,18 @@ export function evidenceDto(row) {
     evidenceType: row.evidence_type,
     artifactHash: row.artifact_hash ?? null,
     payload: row.payload ?? {},
+    handlerName: row.handler_name ?? null,
+    handlerVersion: row.handler_version ?? null,
+    verificationLevel: row.verification_level ?? "IMPLEMENTED",
+    environment: row.environment ?? "PRODUCTION",
+    testFixture: row.test_fixture === true,
+    workerKey: row.worker_key ?? null,
+    fencingToken: row.fencing_token === null || row.fencing_token === undefined ? null : Number(row.fencing_token),
+    inputRefs: row.input_refs ?? [],
+    outputRefs: row.output_refs ?? [],
+    validation: row.validation ?? {},
+    startedAt: iso(row.started_at),
+    completedAt: iso(row.completed_at),
     createdAt: iso(row.created_at),
   });
 }
@@ -638,6 +653,7 @@ export class PostgresDirectorFleetRepository {
     maxAttempts = 3,
     providerRequirement = null,
     assignmentReason = null,
+    input = {},
   }) {
     assertDirectorId(directorId);
     if (!isKnownStage(stage)) {
@@ -685,8 +701,8 @@ export class PostgresDirectorFleetRepository {
         inserted = await client.query(
           `INSERT INTO director_tasks
              (director_id, project_id, universe_id, stage, task_type, priority, idempotency_key,
-              assignment_reason, due_at, max_attempts, provider_requirement, correlation_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+              assignment_reason, due_at, max_attempts, provider_requirement, correlation_id, input)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
            RETURNING *`,
           [
             directorId,
@@ -701,6 +717,7 @@ export class PostgresDirectorFleetRepository {
             Math.max(1, Math.min(10, Number(maxAttempts) || 3)),
             providerRequirement,
             correlation,
+            JSON.stringify(input ?? {}),
           ]
         );
       } catch (error) {
@@ -833,11 +850,12 @@ export class PostgresDirectorFleetRepository {
   }
 
   /** Non-throwing evidence evaluation, so a claim can persist an honest block. */
-  async #evidenceStatus(client, taskId, stage) {
+  async #evidenceStatus(client, taskId, stage, { includeTestFixtures = true } = {}) {
     const required = evidenceRequiredFor(stage);
     const { rows } = await client.query(
-      "SELECT evidence_type, artifact_hash FROM director_task_evidence WHERE task_id = $1",
-      [taskId]
+      `SELECT evidence_type, artifact_hash, test_fixture FROM director_task_evidence
+        WHERE task_id = $1 AND ($2::boolean OR test_fixture = FALSE)`,
+      [taskId, includeTestFixtures === true]
     );
     const present = new Set(rows.map((row) => row.evidence_type));
     const missing = required.filter((type) => !present.has(type));
@@ -861,8 +879,8 @@ export class PostgresDirectorFleetRepository {
     return { ok: true, rows };
   }
 
-  async #assertEvidencePresent(client, taskId, stage, { code = FLEET_ERROR.TASK_STAGE_EVIDENCE_MISSING } = {}) {
-    const status = await this.#evidenceStatus(client, taskId, stage);
+  async #assertEvidencePresent(client, taskId, stage, { code = FLEET_ERROR.TASK_STAGE_EVIDENCE_MISSING, includeTestFixtures = true } = {}) {
+    const status = await this.#evidenceStatus(client, taskId, stage, { includeTestFixtures });
     if (!status.ok) throw new FleetError(code, status.reason, 409);
     return status.rows;
   }
@@ -926,22 +944,41 @@ export class PostgresDirectorFleetRepository {
    * Atomically claim one due task. Two workers can never receive the same task:
    * the candidate row is locked with SKIP LOCKED and the lease is unique per task.
    */
-  async claimTask({ workerKey, leaseSeconds = 60, directorId = null }) {
+  async claimTask({
+    workerKey,
+    leaseSeconds = 60,
+    directorId = null,
+    allowedStages = null,
+    requireActiveDirector = false,
+    maxPerActivePerDirector = null,
+    directorScope = [],
+  }) {
     if (typeof workerKey !== "string" || workerKey.length === 0 || workerKey.length > 120) {
       throw new FleetError("WORKER_KEY_INVALID", "A worker key is required.", 400);
     }
     const lease = Math.max(5, Math.min(3600, Number(leaseSeconds) || 60));
+    const stages = Array.isArray(allowedStages) && allowedStages.length > 0 ? JSON.stringify(allowedStages) : null;
+    const scope = Array.isArray(directorScope) && directorScope.length > 0 ? JSON.stringify(directorScope) : null;
+    const perDirector = maxPerActivePerDirector === null ? null : Math.max(1, Number(maxPerActivePerDirector) || 1);
     return this._tx(async (client) => {
       const candidate = await client.query(
-        `SELECT * FROM director_tasks
-          WHERE status IN ('QUEUED','RETRY_SCHEDULED')
-            AND cancel_requested = FALSE
-            AND next_run_at <= clock_timestamp()
-            AND ($1::text IS NULL OR director_id = $1)
-          ORDER BY priority ASC, next_run_at ASC
+        `SELECT * FROM director_tasks t
+          WHERE t.status IN ('QUEUED','RETRY_SCHEDULED')
+            AND t.cancel_requested = FALSE
+            AND t.next_run_at <= clock_timestamp()
+            AND ($1::text IS NULL OR t.director_id = $1)
+            AND ($2::jsonb IS NULL OR t.stage IN (SELECT jsonb_array_elements_text($2::jsonb)))
+            AND ($5::jsonb IS NULL OR t.director_id IN (SELECT jsonb_array_elements_text($5::jsonb)))
+            AND (NOT $3::boolean OR EXISTS (
+                  SELECT 1 FROM director_fleet f
+                   WHERE f.director_id = t.director_id AND f.lifecycle_state = 'ACTIVE'))
+            AND ($4::int IS NULL OR (
+                  SELECT count(*) FROM director_tasks r
+                   WHERE r.director_id = t.director_id AND r.status = 'RUNNING') < $4)
+          ORDER BY t.priority ASC, t.next_run_at ASC
           FOR UPDATE SKIP LOCKED
           LIMIT 1`,
-        [directorId]
+        [directorId, stages, requireActiveDirector === true, perDirector, scope]
       );
       const task = candidate.rows[0];
       if (!task) return null;
@@ -989,10 +1026,12 @@ export class PostgresDirectorFleetRepository {
             SET status = 'RUNNING',
                 active_fencing_token = active_fencing_token + 1,
                 attempt_count = attempt_count + 1,
+                claim_count = claim_count + 1,
+                claimed_worker_key = $2,
                 updated_at = clock_timestamp()
           WHERE id = $1
           RETURNING *`,
-        [task.id]
+        [task.id, workerKey]
       );
       const leased = updated.rows[0];
       await client.query(
@@ -1041,7 +1080,16 @@ export class PostgresDirectorFleetRepository {
    * stages, a verified artifact hash. A queued task or a called handler is never
    * completion.
    */
-  async completeTask({ directorId, taskId, workerKey, fencingToken, resultRef, evidence = [], correlationId = randomUUID() }) {
+  async completeTask({
+    directorId,
+    taskId,
+    workerKey,
+    fencingToken,
+    resultRef,
+    evidence = [],
+    allowTestFixtures = false,
+    correlationId = randomUUID(),
+  }) {
     assertDirectorId(directorId);
     if (typeof resultRef !== "string" || resultRef.length === 0 || resultRef.length > 300) {
       throw new FleetError(FLEET_ERROR.TASK_RESULT_REQUIRED, "A result reference is required.", 400);
@@ -1060,6 +1108,27 @@ export class PostgresDirectorFleetRepository {
       if (task.status !== "RUNNING") {
         throw new FleetError(FLEET_ERROR.TASK_NOT_ASSIGNABLE, `Task is ${task.status}, not RUNNING.`, 409);
       }
+      // Cancellation is absolute: a running worker's result is refused rather
+      // than committed over an Owner/HERMES cancellation.
+      if (task.cancel_requested === true) {
+        await client.query(
+          `UPDATE director_tasks
+              SET status = 'CANCELLED', blocked_reason = 'CANCELLED_WHILE_RUNNING', updated_at = clock_timestamp()
+            WHERE id = $1`,
+          [taskId]
+        );
+        await client.query(
+          `UPDATE director_task_leases
+              SET released_at = clock_timestamp(), release_reason = 'cancelled'
+            WHERE task_id = $1 AND released_at IS NULL`,
+          [taskId]
+        );
+        throw new FleetError(
+          FLEET_ERROR.TASK_NOT_CANCELLABLE,
+          "The task was cancelled while running; its result is refused.",
+          409
+        );
+      }
       await this.#assertActiveLease(client, { taskId, workerKey, fencingToken });
 
       for (const entry of evidence) {
@@ -1070,17 +1139,54 @@ export class PostgresDirectorFleetRepository {
           throw new FleetError("TASK_EVIDENCE_HASH_INVALID", "Artifact hash must be 64 lowercase hex characters.", 400);
         }
         await client.query(
-          `INSERT INTO director_task_evidence (task_id, director_id, stage, evidence_type, artifact_hash, payload)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+          `INSERT INTO director_task_evidence
+             (task_id, director_id, stage, evidence_type, artifact_hash, payload, handler_name, handler_version,
+              verification_level, environment, test_fixture, worker_key, fencing_token, input_refs, output_refs,
+              validation, started_at, completed_at)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8,
+                   COALESCE($9, 'IMPLEMENTED'), COALESCE($10, 'PRODUCTION'), $11::boolean, $12, $13,
+                   COALESCE($14::jsonb, '[]'::jsonb), COALESCE($15::jsonb, '[]'::jsonb),
+                   COALESCE($16::jsonb, '{}'::jsonb), $17, $18)
            ON CONFLICT (task_id, evidence_type) DO UPDATE
              SET artifact_hash = EXCLUDED.artifact_hash,
-                 payload = EXCLUDED.payload
+                 payload = EXCLUDED.payload,
+                 handler_name = EXCLUDED.handler_name,
+                 handler_version = EXCLUDED.handler_version,
+                 verification_level = EXCLUDED.verification_level,
+                 environment = EXCLUDED.environment,
+                 test_fixture = EXCLUDED.test_fixture,
+                 worker_key = EXCLUDED.worker_key,
+                 fencing_token = EXCLUDED.fencing_token,
+                 input_refs = EXCLUDED.input_refs,
+                 output_refs = EXCLUDED.output_refs,
+                 validation = EXCLUDED.validation,
+                 started_at = EXCLUDED.started_at,
+                 completed_at = EXCLUDED.completed_at
            WHERE director_task_evidence.director_id = EXCLUDED.director_id`,
-          [taskId, directorId, task.stage, entry.evidenceType, entry.artifactHash ?? null, JSON.stringify(entry.payload ?? {})]
+          [
+            taskId,
+            directorId,
+            task.stage,
+            entry.evidenceType,
+            entry.artifactHash ?? null,
+            JSON.stringify(entry.payload ?? {}),
+            entry.handlerName ?? null,
+            entry.handlerVersion ?? null,
+            entry.verificationLevel ?? null,
+            entry.environment ?? null,
+            entry.testFixture === true,
+            entry.workerKey ?? workerKey ?? null,
+            entry.fencingToken ?? (Number(fencingToken) || null),
+            entry.inputRefs ? JSON.stringify(entry.inputRefs) : null,
+            entry.outputRefs ? JSON.stringify(entry.outputRefs) : null,
+            entry.validation ? JSON.stringify(entry.validation) : null,
+            entry.startedAt ?? null,
+            entry.completedAt ?? null,
+          ]
         );
       }
 
-      await this.#assertEvidencePresent(client, taskId, task.stage);
+      await this.#assertEvidencePresent(client, taskId, task.stage, { includeTestFixtures: allowTestFixtures === true });
 
       const { rows } = await client.query(
         `UPDATE director_tasks
@@ -1266,6 +1372,44 @@ export class PostgresDirectorFleetRepository {
     });
   }
 
+  /**
+   * Finalize a cancellation that arrived while a worker held the lease. The
+   * worker releases its lease and this records the terminal CANCELLED state with
+   * an audit row; a cancel request is never left half-applied.
+   */
+  async finalizeCancellation({ directorId, taskId, reason = "Cancelled while running", correlationId = randomUUID() }) {
+    assertDirectorId(directorId);
+    return this._tx(async (client) => {
+      const { rows } = await client.query(
+        `UPDATE director_tasks
+            SET status = 'CANCELLED',
+                blocked_reason = 'CANCELLED_WHILE_RUNNING',
+                updated_at = clock_timestamp()
+          WHERE id = $1 AND director_id = $2 AND cancel_requested = TRUE
+            AND status IN ('RUNNING','ASSIGNED','QUEUED','RETRY_SCHEDULED','BLOCKED')
+          RETURNING *`,
+        [taskId, directorId]
+      );
+      if (!rows[0]) return null;
+      await client.query(
+        `UPDATE director_task_leases
+            SET released_at = clock_timestamp(), release_reason = 'cancelled'
+          WHERE task_id = $1 AND released_at IS NULL`,
+        [taskId]
+      );
+      await this.#audit(client, {
+        directorId,
+        action: "DIRECTOR_TASK_CANCELLED",
+        previousState: "RUNNING",
+        newState: "CANCELLED",
+        reason,
+        actor: { id: "forge-worker", role: "FORGE" },
+        correlationId,
+      });
+      return taskDto(rows[0]);
+    });
+  }
+
   /** Restart recovery: expire leases with the database clock and requeue honestly. */
   async recoverExpiredLeases({ directorId = null } = {}) {
     return this._tx(async (client) => {
@@ -1309,6 +1453,47 @@ export class PostgresDirectorFleetRepository {
         recovered.push({
           taskId: lease.task_id,
           outcome: exhausted ? "DEAD_LETTER" : "RETRY_SCHEDULED",
+        });
+      }
+
+      // A worker that released its lease on shutdown (or whose lease was reclaimed
+      // externally) can leave a task RUNNING with no active lease. That task is
+      // unreachable by the expired-lease scan above, so it is reclaimed here —
+      // otherwise it would sit RUNNING forever and never be retried.
+      const orphaned = await client.query(
+        `SELECT t.* FROM director_tasks t
+          WHERE t.status = 'RUNNING'
+            AND NOT EXISTS (
+              SELECT 1 FROM director_task_leases l
+               WHERE l.task_id = t.id AND l.released_at IS NULL)
+            AND ($1::text IS NULL OR t.director_id = $1)
+          FOR UPDATE OF t SKIP LOCKED`,
+        [directorId]
+      );
+      for (const task of orphaned.rows) {
+        const exhausted = Number(task.attempt_count) >= Number(task.max_attempts);
+        await client.query(
+          `UPDATE director_tasks
+              SET status = $2,
+                  blocked_reason = CASE WHEN $2 = 'DEAD_LETTER' THEN 'ORPHANED_RUN_ATTEMPTS_EXHAUSTED' ELSE NULL END,
+                  next_run_at = clock_timestamp(),
+                  updated_at = clock_timestamp()
+            WHERE id = $1`,
+          [task.id, exhausted ? "DEAD_LETTER" : "RETRY_SCHEDULED"]
+        );
+        await this.#audit(client, {
+          directorId: task.director_id,
+          action: exhausted ? "DIRECTOR_TASK_DEAD_LETTER" : "DIRECTOR_TASK_RETRY_SCHEDULED",
+          previousState: "RUNNING",
+          newState: exhausted ? "DEAD_LETTER" : "RETRY_SCHEDULED",
+          reason: "Recovered a running task that holds no active lease.",
+          actor: { id: "forge-recovery", role: "FORGE" },
+          correlationId: randomUUID(),
+          policyRef: "LEASE_RECOVERY",
+        });
+        recovered.push({
+          taskId: task.id,
+          outcome: exhausted ? "DEAD_LETTER" : "ORPHANED_RUNNING_REQUEUED",
         });
       }
       return recovered;

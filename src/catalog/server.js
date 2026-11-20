@@ -78,6 +78,9 @@ import { createFleetRouter } from "../api/fleetRouter.js";
 import { PostgresDirectorFleetRepository } from "../fleet/fleetRepository.js";
 import { HermesFleetManager } from "../fleet/hermesFleetManager.js";
 import { FleetHealthService } from "../fleet/fleetHealthService.js";
+import { PostgresDirectorWorkerRepository } from "../fleet/workerRepository.js";
+import { createStageHandlerRegistry } from "../worker/stageHandlers.js";
+import { createDirectorWorkerRuntime } from "../worker/workerRuntime.js";
 import { createDirectorCommunicationRouter } from "../communication/directorCommunicationRouter.js";
 import { DirectorCommunicationService } from "../communication/directorCommunicationService.js";
 import { PostgresConversationRepository } from "../communication/postgresConversationRepository.js";
@@ -452,6 +455,18 @@ export async function finalizeRuntimeStartup() {
       }
     } catch (error) {
       logInternalError("NOTIFICATION_WORKER_START_FAILED", error);
+    }
+  }
+
+  // Day 6: the Director worker runtime. Opt-in (STPH_DIRECTOR_WORKERS=1) because
+  // it executes real stages. Registration is durable and the heartbeat is a real
+  // database write; a failure here degrades honestly and never fakes a worker.
+  if (process.env.STPH_DIRECTOR_WORKERS === "1" && storageMode === "postgres" && postgres?.pool) {
+    try {
+      const started = await startDirectorWorkerRuntime();
+      console.log(JSON.stringify({ level: started.started ? "info" : "warn", code: "DIRECTOR_WORKER_RUNTIME", ...started }));
+    } catch (error) {
+      logInternalError("DIRECTOR_WORKER_START_FAILED", error);
     }
   }
 
@@ -2281,10 +2296,12 @@ app.use(
 // available, and are persisted durably even when it is not.
 // ---------------------------------------------------------------------------
 let fleetRuntime = null;
+let directorWorkerRuntime = null;
 function getFleetRuntime() {
   if (fleetRuntime) return fleetRuntime;
   if (!postgres?.pool) return null;
   const repository = new PostgresDirectorFleetRepository(postgres.pool);
+  const workerRepository = new PostgresDirectorWorkerRepository(postgres.pool, { fleet: repository });
   const manager = new HermesFleetManager({ repository });
   let notifier = null;
   try {
@@ -2296,17 +2313,73 @@ function getFleetRuntime() {
   const healthService = new FleetHealthService({ repository, notifier });
   fleetRuntime = {
     repository,
+    workerRepository,
     manager,
     healthService,
-    router: createFleetRouter({
-      repository,
-      manager,
-      healthService,
-      verifyCsrf: (req) => req.forgeCsrfVerified === true,
-      getOwnerId: (req) => req.forgeSession?.id ?? null,
-    }),
+    router: null,
   };
+  fleetRuntime.router = createFleetRouter({
+    repository,
+    manager,
+    healthService,
+    workerRepository,
+    workerRuntimeProvider: () => directorWorkerRuntime,
+    verifyCsrf: (req) => req.forgeCsrfVerified === true,
+    getOwnerId: (req) => req.forgeSession?.id ?? null,
+  });
   return fleetRuntime;
+}
+
+/**
+ * Start the real Director worker runtime. Awaiting registration means a failed
+ * registration is reported to the caller instead of being hidden by a timer.
+ */
+export async function startDirectorWorkerRuntime({
+  workerKey = process.env.STPH_WORKER_KEY || `stph-director-worker-${process.pid}`,
+  stageTypes = (process.env.STPH_WORKER_STAGES || "RESEARCH,SCRIPT,CHARACTERS").split(",").map((value) => value.trim()).filter(Boolean),
+  capabilities = (process.env.STPH_WORKER_CAPABILITIES || "document.structure,metadata.validation").split(",").map((value) => value.trim()).filter(Boolean),
+  directorScope = (process.env.STPH_WORKER_DIRECTORS || "").split(",").map((value) => value.trim()).filter(Boolean),
+  concurrency = Number(process.env.STPH_WORKER_CONCURRENCY) || 1,
+} = {}) {
+  const runtime = getFleetRuntime();
+  if (!runtime) return { started: false, reason: "STORAGE_NOT_CONFIGURED" };
+  if (directorWorkerRuntime) {
+    return { started: false, reason: "ALREADY_RUNNING", workerKey: directorWorkerRuntime.workerKey };
+  }
+  const environment = process.env.NODE_ENV === "test" ? "TEST" : "PRODUCTION";
+  const registry = createStageHandlerRegistry({
+    artifactsRoot: process.env.STPH_WORKER_ARTIFACTS_ROOT || null,
+    environment,
+    ffprobeAvailable: process.env.STPH_WORKER_FFPROBE === "0" ? false : null,
+  });
+  directorWorkerRuntime = createDirectorWorkerRuntime({
+    repository: runtime.workerRepository,
+    fleet: runtime.repository,
+    registry,
+    workerKey,
+    instanceId: process.env.STPH_INSTANCE_ID || `runtime-${process.pid}`,
+    stageTypes,
+    capabilities,
+    directorScope,
+    concurrency,
+    leaseSeconds: Number(process.env.STPH_WORKER_LEASE_SECONDS) || 60,
+    heartbeatSeconds: Number(process.env.STPH_WORKER_HEARTBEAT_SECONDS) || 20,
+    pollIntervalMs: Number(process.env.STPH_WORKER_POLL_MS) || 1000,
+    artifactsRoot: process.env.STPH_WORKER_ARTIFACTS_ROOT || null,
+    environment,
+    testFixture: false,
+  });
+  // Registration is awaited (a failure must surface at boot); the loop itself is
+  // a long-lived process, so it is not awaited here.
+  await directorWorkerRuntime.register();
+  void directorWorkerRuntime.start().catch((error) => {
+    logInternalError("DIRECTOR_WORKER_LOOP_FAILED", error);
+  });
+  return { started: true, workerKey, stageTypes, concurrency, environment };
+}
+
+export function getDirectorWorkerRuntimeStatus() {
+  return directorWorkerRuntime ? directorWorkerRuntime.status() : null;
 }
 
 function fleetUnavailable(res) {
@@ -2416,6 +2489,14 @@ export async function closeRuntime() {
     if (notificationRuntime) {
       notificationRuntime.worker.stop();
       notificationRuntime.scheduler.stop();
+    }
+  } catch {
+    // already stopped
+  }
+  try {
+    if (directorWorkerRuntime) {
+      await directorWorkerRuntime.stop({ reason: "Server shutdown" });
+      directorWorkerRuntime = null;
     }
   } catch {
     // already stopped

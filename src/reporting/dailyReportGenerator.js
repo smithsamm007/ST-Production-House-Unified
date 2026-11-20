@@ -330,6 +330,106 @@ export async function collectForgeDailyReport({
     )
   );
 
+  // ------------------------------------------------- Director worker execution
+  // Day 6. Every count is a GROUP BY over durable rows. Queueing, claiming,
+  // handler start, handler completion, evidence verification and production
+  // artifact generation are reported as separate facts, never substituted.
+  const workerStateRows = await guard(() =>
+    queryRows(pool, "SELECT state, count(*)::int AS count FROM director_workers GROUP BY state")
+  );
+  const workerTaskCounters = await guard(() =>
+    queryRows(
+      pool,
+      `SELECT coalesce(sum(claim_count), 0)::int AS claimed,
+              count(*) FILTER (WHERE status = 'COMPLETED' AND claim_count > 0)::int AS completed,
+              count(*) FILTER (WHERE attempt_count > 1)::int AS retried,
+              count(*) FILTER (WHERE status = 'DEAD_LETTER')::int AS dead_lettered,
+              count(*) FILTER (WHERE status IN ('QUEUED','RETRY_SCHEDULED'))::int AS queued,
+              count(*) FILTER (WHERE last_error IS NOT NULL
+                                 AND status IN ('RETRY_SCHEDULED','FAILED','DEAD_LETTER'))::int AS failed,
+              count(*) FILTER (WHERE provider_state IN ('UNAVAILABLE','QUOTA_EXHAUSTED')
+                                 AND status NOT IN ('COMPLETED','CANCELLED'))::int AS provider_blocked,
+              count(*) FILTER (WHERE cancel_requested = TRUE)::int AS cancellation_requested,
+              max(EXTRACT(EPOCH FROM (clock_timestamp() - next_run_at)))
+                FILTER (WHERE status IN ('QUEUED','RETRY_SCHEDULED'))::int AS oldest_pending_seconds
+         FROM director_tasks`
+    )
+  );
+  const workerHandlerStarts = await guard(() =>
+    queryRows(
+      pool,
+      `SELECT count(*)::int AS count FROM director_worker_events
+        WHERE action = 'WORKER_TASK_STARTED' AND created_at >= $1 AND created_at < $2`,
+      params
+    )
+  );
+  const workerEvidenceRows = await guard(() =>
+    queryRows(
+      pool,
+      `SELECT count(*)::int AS total,
+              count(*) FILTER (WHERE test_fixture = FALSE)::int AS production_eligible,
+              count(*) FILTER (WHERE test_fixture = TRUE)::int AS test_fixtures,
+              count(*) FILTER (WHERE handler_name IS NOT NULL)::int AS handler_attributed,
+              count(*) FILTER (WHERE artifact_hash IS NOT NULL)::int AS hash_verified
+         FROM director_task_evidence
+        WHERE created_at >= $1 AND created_at < $2`,
+      params
+    )
+  );
+  const workerStageTypes = await guard(() =>
+    queryRows(
+      pool,
+      `SELECT DISTINCT stage FROM director_task_evidence
+        WHERE handler_name IS NOT NULL AND created_at >= $1 AND created_at < $2
+        ORDER BY stage`,
+      params
+    )
+  );
+  const workerLeaseRecovery = await guard(() =>
+    queryRows(
+      pool,
+      `SELECT count(*)::int AS recovered FROM director_task_leases
+        WHERE release_reason IN ('expired','reclaimed','restart')
+          AND released_at >= $1 AND released_at < $2`,
+      params
+    )
+  );
+  const workerLeaseViolations = await guard(() =>
+    queryRows(
+      pool,
+      `SELECT count(*)::int AS count FROM director_lease_violations
+        WHERE created_at >= $1 AND created_at < $2`,
+      params
+    )
+  );
+  const workerCheckpoints = await guard(() =>
+    queryRows(
+      pool,
+      `SELECT count(*)::int AS count FROM director_task_checkpoints
+        WHERE created_at >= $1 AND created_at < $2`,
+      params
+    )
+  );
+  const workerPerDirector = await guard(() =>
+    queryRows(
+      pool,
+      `SELECT director_id,
+              count(*) FILTER (WHERE status = 'COMPLETED')::int AS completed,
+              count(*) FILTER (WHERE status IN ('RUNNING','QUEUED','RETRY_SCHEDULED'))::int AS in_flight,
+              count(*) FILTER (WHERE status = 'DEAD_LETTER')::int AS dead_lettered
+         FROM director_tasks GROUP BY director_id ORDER BY director_id`
+    )
+  );
+  const workerProductionArtifacts = await guard(() =>
+    queryRows(
+      pool,
+      `SELECT count(*)::int AS count FROM director_task_evidence
+        WHERE artifact_hash IS NOT NULL AND test_fixture = FALSE
+          AND created_at >= $1 AND created_at < $2`,
+      params
+    )
+  );
+
   const approvalsInWindow = await guard(() =>
     queryRows(
       pool,
@@ -815,7 +915,160 @@ export async function collectForgeDailyReport({
     },
   };
 
+  const workerCount = (state) => {
+    if (!workerStateRows.ok) return blocked(workerStateRows.code, { source: "director_workers" });
+    return metric(Number(workerStateRows.value.find((row) => row.state === state)?.count ?? 0), {
+      source: "director_workers",
+      verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+      evidence: { state },
+    });
+  };
+  const workerCounter = (key, source = "director_tasks", extra = null) => {
+    if (!workerTaskCounters.ok) return blocked(workerTaskCounters.code, { source });
+    return metric(Number(workerTaskCounters.value[0]?.[key] ?? 0), {
+      source,
+      verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+      evidence: extra,
+    });
+  };
+
+  const workerExecutionSection = {
+    workersRegistered: workerStateRows.ok
+      ? metric(
+          workerStateRows.value.reduce((sum, row) => sum + Number(row.count ?? 0), 0),
+          { source: "director_workers", verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED }
+        )
+      : blocked(workerStateRows.code, { source: "director_workers" }),
+    workersBusy: workerCount("BUSY"),
+    workersIdle: workerCount("IDLE"),
+    workersDraining: workerCount("DRAINING"),
+    workersOffline: workerStateRows.ok
+      ? metric(
+          workerStateRows.value
+            .filter((row) => ["OFFLINE", "STOPPED"].includes(row.state))
+            .reduce((sum, row) => sum + Number(row.count ?? 0), 0),
+          {
+            source: "director_workers",
+            verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+            evidence: { states: ["OFFLINE", "STOPPED"] },
+          }
+        )
+      : blocked(workerStateRows.code, { source: "director_workers" }),
+    workersDegraded: workerCount("DEGRADED"),
+    tasksQueued: workerCounter("queued"),
+    tasksClaimed: workerCounter("claimed", "director_tasks", { column: "sum(claim_count)" }),
+    handlerStarted: workerHandlerStarts.ok
+      ? metric(Number(workerHandlerStarts.value[0]?.count ?? 0), {
+          source: "director_worker_events",
+          verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+          evidence: { action: "WORKER_TASK_STARTED", window: windowRef },
+        })
+      : blocked(workerHandlerStarts.code, { source: "director_worker_events" }),
+    tasksCompleted: workerCounter("completed"),
+    tasksFailed: workerCounter("failed"),
+    tasksRetried: workerCounter("retried"),
+    tasksDeadLettered: workerCounter("dead_lettered"),
+    tasksRecoveredAfterRestart: workerLeaseRecovery.ok
+      ? metric(Number(workerLeaseRecovery.value[0]?.recovered ?? 0), {
+          source: "director_task_leases",
+          verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+          evidence: { release_reason: ["expired", "reclaimed", "restart"], window: windowRef },
+        })
+      : blocked(workerLeaseRecovery.code, { source: "director_task_leases" }),
+    providerBlockedTasks: workerCounter("provider_blocked"),
+    cancellationsRequested: workerCounter("cancellation_requested"),
+    checkpointsPersisted: workerCheckpoints.ok
+      ? metric(Number(workerCheckpoints.value[0]?.count ?? 0), {
+          source: "director_task_checkpoints",
+          verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+          evidence: { window: windowRef },
+        })
+      : blocked(workerCheckpoints.code, { source: "director_task_checkpoints" }),
+    evidenceRecordsCreated: workerEvidenceRows.ok
+      ? metric(Number(workerEvidenceRows.value[0]?.handler_attributed ?? 0), {
+          source: "director_task_evidence",
+          verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+          evidence: { predicate: "handler_name IS NOT NULL", window: windowRef },
+        })
+      : blocked(workerEvidenceRows.code, { source: "director_task_evidence" }),
+    evidenceHashVerified: workerEvidenceRows.ok
+      ? metric(Number(workerEvidenceRows.value[0]?.hash_verified ?? 0), {
+          source: "director_task_evidence",
+          verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+          evidence: { predicate: "artifact_hash IS NOT NULL", window: windowRef },
+        })
+      : blocked(workerEvidenceRows.code, { source: "director_task_evidence" }),
+    productionEligibleEvidence: workerEvidenceRows.ok
+      ? metric(Number(workerEvidenceRows.value[0]?.production_eligible ?? 0), {
+          source: "director_task_evidence",
+          verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+          evidence: { predicate: "test_fixture = FALSE", window: windowRef },
+        })
+      : blocked(workerEvidenceRows.code, { source: "director_task_evidence" }),
+    testFixtureEvidence: workerEvidenceRows.ok
+      ? metric(Number(workerEvidenceRows.value[0]?.test_fixtures ?? 0), {
+          source: "director_task_evidence",
+          verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+          note: "Fixture evidence is labelled and never counts as production output.",
+          evidence: { predicate: "test_fixture = TRUE", window: windowRef },
+        })
+      : blocked(workerEvidenceRows.code, { source: "director_task_evidence" }),
+    productionArtifactsVerified: workerProductionArtifacts.ok
+      ? metric(Number(workerProductionArtifacts.value[0]?.count ?? 0), {
+          source: "director_task_evidence",
+          verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+          note: "Hashed artifact evidence from non-fixture execution; not a provider receipt.",
+          evidence: { predicate: "artifact_hash IS NOT NULL AND test_fixture = FALSE", window: windowRef },
+        })
+      : blocked(workerProductionArtifacts.code, { source: "director_task_evidence" }),
+    stageTypesExecuted: workerStageTypes.ok
+      ? metric(
+          workerStageTypes.value.map((row) => row.stage),
+          { source: "director_task_evidence", verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED }
+        )
+      : blocked(workerStageTypes.code, { source: "director_task_evidence" }),
+    directorExecution: workerPerDirector.ok
+      ? metric(
+          workerPerDirector.value.map((row) => ({
+            directorId: row.director_id,
+            completed: Number(row.completed ?? 0),
+            inFlight: Number(row.in_flight ?? 0),
+            deadLettered: Number(row.dead_lettered ?? 0),
+          })),
+          { source: "director_tasks", verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED }
+        )
+      : blocked(workerPerDirector.code, { source: "director_tasks" }),
+    oldestPendingTaskSeconds: workerTaskCounters.ok
+      ? metric(
+          workerTaskCounters.value[0]?.oldest_pending_seconds === null ||
+          workerTaskCounters.value[0]?.oldest_pending_seconds === undefined
+            ? 0
+            : Number(workerTaskCounters.value[0].oldest_pending_seconds),
+          { source: "director_tasks", verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED }
+        )
+      : blocked(workerTaskCounters.code, { source: "director_tasks" }),
+    leaseViolations: workerLeaseViolations.ok
+      ? metric(Number(workerLeaseViolations.value[0]?.count ?? 0), {
+          source: "director_lease_violations",
+          verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+          evidence: { window: windowRef },
+        })
+      : blocked(workerLeaseViolations.code, { source: "director_lease_violations" }),
+    executionFidelity: {
+      queuedIsNotCompleted: "tasksQueued counts queued work; tasksCompleted requires evidence-verified completion.",
+      claimedIsNotStarted: "tasksClaimed counts claims; handlerStarted counts durable start events.",
+      startedIsNotCompleted: "handlerStarted is a start marker; tasksCompleted is an evidence-gated transition.",
+      completionIsNotProductionArtifact:
+        "tasksCompleted is a fleet state; productionArtifactsVerified requires a real hash from non-fixture execution.",
+      providerReceipts: notRun("NO_PROVIDER_RECEIPT_IN_WORKER_EVIDENCE", {
+        source: "provider_receipts",
+        note: "No provider was configured or called in this milestone; no receipt is claimed.",
+      }),
+    },
+  };
+
   const sections = {
+    workerExecution: workerExecutionSection,
     directorFleet: directorFleetSection,
     executiveSummary: {
       overallCondition: blockers.length === 0 ? "NOMINAL" : "DEGRADED",
@@ -1155,6 +1408,22 @@ export async function collectForgeDailyReport({
       },
     },
     {
+      claimId: "worker.execution",
+      statement: "Director worker execution counters are read from durable rows",
+      verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
+      evidence: {
+        tables: [
+          "director_workers",
+          "director_worker_events",
+          "director_task_leases",
+          "director_task_checkpoints",
+          "director_task_evidence",
+          "director_lease_violations",
+        ],
+        note: "A claim, a handler start, a completion and a production artifact are four distinct facts.",
+      },
+    },
+    {
       claimId: "notifications.delivery",
       statement: "Notification delivery outcomes per channel",
       verification: REPORT_ACCURACY_STATES.INTEGRATION_TESTED,
@@ -1191,6 +1460,10 @@ export async function collectForgeDailyReport({
         "director_tasks",
         "director_task_evidence",
         "director_workers",
+        "director_worker_events",
+        "director_task_leases",
+        "director_task_checkpoints",
+        "director_lease_violations",
         "director_fleet_escalations",
         "agents",
         "jobs",
