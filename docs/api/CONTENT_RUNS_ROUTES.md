@@ -101,3 +101,9 @@ recomputation mirroring `EvidenceLedger` exactly.
 Evidence from this slice: `npm test` 507/507 passing (10 new), `npm run
 verify`, `npm run lint`, and `npm run plan:check` all pass on the slice
 branch.
+
+> **Durable Director history is a separate surface.** This router reads the
+> legacy `jobs` queue and an optional in-memory ledger. Real Director production
+> runs, stage tasks and stage evidence are served by the durable read model at
+> `/api/fleet/content-packages` — see `CONTENT_PACKAGE_RUNS_DURABLE.md`.
+> S-M18-01's durable half lives there; this document is unchanged.

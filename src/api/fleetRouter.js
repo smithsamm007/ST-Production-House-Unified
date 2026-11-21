@@ -78,6 +78,7 @@ export function createFleetRouter({
   manager,
   healthService = null,
   workerRepository = null,
+  contentPackageReads = null,
   workerRuntimeProvider = () => null,
   getOwnerId = (req) => req?.forgeSession?.id ?? null,
   verifyCsrf = () => false,
@@ -649,6 +650,48 @@ export function createFleetRouter({
         correlationId: correlationOf(req),
       });
       return res.status(200).json({ task });
+    })
+  );
+
+  // ------------------------------------------------- content package runs (S-M18-01)
+  //
+  // Read-only projections over the durable Director records. Every route is
+  // behind the same Owner session + Owner-role gate as the rest of the fleet
+  // router, and the read repository throws allowlisted 4xx codes rather than
+  // returning raw rows. Nothing here mutates, publishes or contacts a provider.
+
+  const contentPackagesUnavailable = (res) =>
+    fail(
+      res,
+      "CONTENT_PACKAGE_READS_UNAVAILABLE",
+      "Content package history requires the durable PostgreSQL read model.",
+      503
+    );
+
+  router.get(
+    "/content-packages",
+    guard(async (req, res) => {
+      if (!contentPackageReads) return contentPackagesUnavailable(res);
+      const page = await contentPackageReads.listRuns(req.query);
+      return res.status(200).json(page);
+    })
+  );
+
+  router.get(
+    "/content-packages/:packageId",
+    guard(async (req, res) => {
+      if (!contentPackageReads) return contentPackagesUnavailable(res);
+      const detail = await contentPackageReads.getRun(req.params.packageId);
+      return res.status(200).json(detail);
+    })
+  );
+
+  router.get(
+    "/content-packages/:packageId/evidence",
+    guard(async (req, res) => {
+      if (!contentPackageReads) return contentPackagesUnavailable(res);
+      const timeline = await contentPackageReads.listEvidence(req.params.packageId, req.query);
+      return res.status(200).json(timeline);
     })
   );
 

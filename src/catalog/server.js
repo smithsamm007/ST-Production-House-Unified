@@ -79,6 +79,7 @@ import { PostgresDirectorFleetRepository } from "../fleet/fleetRepository.js";
 import { HermesFleetManager } from "../fleet/hermesFleetManager.js";
 import { FleetHealthService } from "../fleet/fleetHealthService.js";
 import { PostgresDirectorWorkerRepository } from "../fleet/workerRepository.js";
+import { PostgresContentPackageReadRepository } from "../fleet/contentPackageReadRepository.js";
 import { createStageHandlerRegistry } from "../worker/stageHandlers.js";
 import { createDirectorWorkerRuntime } from "../worker/workerRuntime.js";
 import { createDirectorCommunicationRouter } from "../communication/directorCommunicationRouter.js";
@@ -2302,6 +2303,7 @@ function getFleetRuntime() {
   if (!postgres?.pool) return null;
   const repository = new PostgresDirectorFleetRepository(postgres.pool);
   const workerRepository = new PostgresDirectorWorkerRepository(postgres.pool, { fleet: repository });
+  const contentPackageReads = new PostgresContentPackageReadRepository(postgres.pool);
   const manager = new HermesFleetManager({ repository });
   let notifier = null;
   try {
@@ -2314,6 +2316,7 @@ function getFleetRuntime() {
   fleetRuntime = {
     repository,
     workerRepository,
+    contentPackageReads,
     manager,
     healthService,
     router: null,
@@ -2323,6 +2326,7 @@ function getFleetRuntime() {
     manager,
     healthService,
     workerRepository,
+    contentPackageReads,
     workerRuntimeProvider: () => directorWorkerRuntime,
     verifyCsrf: (req) => req.forgeCsrfVerified === true,
     getOwnerId: (req) => req.forgeSession?.id ?? null,
