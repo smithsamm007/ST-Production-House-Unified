@@ -191,6 +191,59 @@ export function useProductionStore() {
     }
   }, [state]);
 
+  const refreshDirectorMessages = useCallback(async (agentId: string) => {
+    try {
+      const res = await fetch(
+        `/api/director-comm/${encodeURIComponent(agentId)}/messages`,
+        { credentials: "same-origin" }
+      );
+      if (!res.ok) return;
+      const data = await res.json().catch(() => null);
+      if (!Array.isArray(data?.messages)) return;
+      const serverMessages: DirectorMessage[] = data.messages.map(
+        (m: Record<string, unknown>) => ({
+          id: String(m.id ?? createId()),
+          agentId: String(m.agentId ?? agentId),
+          kind: (m.kind as MessageKind) ?? "conversation",
+          sender: (m.sender as MessageSender) ?? "director",
+          source: m.source as DirectorMessage["source"],
+          outcome: m.outcome as DirectorMessage["outcome"],
+          model: typeof m.model === "string" ? m.model : undefined,
+          clientMessageId:
+            typeof m.clientMessageId === "string"
+              ? m.clientMessageId
+              : undefined,
+          body: String(m.body ?? ""),
+          timestamp:
+            typeof m.createdAt === "string"
+              ? new Date(m.createdAt).toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })
+              : typeof m.timestamp === "string"
+              ? m.timestamp
+              : getCurrentTimeSimple(),
+        })
+      );
+      if (serverMessages.length === 0) return;
+      setState((prev) => ({
+        ...prev,
+        messages: [
+          ...prev.messages.filter((m) => m.agentId !== agentId),
+          ...serverMessages,
+        ],
+      }));
+    } catch {
+      // Keep local/cached conversation intact if backend is unreachable
+    }
+  }, []);
+
+  useEffect(() => {
+    if (currentSection === "communication" && selectedAgentId) {
+      void refreshDirectorMessages(selectedAgentId);
+    }
+  }, [currentSection, selectedAgentId, refreshDirectorMessages]);
+
   const makeEvidence = (
     eventType: string,
     agentId: string,
@@ -280,7 +333,7 @@ export function useProductionStore() {
         agentId,
         ownerId: "owner-01",
         launchTitle: cleanLaunch,
-        activePlatforms: ["YouTube", "Instagram", "Snapchat"],
+        activePlatforms: ["YouTube", "Instagram", "Facebook", "Snapchat", "Bilibili"],
         slots: createCanonicalMediaSlots(cleanLaunch),
       };
 
@@ -1023,6 +1076,7 @@ export function useProductionStore() {
     runSchedulerNow,
     clearSchedulerFeedback: () => setSchedulerFeedback(null),
     sendDirectorMessage,
+    refreshDirectorMessages,
     startProductionRelease,
     advancePipelineStage,
     pauseJob: (id: string) => updateJobStatus(id, "paused"),

@@ -212,3 +212,67 @@ test("repository input validation fails closed before any query runs", async () 
     (error) => error instanceof ApprovalError && error.code === "POLICY_CATEGORY_NOT_DELEGABLE"
   );
 });
+
+test("repository destination validation supports all 5 canonical platforms including bilibili", async () => {
+  const queries = [];
+  const repository = new PostgresPublishingApprovalRepository({
+    query: async (sql, params) => {
+      queries.push({ sql, params });
+      return {
+        rowCount: 1,
+        rows: [
+          {
+            id: params[0],
+            idempotency_key: params[1],
+            owner_id: params[2],
+            director_id: params[3],
+            universe_id: params[4],
+            package_id: params[5],
+            requested_action: "publishing.publish_publicly",
+            artifact_sha256: params[6],
+            destinations: params[7],
+            caption_snapshot: {},
+            policy_version: params[9],
+            delegated_policy_id: params[10],
+            status: "PENDING_NOTIFICATION",
+            decision_reason_codes: [],
+            publishing_authorized: false,
+          },
+        ],
+      };
+    },
+    connect: async () => {
+      throw new Error("CONNECT_MUST_NOT_RUN");
+    },
+  });
+
+  const created = await repository.createRequest({
+    idempotencyKey: "idem-five-platforms-1",
+    ownerId: "11111111-1111-4111-8111-111111111111",
+    directorId: "agent-01",
+    artifactSha256: ARTIFACT,
+    destinations: ["youtube", "instagram", "facebook", "snapchat", "bilibili"],
+    policyVersion: "1",
+  });
+  assert.equal(created.deduplicated, false);
+  assert.deepEqual(created.request.destinations, [
+    "youtube",
+    "instagram",
+    "facebook",
+    "snapchat",
+    "bilibili",
+  ]);
+  assert.equal(queries.length, 1);
+
+  await assert.rejects(
+    repository.createRequest({
+      idempotencyKey: "idem-six-platforms-1",
+      ownerId: "11111111-1111-4111-8111-111111111111",
+      directorId: "agent-01",
+      artifactSha256: ARTIFACT,
+      destinations: ["youtube", "instagram", "facebook", "snapchat", "bilibili", "extra"],
+      policyVersion: "1",
+    }),
+    (error) => error instanceof ApprovalError && error.code === "DESTINATIONS_REQUIRED"
+  );
+});

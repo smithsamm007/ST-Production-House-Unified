@@ -117,3 +117,34 @@ test("analytics service: rejects secret tokens or locators in metadata", async (
     }
   );
 });
+
+test("analytics service: accepts bilibili platform metrics and blocks all canonical internal agent names", async () => {
+  const service = new AnalyticsService();
+
+  const record = await service.ingestAnalytics({
+    ownerId: "owner-01",
+    agentId: "agent-07",
+    platformPostId: "BV1xx411c7mD",
+    platformUrl: "https://www.bilibili.com/video/BV1xx411c7mD",
+    platform: "bilibili",
+    metrics: { views: 4200, likes: 310, shares: 45, commentsCount: 62 }
+  });
+  assert.equal(record.platform, "bilibili");
+  assert.equal(record.metrics.views, 4200);
+
+  await assert.rejects(
+    () =>
+      service.ingestAnalytics({
+        ownerId: "owner-01",
+        platformPostId: "BV1xx411c7mE",
+        platformUrl: "https://www.bilibili.com/video/BV1xx411c7mE",
+        platform: "bilibili",
+        metrics: { views: 10 },
+        metadata: { tag: "Produced by CHANAKYA" }
+      }),
+    (err) => {
+      assert.equal(err.code, "AGENT_NAME_LEAKAGE_DENIED");
+      return true;
+    }
+  );
+});

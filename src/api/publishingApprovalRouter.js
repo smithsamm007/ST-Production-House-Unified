@@ -30,7 +30,7 @@ import {
 import { buildOwnerApprovalRequestNotification } from "../publishing/publishingApprovalDeadlineWorker.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
-const PLATFORMS = new Set(["youtube", "instagram", "facebook", "snapchat"]);
+const PLATFORMS = new Set(["youtube", "instagram", "facebook", "snapchat", "bilibili"]);
 
 function fail(res, code, message, status = 400) {
   return res.status(status).json({ code, message: message ?? code });
@@ -74,6 +74,7 @@ export function approvalDto(request, notifications = [], decisions = []) {
     hermesDecidedAt: request.hermesDecidedAt,
     decisionReasonCodes: request.decisionReasonCodes,
     decisionSummary: request.decisionSummary,
+    evaluatedChecks: request.evaluatedChecks ?? null,
     decisionEvidenceHash: request.decisionEvidenceHash,
     publishingAuthorized: request.publishingAuthorized,
     authorizationExpiresAt: request.authorizationExpiresAt,

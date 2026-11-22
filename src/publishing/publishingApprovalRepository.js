@@ -298,11 +298,11 @@ export class PostgresPublishingApprovalRepository {
   }) {
     assertIdentifier(idempotencyKey, "IDEMPOTENCY_KEY_INVALID");
     assertSha256(artifactSha256);
-    if (!Array.isArray(destinations) || destinations.length === 0 || destinations.length > 4) {
-      throw new ApprovalError("DESTINATIONS_REQUIRED", "One to four destinations are required.", 400);
+    if (!Array.isArray(destinations) || destinations.length === 0 || destinations.length > 5) {
+      throw new ApprovalError("DESTINATIONS_REQUIRED", "One to five destinations are required.", 400);
     }
     const unique = [...new Set(destinations.map((d) => String(d).toLowerCase()))];
-    const allowed = new Set(["youtube", "instagram", "facebook", "snapchat"]);
+    const allowed = new Set(["youtube", "instagram", "facebook", "snapchat", "bilibili"]);
     for (const destination of unique) {
       if (!allowed.has(destination)) {
         throw new ApprovalError("INVALID_PLATFORM_DESTINATION", `Unsupported destination: ${destination}`, 400);

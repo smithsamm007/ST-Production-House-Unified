@@ -59,7 +59,7 @@ import { createDestinationPublisherRouter } from "../publishing/destinationPubli
 
 const AGENT_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{1,79}$/;
 const OWNER_ID_RE = /^[a-zA-Z0-9_-]{3,80}$/;
-const PLATFORMS = new Set(["youtube", "instagram", "facebook", "snapchat"]);
+const PLATFORMS = new Set(["youtube", "instagram", "facebook", "snapchat", "bilibili"]);
 const ANALYTICS_METRIC_FIELDS = Object.freeze([
   "views",
   "watchTimeSeconds",

@@ -78,7 +78,7 @@ export const HermesScreen: React.FC<HermesScreenProps> = ({
             HERMES · Managing Director &amp; Delegated Authority
           </h1>
           <p className="text-xs text-[#8D9AB3] mt-0.5 max-w-3xl">
-            Reports to Owner &amp; Munder Difflin / Michael. Coordinates independent
+            Reports to Owner &amp; coordinates with FORGE. Orchestrates independent
             Directors without overwriting their universes, memory, or credentials.
           </p>
         </div>

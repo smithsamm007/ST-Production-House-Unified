@@ -150,4 +150,9 @@ interval is configurable via `STPH_APPROVAL_WORKER_INTERVAL_MS`.
 
 `sql/rollback/043_hermes_publishing_approvals_rollback.sql` drops the four new
 objects and the three additive policy columns. Existing `forge_delegation_policies`
-rows are preserved.
+rows are preserved. Migration `sql/047_five_platform_support.sql` (with rollback
+`sql/rollback/047_five_platform_support_rollback.sql`) extends the destination
+bounds and allowlists across `publish_destinations`, `owner_analytics_records`,
+and `forge_publishing_approvals` to support all five canonical platforms
+(`youtube`, `instagram`, `facebook`, `snapchat`, `bilibili`).
+

@@ -24,7 +24,7 @@ const RELEASE_STATUSES = Object.freeze([
   "planned", "in_production", "rendering", "review", "published", "cancelled",
 ]);
 
-const PLATFORMS = Object.freeze(["youtube", "instagram", "facebook", "snapchat"]);
+const PLATFORMS = Object.freeze(["youtube", "instagram", "facebook", "snapchat", "bilibili"]);
 
 function toIso(value) {
   if (value instanceof Date) return value.toISOString();

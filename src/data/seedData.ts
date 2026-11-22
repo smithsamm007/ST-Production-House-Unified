@@ -130,7 +130,7 @@ export function getInitialChannels(): Channel[] {
       agentId: "agent-01",
       ownerId: "owner-01",
       launchTitle: "Nightfall Ward 7 — Pilot",
-      activePlatforms: ["YouTube", "Instagram", "Snapchat"],
+      activePlatforms: ["YouTube", "Instagram", "Facebook", "Snapchat", "Bilibili"],
       slots: createCanonicalMediaSlots("Nightfall Ward 7 — Pilot"),
     },
     {
@@ -142,7 +142,7 @@ export function getInitialChannels(): Channel[] {
       agentId: "agent-03",
       ownerId: "owner-01",
       launchTitle: "Samay Ke Paar — Season 1 Premiere",
-      activePlatforms: ["YouTube", "Instagram", "Snapchat"],
+      activePlatforms: ["YouTube", "Instagram", "Facebook", "Snapchat", "Bilibili"],
       slots: createCanonicalMediaSlots("Samay Ke Paar — Season 1 Premiere"),
     },
     {
@@ -154,7 +154,7 @@ export function getInitialChannels(): Channel[] {
       agentId: "agent-02",
       ownerId: "owner-01",
       launchTitle: "The Alibi Engine — Case 001",
-      activePlatforms: ["YouTube", "Instagram", "Snapchat"],
+      activePlatforms: ["YouTube", "Instagram", "Facebook", "Snapchat", "Bilibili"],
       slots: createCanonicalMediaSlots("The Alibi Engine — Case 001"),
     },
     {
@@ -166,7 +166,7 @@ export function getInitialChannels(): Channel[] {
       agentId: "agent-21",
       ownerId: "owner-01",
       launchTitle: "Why Bridges Sing — Ep 1",
-      activePlatforms: ["YouTube", "Instagram", "Snapchat"],
+      activePlatforms: ["YouTube", "Instagram", "Facebook", "Snapchat", "Bilibili"],
       slots: createCanonicalMediaSlots("Why Bridges Sing — Ep 1"),
     },
   ];

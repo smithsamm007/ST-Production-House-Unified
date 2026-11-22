@@ -57,7 +57,7 @@ export const OverviewScreen: React.FC<OverviewScreenProps> = ({
           <span className="font-mono font-bold text-[#22D3EE]">OWNER</span>
           <span className="text-[#2C3D5E]">→</span>
           <span className="text-[#E8EEF8] font-medium">
-            Munder Difflin / Michael
+            FORGE
           </span>
           <span className="text-[#2C3D5E]">→</span>
           <span className="text-[#22D3EE] font-semibold">HERMES</span>

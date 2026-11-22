@@ -2434,7 +2434,37 @@ function getDirectorCommRouter() {
     resolveDirector: (agentId) => agentsRepo.get(agentId),
     loadDirectorContext: async (ownerId, agentId) => {
       const agent = await agentsRepo.get(agentId);
-      return { channelName: agent?.name ?? null, charter: null };
+      let channel = null;
+      let memoryEntries = [];
+      try {
+        if (postgres) {
+          const channels = await getProductionRepository().listChannels(ownerId);
+          channel = channels.find((c) => c.agentId === agentId) ?? null;
+          memoryEntries = await getDirectorWorkspaceRepository().listMemory(ownerId, agentId);
+        }
+      } catch {
+        // Degrade safely to catalog-only context without leaking errors
+      }
+      const memoryByCategory = Object.fromEntries(
+        memoryEntries.map((m) => [m.category, m.content])
+      );
+      const charter =
+        channel || memoryEntries.length > 0
+          ? {
+              universeName: channel?.displayName ?? null,
+              tagline: channel?.tagline ?? null,
+              language: channel?.language ?? null,
+              universeBible: memoryByCategory.universe_bible ?? null,
+              storyRules: memoryByCategory.story_rules ?? null,
+              visualIdentity: memoryByCategory.visual_identity ?? null,
+              voiceIdentity: memoryByCategory.voice_identity ?? null,
+              audienceInsights: memoryByCategory.audience_insights ?? null,
+            }
+          : null;
+      return {
+        channelName: channel?.displayName ?? agent?.name ?? null,
+        charter,
+      };
     },
     csrf: requireCsrf,
     onOutcome: (event) => {

@@ -1,8 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
+import { PRELOADED_AGENTS } from "../catalog/agents.js";
 import { PublishingService, verifyAttributionSnapshot } from "./publishingService.js";
 
-const AGENT_NAME_PATTERN = /\b(?:JARVIS|SHERLOCK|LAKME|VEDA|PANCHI|NEWTON)\b/i;
-const ALLOWED_PLATFORMS = new Set(["youtube", "instagram", "facebook", "snapchat"]);
+const AGENT_NAMES_ALTERNATION = PRELOADED_AGENTS.map((a) =>
+  a.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+).join("|");
+const AGENT_NAME_PATTERN = new RegExp(`\\b(?:${AGENT_NAMES_ALTERNATION})\\b`, "i");
+const ALLOWED_PLATFORMS = new Set(["youtube", "instagram", "facebook", "snapchat", "bilibili"]);
 
 export class PrivatePublishingTestError extends Error {
   constructor(message, code, details = {}) {

@@ -221,7 +221,7 @@ export function getInitialDelegationPolicies(): DelegationPolicyItem[] {
 }
 
 export const CAPABILITY_DOMAINS: CapabilityDomain[] = [
-  { id: "ST-01", title: "Identity & Organization", summary: "Owner, Munder Difflin/Michael, HERMES, Directors, teams, agents and service identities.", status: "demo_fixture" },
+  { id: "ST-01", title: "Identity & Organization", summary: "Owner, FORGE, HERMES, 50 Independent Directors, teams, agents and service identities.", status: "demo_fixture" },
   { id: "ST-02", title: "Governance & Authority", summary: "Roles, delegation engine, approvals, limits and Owner-reserved decision rights.", status: "policy_gated" },
   { id: "ST-03", title: "Intelligence & Reasoning", summary: "Planning, analysis, decision-making and problem-solving loops.", status: "target_blueprint" },
   { id: "ST-04", title: "Models & Providers", summary: "3 remote slots + 1 local emergency slot across LLMs, image, video, audio & speech.", status: "demo_fixture" },

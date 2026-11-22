@@ -28,10 +28,14 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { PRELOADED_AGENTS } from "../catalog/agents.js";
 
-const AGENT_NAME_PATTERN = /\b(?:JARVIS|SHERLOCK|LAKME|VEDA|PANCHI|NEWTON)\b/i;
+const AGENT_NAMES_ALTERNATION = PRELOADED_AGENTS.map((a) =>
+  a.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+).join("|");
+const AGENT_NAME_PATTERN = new RegExp(`\\b(?:${AGENT_NAMES_ALTERNATION})\\b`, "i");
 const SECRET_LIKE = /(?:password|api[_ -]?key|bearer\s|vault:\/\/|opaque:\/\/|private[_ -]?key|access[_ -]?token|secret[_ -]?locator|authorization)/i;
-const ALLOWED_PLATFORMS = new Set(["youtube", "instagram", "facebook", "snapchat"]);
+const ALLOWED_PLATFORMS = new Set(["youtube", "instagram", "facebook", "snapchat", "bilibili"]);
 
 export class AnalyticsServiceError extends Error {
   constructor(message, code, details = {}) {
