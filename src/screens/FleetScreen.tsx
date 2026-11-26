@@ -1,3 +1,4 @@
+import { OwnerApiClient, ApiError } from "../api/client";
 import React, { useCallback, useEffect, useState } from "react";
 
 /**
@@ -158,37 +159,34 @@ interface DeadLetterRow {
   lastError: string | null;
 }
 
-let csrfToken: string | null = null;
-async function ownerCsrfToken(): Promise<string | null> {
-  if (csrfToken) return csrfToken;
+/**
+ * Fleet uses the SHARED Owner Console API client so session cookies, the CSRF
+ * token, structured errors and 401 handling behave identically to every other
+ * screen.
+ */
+const fleetClient = new OwnerApiClient();
+
+async function ensureCsrf(): Promise<void> {
+  if (fleetClient.csrfToken) return;
   try {
-    const res = await fetch("/api/auth/me", { credentials: "same-origin" });
-    if (!res.ok) return null;
-    const data = await res.json().catch(() => null);
-    csrfToken = typeof data?.csrfToken === "string" ? data.csrfToken : null;
-    return csrfToken;
+    const me = await fleetClient.get("/api/auth/me");
+    fleetClient.setCsrfToken(me?.csrfToken ?? null);
   } catch {
-    return null;
+    // The mutation below fails honestly with its own status code.
   }
 }
 
 async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
-  const token = method === "GET" ? null : await ownerCsrfToken();
-  const res = await fetch(path, {
-    credentials: "same-origin",
-    ...init,
-    headers: {
-      ...(init.body ? { "Content-Type": "application/json" } : {}),
-      ...(token ? { "x-csrf-token": token } : {}),
-      ...(init.headers ?? {}),
-    },
-  });
-  const data = await res.json().catch(() => null);
-  if (!res.ok) {
-    throw new Error(typeof data?.code === "string" ? data.code : `HTTP_${res.status}`);
+  try {
+    if (method === "GET") return (await fleetClient.get(path)) as T;
+    await ensureCsrf();
+    const body = init.body ? JSON.parse(String(init.body)) : undefined;
+    return (await fleetClient.request(path, { method, body })) as T;
+  } catch (error) {
+    const apiError = error as ApiError;
+    throw new Error(apiError?.code ?? `HTTP_${apiError?.status ?? 0}`);
   }
-  return data as T;
 }
 
 const HEALTH_TONE: Record<string, string> = {

@@ -14,7 +14,8 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "allowJs": true
   },
-  "include": ["src/main.tsx", "src/App.tsx", "src/types/**/*.ts", "src/data/**/*.ts", "src/store/**/*.ts", "src/utils/**/*.ts", "src/components/**/*.tsx", "src/screens/**/*.tsx"]
+  "include": ["src/main.tsx", "src/App.tsx", "src/types/**/*.ts", "src/data/**/*.ts", "src/store/**/*.ts", "src/utils/**/*.ts", "src/components/**/*.tsx", "src/screens/**/*.tsx", "src/api/**/*.ts", "src/api/**/*.js"]
 }

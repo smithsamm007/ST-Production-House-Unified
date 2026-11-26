@@ -51,9 +51,25 @@ Owner Console and Control Plane UI for ST Production House, rewritten as a React
 
 ## Running Locally
 
+The console signs in against the real backend and reads every production fact
+from the PostgreSQL-backed API. See [docs/OWNER_CONSOLE.md](docs/OWNER_CONSOLE.md)
+for the session/CSRF flow, the screen-to-API matrix, the LIVE/STALE/UNAVAILABLE
+semantics and the capabilities that are explicitly unavailable.
+
 ```bash
 npm install
-npm run dev
+npm run build      # builds the React Owner Console into dist/
+npm start          # unified runtime: console + /api on http://0.0.0.0:3000
 ```
 
-The Vite dev server runs on `http://0.0.0.0:3000`.
+`npm start` runs `node server.js`, which serves the built console from `dist/`
+and the Express control plane from the same origin on port `3000`. If `dist/`
+has not been built it serves the legacy `public/` dashboard and logs
+`DASHBOARD_STATIC_ROOT source:"public"` — it never claims a build that is absent.
+
+For hot-reload development, run the two processes side by side:
+
+```bash
+npm run dev:api    # control plane on 127.0.0.1:3000
+npm run dev        # Vite dev server on 0.0.0.0:5173, proxies /api/* to :3000
+```

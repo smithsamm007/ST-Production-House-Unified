@@ -1,246 +1,306 @@
 import React from "react";
-import { Play } from "lucide-react";
-import {
-  Channel,
-  MediaSlot,
-  OwnerAvailability,
-  ProductionJob,
-  ProductionRelease,
-  ScreenSection,
-} from "../types/models";
-import {
-  MediaSlotItem,
-  MetricCard,
-  PipelineStageStrip,
-  StatusBadge,
-  StatusTone,
-} from "../components/StatusBadge";
+import type { Agent, Channel, ProductionRelease, ScreenSection } from "../types/models";
+import type { ApprovalCard, HealthDto, HermesOverviewDto, MetricsDto, ReadyDto } from "../types/ownerApi";
+import type { DataSourceStatus } from "../types/dataState";
+import { MetricCard, StatusBadge, StatusTone } from "../components/StatusBadge";
+import { DataSourceNotice, ScreenHeader } from "../components/DataSourceBadge";
 
 interface OverviewScreenProps {
+  metrics: MetricsDto | null;
+  health: HealthDto | null;
+  ready: ReadyDto | null;
+  agents: Agent[];
   channels: Channel[];
   releases: ProductionRelease[];
-  jobs: ProductionJob[];
-  agentCount: number;
-  ownerAvailability: OwnerAvailability;
+  approvals: ApprovalCard[];
+  hermesOverview: HermesOverviewDto | null;
+  overviewStatus: DataSourceStatus;
+  productionStatus: DataSourceStatus;
+  approvalsStatus: DataSourceStatus;
   onNavigate: (section: ScreenSection) => void;
-  onAdvanceRelease: (releaseId: string) => void;
-  onInspectSlot: (slot: MediaSlot, channelSlug: string) => void;
+  onRefresh: () => void;
+  busy: boolean;
+}
+
+const JOB_TONES: Record<string, StatusTone> = {
+  running: "ok",
+  queued: "info",
+  succeeded: "ok",
+  failed: "bad",
+  waiting_for_quota: "warn",
+  waiting_for_approval: "warn",
+  paused: "warn",
+};
+
+function formatDateTime(value: string | null): string {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString();
 }
 
 export const OverviewScreen: React.FC<OverviewScreenProps> = ({
+  metrics,
+  health,
+  ready,
+  agents,
   channels,
   releases,
-  jobs,
-  agentCount,
-  ownerAvailability,
+  approvals,
+  hermesOverview,
+  overviewStatus,
+  productionStatus,
+  approvalsStatus,
   onNavigate,
-  onAdvanceRelease,
-  onInspectSlot,
+  onRefresh,
+  busy,
 }) => {
-  const activeJobsCount = jobs.filter(
-    (j) => j.status === "running" || j.status === "queued"
-  ).length;
-  const succeededCount = jobs.filter((j) => j.status === "succeeded").length;
-  const activeRelease = releases[0];
-
-  const getReleaseTone = (status: string): StatusTone => {
-    if (status === "in_production" || status === "rendering") return "warn";
-    if (status === "published") return "ok";
-    return "info";
-  };
+  const connected = overviewStatus.state === "live" || overviewStatus.state === "stale";
+  const enabledDirectors = agents.filter((agent) => agent.enabled).length;
+  const disabledDirectors = agents.filter((agent) => !agent.enabled).length;
+  const pendingApprovals = approvals.filter(
+    (approval) => approval.status === "PENDING_OWNER" || approval.status === "pending"
+  );
+  const jobsByStatus = metrics?.jobsByStatus ?? {};
+  const jobEntries = Object.entries(jobsByStatus).sort(([a], [b]) => a.localeCompare(b));
 
   return (
     <div className="space-y-6">
-      {/* Supreme Governance Strip */}
-      <section className="bg-[#0D1420] border border-[#1E2A40] rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="font-mono font-bold text-[#22D3EE]">OWNER</span>
-          <span className="text-[#2C3D5E]">→</span>
-          <span className="text-[#E8EEF8] font-medium">
-            FORGE
-          </span>
-          <span className="text-[#2C3D5E]">→</span>
-          <span className="text-[#22D3EE] font-semibold">HERMES</span>
-          <span className="text-[#2C3D5E]">→</span>
-          <span className="text-[#8D9AB3]">
-            ST Production House · {agentCount} Independent Directors
-          </span>
-        </div>
+      <ScreenHeader
+        title="Command Center"
+        subtitle="Every value on this screen is read from the authenticated PostgreSQL-backed API. A missing capability is stated, never filled in."
+        status={overviewStatus}
+        onRefresh={onRefresh}
+        busy={busy}
+      />
 
-        <div className="flex items-center gap-2 shrink-0">
-          <StatusBadge
-            label={
-              ownerAvailability === "available"
-                ? "Owner Available"
-                : "Owner Unavailable · Delegation Active"
-            }
-            tone={ownerAvailability === "available" ? "ok" : "warn"}
-          />
-          <button
-            type="button"
-            onClick={() => onNavigate("hermes")}
-            className="px-2.5 py-1 rounded-lg border border-[#2C3D5E] hover:border-[#4F8CFF] text-xs font-medium text-[#E8EEF8] transition-colors whitespace-nowrap cursor-pointer"
-          >
-            Delegation
-          </button>
-          <button
-            type="button"
-            onClick={() => onNavigate("architecture")}
-            className="px-2.5 py-1 rounded-lg border border-[#2C3D5E] hover:border-[#4F8CFF] text-xs font-medium text-[#22D3EE] transition-colors whitespace-nowrap cursor-pointer"
-          >
-            Blueprint
-          </button>
-        </div>
-      </section>
-
-      {/* Metrics Strip */}
-      <section aria-label="Operational metrics" className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <MetricCard
-          label="Active Jobs"
-          value={activeJobsCount}
-          tone={activeJobsCount > 0 ? "warn" : "ok"}
+      {!connected ? (
+        <DataSourceNotice
+          status={overviewStatus}
+          title="overview metrics"
+          onRetry={onRefresh}
         />
-        <MetricCard label="Channels" value={channels.length} tone="info" />
-        <MetricCard label="Directors" value={`${agentCount}/50`} tone="ok" />
-        <MetricCard label="Completed" value={succeededCount} tone="ok" />
-      </section>
+      ) : (
+        <>
+          <section aria-label="Operational metrics" className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+            {/* Counted from the records this screen already read. /api/metrics
+                aggregates are authoritative on PostgreSQL, but the labelled
+                demo adapter reports zero aggregates, and a false 0 next to a
+                loaded collection would misrepresent the fleet. */}
+            <MetricCard label="Registered Directors" value={agents.length} tone="info" />
+            <MetricCard label="Channels" value={channels.length} tone="info" />
+            <MetricCard label="Evidence Events" value={metrics?.evidenceEvents ?? 0} tone="ok" />
+            <MetricCard label="Active Sessions" value={metrics?.activeSessions ?? 0} tone="info" />
+            <MetricCard
+              label="Blocked Refusals"
+              value={hermesOverview?.blockedRefusals ?? 0}
+              tone={(hermesOverview?.blockedRefusals ?? 0) > 0 ? "bad" : "ok"}
+            />
+          </section>
 
-      {/* The Production Pipeline */}
-      <section className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-5 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-bold font-display text-[#E8EEF8]">
-            The Production Pipeline
-          </h2>
-          {activeRelease && (
-            <span className="text-xs text-[#8D9AB3]">
-              Lead release:{" "}
-              <span className="text-[#22D3EE] font-medium">
-                {activeRelease.title}
-              </span>
-            </span>
-          )}
-        </div>
-        <PipelineStageStrip
-          currentStage={activeRelease?.currentStage ?? "story"}
-        />
-        <p className="text-xs text-[#8D9AB3]">
-          Every director runs an independent production team. Stages map
-          directly to durable pipeline events.
-        </p>
-      </section>
-
-      {/* Active Production Releases */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-bold font-display text-[#E8EEF8]">
-          Active Production Releases
-        </h2>
-
-        <div className="grid grid-cols-1 gap-3">
-          {releases.map((release) => (
-            <div
-              key={release.id}
-              className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-4 space-y-3"
-            >
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-bold text-[#E8EEF8]">
-                    {release.title}
-                  </h3>
-                  <p className="text-xs text-[#8D9AB3] mt-0.5 tabular-nums">
-                    {release.channelName} · S{release.season} E{release.episode}
-                  </p>
-                </div>
-                <StatusBadge
-                  label={release.status.replace("_", " ")}
-                  tone={getReleaseTone(release.status)}
-                />
-              </div>
-
-              <div className="w-full h-1.5 rounded-full bg-[#1E2A40] overflow-hidden">
-                <div
-                  className="h-full bg-[#4F8CFF] rounded-full transition-all duration-200"
-                  style={{
-                    width: `${Math.round(release.stageProgress * 100)}%`,
-                  }}
-                />
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <span className="text-xs font-semibold text-[#22D3EE] font-mono tabular-nums">
-                  Stage: {release.currentStage.toUpperCase()} (
-                  {Math.round(release.stageProgress * 100)}%)
+          <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="lg:col-span-2 bg-[#0D1420] border border-[#1E2A40] rounded-xl p-5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-sm font-bold font-display text-[#E8EEF8]">Fleet Status</h2>
+                <span className="text-[11px] text-[#8D9AB3] tabular-nums">
+                  {agents.length} registry records
                 </span>
-
-                {release.currentStage !== "complete" && (
-                  <button
-                    type="button"
-                    onClick={() => onAdvanceRelease(release.id)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#101A2B] hover:bg-[#16243D] border border-[#2C3D5E] text-[#22D3EE] text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    <Play className="w-3.5 h-3.5" />
-                    Advance Stage
-                  </button>
-                )}
               </div>
-
-              {release.executionLog.length > 0 && (
-                <div className="bg-[#101A2B] border border-[#1E2A40] rounded-lg px-3 py-2 space-y-1">
-                  <div className="text-[11px] font-semibold text-[#8D9AB3]">
-                    Latest Stage Log
-                  </div>
-                  <div className="text-xs font-mono text-[#34D399]">
-                    {release.executionLog[release.executionLog.length - 1]}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+                <div className="bg-[#101A2B] border border-[#1E2A40] rounded-lg p-3">
+                  <div className="text-[11px] text-[#8D9AB3]">Enabled</div>
+                  <div className="text-lg font-bold text-[#34D399] tabular-nums">{enabledDirectors}</div>
+                </div>
+                <div className="bg-[#101A2B] border border-[#1E2A40] rounded-lg p-3">
+                  <div className="text-[11px] text-[#8D9AB3]">Disabled</div>
+                  <div className="text-lg font-bold text-[#FBBF24] tabular-nums">{disabledDirectors}</div>
+                </div>
+                <div className="bg-[#101A2B] border border-[#1E2A40] rounded-lg p-3">
+                  <div className="text-[11px] text-[#8D9AB3]">HERMES decisions</div>
+                  <div className="text-lg font-bold text-[#22D3EE] tabular-nums">
+                    {hermesOverview?.lastDecisionNumber ?? 0}
                   </div>
                 </div>
-              )}
+                <div className="bg-[#101A2B] border border-[#1E2A40] rounded-lg p-3">
+                  <div className="text-[11px] text-[#8D9AB3]">Pending approvals</div>
+                  <div className="text-lg font-bold text-[#FBBF24] tabular-nums">
+                    {hermesOverview?.pendingOwnerApproval ?? pendingApprovals.length}
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => onNavigate("directors")}
+                  className="px-3 py-1.5 rounded-lg border border-[#2C3D5E] hover:border-[#4F8CFF] text-xs font-medium text-[#E8EEF8] cursor-pointer"
+                >
+                  Open Director registry
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onNavigate("hermes")}
+                  className="px-3 py-1.5 rounded-lg border border-[#2C3D5E] hover:border-[#4F8CFF] text-xs font-medium text-[#22D3EE] cursor-pointer"
+                >
+                  HERMES decisions
+                </button>
+              </div>
             </div>
-          ))}
-        </div>
-      </section>
 
-      {/* Director Channels & Canonical Media Slots */}
-      <section className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-bold font-display text-[#E8EEF8]">
-            Director Channels &amp; Canonical Media Slots
-          </h2>
-          <span className="text-xs text-[#8D9AB3]">
-            Select any slot to inspect its deterministic checksum receipt
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          {channels.map((channel) => (
-            <div
-              key={channel.id}
-              className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-5 space-y-3.5"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-base font-bold text-[#E8EEF8] font-display">
-                    {channel.displayName}
-                  </h3>
-                  <div className="text-xs text-[#22D3EE] mt-0.5 tabular-nums">
-                    Director {channel.agentId} · {channel.language}
-                  </div>
-                </div>
-                <StatusBadge label={channel.slug} tone="info" />
-              </div>
-
-              <p className="text-xs text-[#8D9AB3]">{channel.tagline}</p>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                {channel.slots.map((slot) => (
-                  <MediaSlotItem
-                    key={slot.key}
-                    slot={slot}
-                    onInspect={() => onInspectSlot(slot, channel.slug)}
+            <div className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-5 space-y-2.5">
+              <h2 className="text-sm font-bold font-display text-[#E8EEF8]">Control Plane</h2>
+              <div className="space-y-1.5 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[#8D9AB3]">Storage engine</span>
+                  <StatusBadge
+                    label={health?.storage ?? "unknown"}
+                    tone={health?.storage === "postgres" ? "ok" : "warn"}
                   />
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[#8D9AB3]">Readiness</span>
+                  <StatusBadge
+                    label={ready?.status ?? health?.status ?? "unknown"}
+                    tone={ready?.status === "ready" ? "ok" : "warn"}
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[#8D9AB3]">Demo storage</span>
+                  <StatusBadge
+                    label={health?.isDemoStorage ? "YES (non-durable)" : "no"}
+                    tone={health?.isDemoStorage ? "bad" : "ok"}
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[#8D9AB3]">OAuth secret manager</span>
+                  <StatusBadge
+                    label={
+                      health?.oauthSecretManager?.bound
+                        ? health.oauthSecretManager.nonDurable
+                          ? "bound (non-durable)"
+                          : "bound"
+                        : "not configured"
+                    }
+                    tone={health?.oauthSecretManager?.bound ? "ok" : "warn"}
+                  />
+                </div>
+              </div>
+              <p className="text-[11px] text-[#8D9AB3] leading-relaxed pt-1">
+                Node {metrics?.process?.nodeVersion ?? "unknown"} · uptime{" "}
+                {metrics?.process ? `${metrics.process.uptimeSeconds}s` : "unknown"} · RSS{" "}
+                {metrics?.process ? `${metrics.process.memoryRssMb} MB` : "unknown"}
+              </p>
+            </div>
+          </section>
+
+          <section className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-bold font-display text-[#E8EEF8]">Job Queue (counts only)</h2>
+              <span className="text-[11px] text-[#8D9AB3]">
+                Collection route unavailable — counts come from /api/metrics
+              </span>
+            </div>
+            {jobEntries.length === 0 ? (
+              <p className="text-xs text-[#8D9AB3]">The jobs table currently holds no rows.</p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {jobEntries.map(([status, count]) => (
+                  <span
+                    key={status}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-[#1E2A40] bg-[#101A2B] text-[11px] text-[#E8EEF8]"
+                  >
+                    <StatusBadge label={status} tone={JOB_TONES[status] ?? "info"} />
+                    <span className="font-mono tabular-nums">{count}</span>
+                  </span>
                 ))}
               </div>
-            </div>
-          ))}
+            )}
+          </section>
+        </>
+      )}
+
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-bold font-display text-[#E8EEF8]">Releases awaiting action</h2>
+          <StatusBadge
+            label={`production: ${productionStatus.state.toUpperCase()}`}
+            tone={productionStatus.state === "live" ? "ok" : "warn"}
+          />
         </div>
+        {productionStatus.state !== "live" && productionStatus.state !== "stale" ? (
+          <DataSourceNotice status={productionStatus} title="production releases" onRetry={onRefresh} />
+        ) : releases.length === 0 ? (
+          <div className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-6 text-xs text-[#8D9AB3]">
+            No production releases exist yet in PostgreSQL. Start one from the Production screen.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            {releases.slice(0, 6).map((release) => (
+              <div
+                key={release.id}
+                className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-4 space-y-1.5"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-bold text-[#E8EEF8] truncate">{release.title}</h3>
+                    <p className="text-xs text-[#8D9AB3] tabular-nums">
+                      {release.channelName} · S{release.season} E{release.episode}
+                    </p>
+                  </div>
+                  <StatusBadge
+                    label={(release.backendStatus ?? release.status).replace(/_/g, " ")}
+                    tone={
+                      release.status === "published"
+                        ? "ok"
+                        : release.status === "cancelled"
+                        ? "bad"
+                        : "warn"
+                    }
+                  />
+                </div>
+                <p className="text-[11px] font-mono text-[#8D9AB3]">
+                  Created {formatDateTime(release.createdAt)}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-bold font-display text-[#E8EEF8]">Owner approvals</h2>
+          <StatusBadge
+            label={`approvals: ${approvalsStatus.state.toUpperCase()}`}
+            tone={approvalsStatus.state === "live" ? "ok" : "warn"}
+          />
+        </div>
+        {approvalsStatus.state !== "live" && approvalsStatus.state !== "stale" ? (
+          <DataSourceNotice status={approvalsStatus} title="publishing approvals" onRetry={onRefresh} />
+        ) : (
+          <div className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-4 space-y-2">
+            <p className="text-xs text-[#8D9AB3]">
+              {pendingApprovals.length === 0
+                ? "No approval request is awaiting the Owner."
+                : `${pendingApprovals.length} request(s) are awaiting the Owner decision.`}
+            </p>
+            <button
+              type="button"
+              onClick={() => onNavigate("approvals")}
+              className="px-3 py-1.5 rounded-lg border border-[#2C3D5E] hover:border-[#4F8CFF] text-xs font-medium text-[#E8EEF8] cursor-pointer"
+            >
+              Open Approval Center
+            </button>
+          </div>
+        )}
+      </section>
+
+      <section className="bg-[#101A2B] border border-[#2C3D5E] rounded-xl p-4 space-y-1.5">
+        <h2 className="text-sm font-bold text-[#22D3EE]">What this console never claims</h2>
+        <ul className="text-xs text-[#8D9AB3] leading-relaxed list-disc list-inside space-y-1">
+          <li>No Director media slot, provider latency, quota percentage or charter text is invented.</li>
+          <li>No publishing success, platform ID or engagement count is displayed without a real receipt.</li>
+          <li>Channels shown here are {channels.length} persisted records, not a catalog of 50.</li>
+        </ul>
       </section>
     </div>
   );

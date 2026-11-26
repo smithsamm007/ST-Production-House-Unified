@@ -1,853 +1,765 @@
-import { useCallback, useEffect, useState } from "react";
+/**
+ * Owner Console state store — Day 2 (FORGE).
+ *
+ * Authoritative rule: PostgreSQL-backed HTTP APIs are the source of production
+ * state. This store therefore holds NO demo fixtures. It holds:
+ *
+ *   - the real Owner session (server-validated via GET /api/auth/me);
+ *   - live read models per screen, each with an explicit DataSourceStatus;
+ *   - non-sensitive display preferences in localStorage (publishing mode only).
+ *
+ * localStorage never stores an Owner identity, a session token, a CSRF token, a
+ * password or any production dataset. A refresh (F5) re-asks the backend who
+ * the Owner is; if the answer is 401 the console returns to the login screen.
+ */
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { OwnerApiClient, ApiError, describeFailure } from "../api/client";
+import { BACKEND_GAPS, createOwnerConsoleApi } from "../api/ownerConsoleApi";
+import type {
+  HealthDto,
+  HermesOverviewDto,
+  MemoryEntryDto,
+  MetricsDto,
+  ReadyDto,
+  SessionView,
+} from "../types/ownerApi";
+import type { DataDomain, DataSourceStatus, DataState } from "../types/dataState";
+import { initialSources, pendingStatus } from "../types/dataState";
 import {
-  createCanonicalMediaSlots,
-  getInitialApprovals,
-  getInitialChannels,
-  getInitialCharters,
-  getInitialConnections,
-  getInitialEvidence,
-  getInitialHermesDecisions,
-  getInitialJobs,
-  getInitialMessages,
-  getInitialProviders,
-  getInitialReleases,
-  getInitialSchedules,
-  INITIAL_AGENTS,
-  INITIAL_OWNER,
-  STORAGE_MODE,
-  STORAGE_STATUS,
-} from "../data/seedData";
-import { getInitialDelegationPolicies } from "../data/architectureBlueprint";
-import {
-  ApprovalItem,
+  mapAgents,
+  mapApprovalCards,
+  mapChannels,
+  mapConnections,
+  mapEvidenceList,
+  mapHermesDecisions,
+  mapMessages,
+  mapOwner,
+  mapProviders,
+  mapReleases,
+  mapScheduleViews,
+  mapSessionViews,
+} from "./liveMappers";
+import type { ScheduleView } from "./liveMappers";
+import type {
+  Agent,
   Channel,
-  ConnectionSlotStatus,
-  CreativeCharter,
-  DelegationPolicyItem,
   DirectorMessage,
   DirectorSchedule,
   EvidenceEvent,
   HermesDecision,
   InspectionModalData,
-  JobStatus,
   MediaSlot,
   MessageKind,
-  MessageSender,
   Owner,
   OwnerAvailability,
-  PIPELINE_STAGES,
-  PlatformConnection,
-  ProductionJob,
   ProductionRelease,
-  ProviderSlot,
   PublishingMode,
-  ReleaseStatus,
   ScreenSection,
 } from "../types/models";
-import {
-  computeSha256,
-  createId,
-  dayName,
-  getCurrentTimeSimple,
-  getCurrentTimestamp,
-} from "../utils/crypto";
+import { createId } from "../utils/crypto";
 
-const STORAGE_KEY = "stph_owner_console_state_v1";
+/* ------------------------------------------------------------------ types */
 
-interface PersistedState {
-  currentOwner: Owner | null;
-  channels: Channel[];
-  releases: ProductionRelease[];
-  schedules: Record<string, DirectorSchedule>;
-  messages: DirectorMessage[];
-  charters: Record<string, CreativeCharter>;
-  jobs: ProductionJob[];
-  providers: ProviderSlot[];
-  platformConnections: PlatformConnection[];
-  approvals: ApprovalItem[];
-  evidenceEvents: EvidenceEvent[];
-  hermesDecisions: HermesDecision[];
-  defaultPublishingMode: PublishingMode;
-  ownerAvailability: OwnerAvailability;
-  delegationPolicies: DelegationPolicyItem[];
+export type SessionStatus =
+  | "checking"
+  | "anonymous"
+  | "authenticated"
+  | "mfa_required"
+  | "error";
+
+export interface LoginResult {
+  error: string | null;
+  /** True when the password step succeeded but a TOTP code is still required. */
+  mfaRequired?: boolean;
 }
 
-function getDefaultPersistedState(): PersistedState {
+/* ------------------------------------------------- local display preferences */
+
+const PREFS_KEY = "stph_owner_console_prefs_v1";
+
+interface Preferences {
+  defaultPublishingMode: PublishingMode;
+}
+
+function loadPreferences(): Preferences {
+  const fallback: Preferences = { defaultPublishingMode: "dry_run" };
+  try {
+    const raw = window.localStorage.getItem(PREFS_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<Preferences>;
+    return {
+      defaultPublishingMode: parsed.defaultPublishingMode === "live" ? "live" : "dry_run",
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function persistPreferences(prefs: Preferences) {
+  try {
+    window.localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    // Storage may be unavailable; a display preference is not critical state.
+  }
+}
+
+/* ------------------------------------------------------------- status utils */
+
+function liveStatus(): DataSourceStatus {
   return {
-    currentOwner: INITIAL_OWNER,
-    channels: getInitialChannels(),
-    releases: getInitialReleases(),
-    schedules: getInitialSchedules(),
-    messages: getInitialMessages(),
-    charters: getInitialCharters(),
-    jobs: getInitialJobs(),
-    providers: getInitialProviders(),
-    platformConnections: getInitialConnections(),
-    approvals: getInitialApprovals(),
-    evidenceEvents: getInitialEvidence(),
-    hermesDecisions: getInitialHermesDecisions(),
-    defaultPublishingMode: "dry_run",
-    ownerAvailability: "available",
-    delegationPolicies: getInitialDelegationPolicies(),
+    state: "live",
+    lastUpdatedAt: new Date().toISOString(),
+    error: null,
+    detail: null,
   };
 }
 
-function loadInitialState(): PersistedState {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return getDefaultPersistedState();
-    const parsed = JSON.parse(raw) as Partial<PersistedState>;
-    const defaults = getDefaultPersistedState();
-    return {
-      currentOwner:
-        parsed.currentOwner === undefined
-          ? defaults.currentOwner
-          : parsed.currentOwner,
-      channels: Array.isArray(parsed.channels) ? parsed.channels : defaults.channels,
-      releases: Array.isArray(parsed.releases) ? parsed.releases : defaults.releases,
-      schedules: parsed.schedules ?? defaults.schedules,
-      messages: Array.isArray(parsed.messages) ? parsed.messages : defaults.messages,
-      charters: parsed.charters ?? defaults.charters,
-      jobs: Array.isArray(parsed.jobs) ? parsed.jobs : defaults.jobs,
-      providers: Array.isArray(parsed.providers) ? parsed.providers : defaults.providers,
-      platformConnections: Array.isArray(parsed.platformConnections)
-        ? parsed.platformConnections
-        : defaults.platformConnections,
-      approvals: Array.isArray(parsed.approvals) ? parsed.approvals : defaults.approvals,
-      evidenceEvents: Array.isArray(parsed.evidenceEvents)
-        ? parsed.evidenceEvents
-        : defaults.evidenceEvents,
-      hermesDecisions: Array.isArray(parsed.hermesDecisions)
-        ? parsed.hermesDecisions
-        : defaults.hermesDecisions,
-      defaultPublishingMode:
-        parsed.defaultPublishingMode === "live" ? "live" : "dry_run",
-      ownerAvailability:
-        parsed.ownerAvailability === "unavailable" ? "unavailable" : "available",
-      delegationPolicies:
-        Array.isArray(parsed.delegationPolicies) &&
-        parsed.delegationPolicies.length === defaults.delegationPolicies.length
-          ? parsed.delegationPolicies
-          : defaults.delegationPolicies,
-    };
-  } catch {
-    return getDefaultPersistedState();
-  }
+function unavailableStatus(detail: string): DataSourceStatus {
+  return { state: "unavailable", lastUpdatedAt: null, error: null, detail };
 }
 
-/**
- * Per-session CSRF token for cookie-authenticated Owner mutations.
- * The token is scoped to the caller's own session; no provider credential is
- * ever fetched, stored or displayed in the browser.
- */
-let ownerCsrfToken: string | null = null;
-async function getOwnerCsrfToken(): Promise<string | null> {
-  if (ownerCsrfToken) return ownerCsrfToken;
-  try {
-    const res = await fetch("/api/auth/me", { credentials: "same-origin" });
-    if (!res.ok) return null;
-    const data = await res.json().catch(() => null);
-    ownerCsrfToken =
-      typeof data?.csrfToken === "string" ? data.csrfToken : null;
-    return ownerCsrfToken;
-  } catch {
-    return null;
-  }
+function failureStatus(error: unknown, previous: DataSourceStatus): DataSourceStatus {
+  const isApi = error instanceof ApiError;
+  const kind = isApi ? error.kind : "unknown";
+  let state: DataState = "error";
+  if (kind === "unauthorized") state = "unauthorized";
+  else if (kind === "network") state = "offline";
+  else if (kind === "unavailable") state = "unavailable";
+  else if (kind === "forbidden") state = "error";
+  // Data already on screen from an earlier successful read is STALE, not live.
+  if (previous.lastUpdatedAt && kind !== "unauthorized") state = "stale";
+  return {
+    state,
+    lastUpdatedAt: previous.lastUpdatedAt,
+    error: describeFailure(error),
+    detail: isApi ? error.code : null,
+  };
 }
 
-/** Honest Owner-visible wording for an HTTP failure of the comm endpoint. */
-function describeCommFailure(status: number, error?: string): string {
-  if (status === 401)
-    return "[Authentication Required] The Owner session is missing or expired. Sign in to the console and retry; no AI response was fabricated.";
-  if (status === 403)
-    return "[Authentication Required] The request was refused by CSRF or authorization checks. Reload the console and retry; no AI response was fabricated.";
-  if (status === 404)
-    return "[Routing Failed] No such Director is registered, so the message was not routed.";
-  if (status === 413)
-    return "[Message Rejected] The message exceeds the 4000 character limit; nothing was sent to the Director.";
-  if (status === 429)
-    return "[Rate Limited] Too many messages in a short window. Wait a minute and retry; no AI response was fabricated.";
-  return `[Provider Unavailable] ${
-    error || `Communication endpoint returned HTTP ${status}.`
-  } No AI response was fabricated.`;
+/** Failure text for an Owner-facing action result (never a stack trace). */
+export function describeActionFailure(error: unknown): string {
+  return describeFailure(error);
 }
+
+/* ------------------------------------------------------------------- store */
 
 export function useProductionStore() {
-  const [state, setState] = useState<PersistedState>(() => loadInitialState());
+  const apiClientRef = useRef<OwnerApiClient | null>(null);
+  const sessionExpiredRef = useRef(false);
+
+  const [sessionStatus, setSessionStatus] = useState<SessionStatus>("checking");
+  const [currentOwner, setCurrentOwner] = useState<Owner | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [mfaRequired, setMfaRequired] = useState(false);
+  const [sessionExpired, setSessionExpired] = useState(false);
+
+  const [sources, setSources] = useState<Record<DataDomain, DataSourceStatus>>(
+    initialSources
+  );
+
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [releases, setReleases] = useState<ProductionRelease[]>([]);
+  const [scheduleViews, setScheduleViews] = useState<Record<string, ScheduleView>>({});
+  const [approvals, setApprovals] = useState<ReturnType<typeof mapApprovalCards>>([]);
+  const [connections, setConnections] = useState<ReturnType<typeof mapConnections>>([]);
+  const [providers, setProviders] = useState<ReturnType<typeof mapProviders>>([]);
+  const [evidenceEvents, setEvidenceEvents] = useState<EvidenceEvent[]>([]);
+  const [hermesDecisions, setHermesDecisions] = useState<HermesDecision[]>([]);
+  const [hermesOverview, setHermesOverview] = useState<HermesOverviewDto | null>(null);
+  const [memoryEntries, setMemoryEntries] = useState<MemoryEntryDto[]>([]);
+  const [messages, setMessages] = useState<DirectorMessage[]>([]);
+  const [sessions, setSessions] = useState<SessionView[]>([]);
+  const [metrics, setMetrics] = useState<MetricsDto | null>(null);
+  const [health, setHealth] = useState<HealthDto | null>(null);
+  const [ready, setReady] = useState<ReadyDto | null>(null);
+
+  const [preferences, setPreferences] = useState<Preferences>(() => loadPreferences());
   const [currentSection, setCurrentSection] = useState<ScreenSection>("overview");
   const [selectedAgentId, setSelectedAgentId] = useState<string>("agent-01");
   const [schedulerFeedback, setSchedulerFeedback] = useState<string | null>(null);
   const [channelSearchQuery, setChannelSearchQuery] = useState<string>("");
   const [jobStatusFilter, setJobStatusFilter] = useState<string>("ALL");
   const [evidenceFilter, setEvidenceFilter] = useState<string>("ALL");
-  const [inspectionData, setInspectionData] =
-    useState<InspectionModalData | null>(null);
+  const [inspectionData, setInspectionData] = useState<InspectionModalData | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch {
-      // Ignore storage quota errors in ephemeral sandboxes
-    }
-  }, [state]);
+  /* ----------------------------------------------------- client + callbacks */
 
-  const refreshDirectorMessages = useCallback(async (agentId: string) => {
-    try {
-      const res = await fetch(
-        `/api/director-comm/${encodeURIComponent(agentId)}/messages`,
-        { credentials: "same-origin" }
-      );
-      if (!res.ok) return;
-      const data = await res.json().catch(() => null);
-      if (!Array.isArray(data?.messages)) return;
-      const serverMessages: DirectorMessage[] = data.messages.map(
-        (m: Record<string, unknown>) => ({
-          id: String(m.id ?? createId()),
-          agentId: String(m.agentId ?? agentId),
-          kind: (m.kind as MessageKind) ?? "conversation",
-          sender: (m.sender as MessageSender) ?? "director",
-          source: m.source as DirectorMessage["source"],
-          outcome: m.outcome as DirectorMessage["outcome"],
-          model: typeof m.model === "string" ? m.model : undefined,
-          clientMessageId:
-            typeof m.clientMessageId === "string"
-              ? m.clientMessageId
-              : undefined,
-          body: String(m.body ?? ""),
-          timestamp:
-            typeof m.createdAt === "string"
-              ? new Date(m.createdAt).toLocaleTimeString([], {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })
-              : typeof m.timestamp === "string"
-              ? m.timestamp
-              : getCurrentTimeSimple(),
-        })
-      );
-      if (serverMessages.length === 0) return;
-      setState((prev) => ({
+  const handleUnauthorized = useCallback(() => {
+    if (sessionExpiredRef.current) return;
+    sessionExpiredRef.current = true;
+    setCurrentOwner(null);
+    setSessionStatus("anonymous");
+    setSessionExpired(true);
+    setMfaRequired(false);
+    setSessionError(
+      "Your Owner session expired or was revoked. Sign in again — no local state was trusted."
+    );
+  }, []);
+
+  if (!apiClientRef.current) {
+    apiClientRef.current = new OwnerApiClient({ onUnauthorized: handleUnauthorized });
+  }
+  const api = useMemo(
+    () => createOwnerConsoleApi(apiClientRef.current as OwnerApiClient),
+    []
+  );
+
+  const setSource = useCallback(
+    (domain: DataDomain, next: DataSourceStatus | ((prev: DataSourceStatus) => DataSourceStatus)) => {
+      setSources((prev) => ({
         ...prev,
-        messages: [
-          ...prev.messages.filter((m) => m.agentId !== agentId),
-          ...serverMessages,
-        ],
+        [domain]: typeof next === "function" ? next(prev[domain]) : next,
       }));
-    } catch {
-      // Keep local/cached conversation intact if backend is unreachable
+    },
+    []
+  );
+
+  /* --------------------------------------------------------- read domains */
+
+  const refreshDirectors = useCallback(async () => {
+    try {
+      const [agentPayload, channelPayload] = await Promise.all([
+        api.listAgents(),
+        api.listChannels(),
+      ]);
+      const nextAgents = mapAgents(agentPayload);
+      setAgents(nextAgents);
+      setChannels(mapChannels(channelPayload));
+      setSource("directors", () => liveStatus());
+      setSelectedAgentId((prev) =>
+        nextAgents.some((agent) => agent.id === prev) ? prev : nextAgents[0]?.id ?? prev
+      );
+    } catch (error) {
+      setSource("directors", (prev) => failureStatus(error, prev));
     }
-  }, []);
+  }, [api, setSource]);
+
+  const refreshOverview = useCallback(async () => {
+    try {
+      const [metricsPayload, healthPayload, readyPayload] = await Promise.all([
+        api.metrics(),
+        api.health(),
+        api.ready().catch(() => null),
+      ]);
+      setMetrics((metricsPayload as MetricsDto) ?? null);
+      setHealth((healthPayload as HealthDto) ?? null);
+      setReady((readyPayload as ReadyDto | null) ?? null);
+      setSource("overview", () => liveStatus());
+    } catch (error) {
+      setSource("overview", (prev) => failureStatus(error, prev));
+    }
+  }, [api, setSource]);
+
+  const refreshSchedule = useCallback(async () => {
+    try {
+      const payload = await api.listDirectorSchedules();
+      setScheduleViews(mapScheduleViews(payload));
+      setSource("schedule", () => liveStatus());
+    } catch (error) {
+      setSource("schedule", (prev) => failureStatus(error, prev));
+    }
+  }, [api, setSource]);
+
+  const refreshProduction = useCallback(async () => {
+    try {
+      const payload = await api.listProductions();
+      setReleases(mapReleases(payload));
+      setSource("production", () => liveStatus());
+    } catch (error) {
+      setSource("production", (prev) => failureStatus(error, prev));
+    }
+  }, [api, setSource]);
+
+  const refreshApprovals = useCallback(async () => {
+    try {
+      const payload = await api.listApprovals();
+      setApprovals(mapApprovalCards(payload));
+      setSource("approvals", () => liveStatus());
+    } catch (error) {
+      setSource("approvals", (prev) => failureStatus(error, prev));
+    }
+  }, [api, setSource]);
+
+  const refreshProviders = useCallback(async () => {
+    try {
+      const payload = await api.providerCatalog();
+      setProviders(mapProviders(payload));
+      setSource("providers", () => liveStatus());
+    } catch (error) {
+      setSource("providers", (prev) => failureStatus(error, prev));
+    }
+  }, [api, setSource]);
+
+  const refreshEvidence = useCallback(async () => {
+    try {
+      const payload = await api.listEvidence();
+      setEvidenceEvents(mapEvidenceList(payload));
+      setSource("evidence", () => liveStatus());
+    } catch (error) {
+      setSource("evidence", (prev) => failureStatus(error, prev));
+    }
+  }, [api, setSource]);
+
+  const refreshHermes = useCallback(async () => {
+    try {
+      const [overviewPayload, decisionsPayload] = await Promise.all([
+        api.hermesOverview(),
+        api.hermesDecisions(50),
+      ]);
+      setHermesOverview((overviewPayload as HermesOverviewDto) ?? null);
+      setHermesDecisions(mapHermesDecisions(decisionsPayload));
+      setSource("hermes", () => liveStatus());
+    } catch (error) {
+      setSource("hermes", (prev) => failureStatus(error, prev));
+    }
+  }, [api, setSource]);
+
+  const refreshSessions = useCallback(async () => {
+    try {
+      const payload = await api.listSessions();
+      setSessions(mapSessionViews(payload));
+      setSource("settings", () => liveStatus());
+    } catch (error) {
+      setSource("settings", (prev) => failureStatus(error, prev));
+    }
+  }, [api, setSource]);
+
+  const refreshConnections = useCallback(
+    async (agentId: string) => {
+      if (!agentId) {
+        setSource("connections", unavailableStatus("No Director is selected."));
+        return;
+      }
+      try {
+        const payload = await api.listConnections(agentId);
+        setConnections(mapConnections(payload));
+        setSource("connections", () => liveStatus());
+      } catch (error) {
+        setSource("connections", (prev) => failureStatus(error, prev));
+      }
+    },
+    [api, setSource]
+  );
+
+  const refreshMemory = useCallback(
+    async (agentId: string) => {
+      if (!agentId) {
+        setSource("memory", unavailableStatus("No Director is selected."));
+        return;
+      }
+      try {
+        const payload = await api.listMemory(agentId);
+        const rows = Array.isArray(payload?.entries) ? payload.entries : [];
+        setMemoryEntries(
+          rows
+            .filter((row: unknown) => row && typeof row === "object")
+            .map((row: Record<string, unknown>) => ({
+              id: typeof row.id === "string" ? row.id : undefined,
+              category: typeof row.category === "string" ? row.category : "uncategorised",
+              content: typeof row.content === "string" ? row.content : "",
+              updatedAt: typeof row.updatedAt === "string" ? row.updatedAt : null,
+            }))
+        );
+        setSource("memory", () => liveStatus());
+      } catch (error) {
+        setSource("memory", (prev) => failureStatus(error, prev));
+      }
+    },
+    [api, setSource]
+  );
+
+  const refreshConversation = useCallback(
+    async (agentId: string) => {
+      if (!agentId) {
+        setSource("communication", unavailableStatus("No Director is selected."));
+        return;
+      }
+      try {
+        const payload = await api.listMessages(agentId);
+        setMessages((prev) => [
+          ...prev.filter((message) => message.agentId !== agentId),
+          ...mapMessages(agentId, payload),
+        ]);
+        setSource("communication", () => liveStatus());
+      } catch (error) {
+        setSource("communication", (prev) => failureStatus(error, prev));
+      }
+    },
+    [api, setSource]
+  );
+
+  /** Jobs has no collection route in this repository — report the gap honestly. */
+  const markJobsUnavailable = useCallback(() => {
+    setSource("jobs", (prev) =>
+      prev.state === "live" ? prev : unavailableStatus(BACKEND_GAPS.jobList)
+    );
+  }, [setSource]);
+
+  const refreshAll = useCallback(async () => {
+    markJobsUnavailable();
+    setSource("connections", (prev) =>
+      prev.state === "live" ? prev : pendingStatus()
+    );
+    await Promise.all([
+      refreshOverview(),
+      refreshDirectors(),
+      refreshSchedule(),
+      refreshProduction(),
+      refreshApprovals(),
+      refreshProviders(),
+      refreshEvidence(),
+      refreshHermes(),
+      refreshSessions(),
+    ]);
+  }, [
+    markJobsUnavailable,
+    refreshApprovals,
+    refreshDirectors,
+    refreshEvidence,
+    refreshHermes,
+    refreshOverview,
+    refreshProduction,
+    refreshProviders,
+    refreshSchedule,
+    refreshSessions,
+    setSource,
+  ]);
+
+  /* ------------------------------------------------------------- session */
+
+  const restoreSession = useCallback(async () => {
+    setSessionStatus("checking");
+    try {
+      const me = await api.me();
+      const owner = mapOwner(me);
+      if (!owner) {
+        setSessionStatus("anonymous");
+        setCurrentOwner(null);
+        return;
+      }
+      setCurrentOwner(owner);
+      setSessionExpired(false);
+      setSessionError(null);
+      const assurance = typeof me?.session?.mfaAssuranceLevel === "string"
+        ? me.session.mfaAssuranceLevel
+        : null;
+      const needsMfa = me?.mfaEnabled === true && assurance !== "high_assurance";
+      setMfaRequired(needsMfa);
+      setSessionStatus(needsMfa ? "mfa_required" : "authenticated");
+      setSource("session", { state: "live", lastUpdatedAt: new Date().toISOString(), error: null });
+      if (!needsMfa) await refreshAll();
+    } catch (error) {
+      if (error instanceof ApiError && error.kind === "unauthorized") {
+        setSessionStatus("anonymous");
+        setCurrentOwner(null);
+        setSource("session", {
+          state: "unauthorized",
+          lastUpdatedAt: null,
+          error: null,
+          detail: "No Owner session cookie is present.",
+        });
+        return;
+      }
+      setSessionStatus("error");
+      setCurrentOwner(null);
+      setSessionError(describeFailure(error));
+      setSource("session", (prev) => failureStatus(error, prev));
+    }
+  }, [api, refreshAll, setSource]);
+
+  const login = useCallback(
+    async (email: string, password: string): Promise<LoginResult> => {
+      const trimmedEmail = email.trim();
+      if (!trimmedEmail || !password) {
+        return { error: "Enter the Owner email and password." };
+      }
+      setSessionError(null);
+      setBusy(true);
+      try {
+        const payload = await api.login(trimmedEmail, password);
+        const owner = mapOwner(payload?.owner);
+        if (!owner) {
+          return { error: "The backend did not return an Owner identity." };
+        }
+        setCurrentOwner(owner);
+        sessionExpiredRef.current = false;
+        setSessionExpired(false);
+        setSource("session", { state: "live", lastUpdatedAt: new Date().toISOString(), error: null });
+        const assurance = typeof payload?.session?.mfaAssuranceLevel === "string"
+          ? payload.session.mfaAssuranceLevel
+          : "password_only";
+        const needsMfa = owner && payload?.owner?.mfaEnabled === true && assurance !== "high_assurance";
+        if (needsMfa) {
+          setMfaRequired(true);
+          setSessionStatus("mfa_required");
+          return { error: null, mfaRequired: true };
+        }
+        setMfaRequired(false);
+        setSessionStatus("authenticated");
+        await refreshAll();
+        return { error: null };
+      } catch (error) {
+        setCurrentOwner(null);
+        setSessionStatus("anonymous");
+        const message =
+          error instanceof ApiError && (error.kind === "validation" || error.kind === "unauthorized")
+            ? "Invalid email or password."
+            : describeFailure(error);
+        setSessionError(message);
+        return { error: message };
+      } finally {
+        setBusy(false);
+      }
+    },
+    [api, refreshAll, setSource]
+  );
+
+  const verifyMfa = useCallback(
+    async (totpCode: string): Promise<LoginResult> => {
+      const code = totpCode.trim();
+      if (!/^[0-9]{6,8}$/.test(code)) {
+        return { error: "Enter the 6–8 digit code from your authenticator app." };
+      }
+      setBusy(true);
+      try {
+        await api.verifyTotp(code);
+        const me = await api.me();
+        const owner = mapOwner(me);
+        if (!owner) return { error: "The backend did not return an Owner identity." };
+        setCurrentOwner(owner);
+        setMfaRequired(false);
+        setSessionStatus("authenticated");
+        setSessionError(null);
+        await refreshAll();
+        return { error: null };
+      } catch (error) {
+        const message = describeFailure(error);
+        setSessionError(message);
+        return { error: message };
+      } finally {
+        setBusy(false);
+      }
+    },
+    [api, refreshAll]
+  );
+
+  const logout = useCallback(async () => {
+    setBusy(true);
+    try {
+      await api.logout();
+    } catch {
+      // A logout that could not reach the backend must still clear local state;
+      // the server session expires on its own schedule.
+    } finally {
+      apiClientRef.current?.clearCsrfToken();
+      sessionExpiredRef.current = true;
+      setCurrentOwner(null);
+      setMfaRequired(false);
+      setSessionStatus("anonymous");
+      setSessionError(null);
+      setSessionExpired(false);
+      setAgents([]);
+      setChannels([]);
+      setReleases([]);
+      setScheduleViews({});
+      setApprovals([]);
+      setConnections([]);
+      setProviders([]);
+      setEvidenceEvents([]);
+      setHermesDecisions([]);
+      setHermesOverview(null);
+      setMemoryEntries([]);
+      setMessages([]);
+      setSessions([]);
+      setMetrics(null);
+      setSources(initialSources());
+      setCurrentSection("overview");
+      setBusy(false);
+    }
+  }, [api]);
+
+  /* ------------------------------------------------------------- mount */
 
   useEffect(() => {
-    if (currentSection === "communication" && selectedAgentId) {
-      void refreshDirectorMessages(selectedAgentId);
-    }
-  }, [currentSection, selectedAgentId, refreshDirectorMessages]);
-
-  const makeEvidence = (
-    eventType: string,
-    agentId: string,
-    channelSlug: string,
-    stage: string,
-    artifactHash: string,
-    verificationReceipt: string
-  ): EvidenceEvent => ({
-    id: createId(),
-    eventType,
-    agentId,
-    channelSlug,
-    stage,
-    artifactHash,
-    verificationReceipt,
-    timestamp: getCurrentTimestamp(),
-  });
-
-  const login = useCallback((email: string, pass: string): string | null => {
-    const trimmedEmail = email.trim();
-    if (!trimmedEmail || !pass.trim()) {
-      return "Invalid credentials. Please enter email and password.";
-    }
-    const ev: EvidenceEvent = {
-      id: createId(),
-      eventType: "OWNER_AUTHENTICATED",
-      agentId: "owner",
-      channelSlug: "auth",
-      stage: "session",
-      artifactHash: computeSha256(`${trimmedEmail}${Date.now()}`),
-      verificationReceipt: "demo://auth/session_created",
-      timestamp: getCurrentTimestamp(),
-    };
-    setState((prev) => ({
-      ...prev,
-      currentOwner: {
-        id: createId(),
-        email: trimmedEmail,
-        role: "owner",
-        isAuthenticated: true,
-      },
-      evidenceEvents: [ev, ...prev.evidenceEvents],
-    }));
-    return null;
+    void restoreSession();
+    // Intentionally once: restoreSession is re-created only by client identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const logout = useCallback(() => {
-    setState((prev) => {
-      const email = prev.currentOwner?.email ?? "owner";
-      const ev = makeEvidence(
-        "OWNER_LOGGED_OUT",
-        "owner",
-        "auth",
-        "session",
-        computeSha256(`${email}${Date.now()}`),
-        "demo://auth/session_destroyed"
-      );
-      return {
-        ...prev,
-        currentOwner: null,
-        evidenceEvents: [ev, ...prev.evidenceEvents],
-      };
+  /* --------------------------------------------- selection-scoped domains */
+
+  useEffect(() => {
+    if (sessionStatus !== "authenticated" || !selectedAgentId) return;
+    void refreshMemory(selectedAgentId);
+    void refreshConnections(selectedAgentId);
+    void refreshConversation(selectedAgentId);
+  }, [sessionStatus, selectedAgentId, refreshMemory, refreshConnections, refreshConversation]);
+
+  useEffect(() => {
+    if (sessionStatus !== "authenticated") markJobsUnavailable();
+  }, [sessionStatus, markJobsUnavailable]);
+
+  /* ---------------------------------------------------------- preferences */
+
+  const setDefaultPublishingMode = useCallback((mode: PublishingMode) => {
+    setPreferences((prev) => {
+      const next = { ...prev, defaultPublishingMode: mode };
+      persistPreferences(next);
+      return next;
     });
-    setCurrentSection("overview");
+  }, []);
+
+  /* -------------------------------------------------------------- actions */
+
+  const withAction = useCallback(async (operation: () => Promise<void>) => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await operation();
+    } catch (error) {
+      setActionError(describeFailure(error));
+    } finally {
+      setBusy(false);
+    }
   }, []);
 
   const addChannel = useCallback(
-    (
+    async (
       slug: string,
       displayName: string,
       tagline: string,
       language: string,
-      agentId: string,
-      launchTitle: string
+      agentId: string
     ) => {
       const cleanSlug = slug.trim().toLowerCase().replace(/\s+/g, "-");
-      const cleanName = displayName.trim();
-      const cleanLaunch = launchTitle.trim() || `${cleanName} Pilot`;
-      if (!cleanSlug || !cleanName) return;
-
-      const newChan: Channel = {
-        id: createId(),
-        slug: cleanSlug,
-        displayName: cleanName,
-        tagline: tagline.trim() || "Independent director-led studio channel",
-        language: language.trim() || "English",
-        agentId,
-        ownerId: "owner-01",
-        launchTitle: cleanLaunch,
-        activePlatforms: ["YouTube", "Instagram", "Facebook", "Snapchat", "Bilibili"],
-        slots: createCanonicalMediaSlots(cleanLaunch),
-      };
-
-      const ev = makeEvidence(
-        "CHANNEL_REGISTERED",
-        agentId,
-        cleanSlug,
-        "catalog",
-        computeSha256(cleanSlug + cleanName),
-        `demo://channel/registered?slug=${cleanSlug}`
-      );
-
-      setState((prev) => ({
-        ...prev,
-        channels: [...prev.channels, newChan],
-        evidenceEvents: [ev, ...prev.evidenceEvents],
-      }));
+      await withAction(async () => {
+        await api.createChannel({
+          slug: cleanSlug,
+          displayName: displayName.trim(),
+          tagline: tagline.trim() || undefined,
+          language: language.trim() || undefined,
+          agentId,
+        });
+        await refreshDirectors();
+      });
     },
-    []
+    [api, refreshDirectors, withAction]
   );
 
-  const saveSchedule = useCallback((schedule: DirectorSchedule) => {
-    const ev = makeEvidence(
-      "SCHEDULE_CONFIGURED",
-      schedule.agentId,
-      "schedule",
-      "config",
-      computeSha256(schedule.agentId + schedule.preferredStartTime),
-      `demo://schedule/saved?agentId=${schedule.agentId}&enabled=${schedule.enabled}`
-    );
-    setState((prev) => ({
-      ...prev,
-      schedules: {
-        ...prev.schedules,
-        [schedule.agentId]: schedule,
-      },
-      evidenceEvents: [ev, ...prev.evidenceEvents],
-    }));
-    setSchedulerFeedback(
-      `Schedule saved for Director ${schedule.agentId} (${schedule.episodesPerDay} eps/day, ${Math.round(
-        schedule.mainEpisodeDuration / 60
-      )}m).`
-    );
-  }, []);
+  const saveSchedule = useCallback(
+    async (schedule: DirectorSchedule) => {
+      await withAction(async () => {
+        await api.saveDirectorSchedule(schedule.agentId, {
+          episodeDurationSeconds: schedule.mainEpisodeDuration,
+          episodesPerDay: schedule.episodesPerDay,
+          productionDays: schedule.productionDays,
+          productionStartTime: schedule.preferredStartTime,
+          timezone: schedule.timezone,
+          scheduleEnabled: schedule.enabled,
+        });
+        await refreshSchedule();
+        setSchedulerFeedback(
+          `Schedule persisted for Director ${schedule.agentId} (${schedule.episodesPerDay} eps/day, ${Math.round(
+            schedule.mainEpisodeDuration / 60
+          )}m).`
+        );
+      });
+    },
+    [api, refreshSchedule, withAction]
+  );
 
   const previewSchedulePlan = useCallback(
     (agentId: string) => {
-      const sched: DirectorSchedule = state.schedules[agentId] ?? {
-        agentId,
-        mainEpisodeDuration: 1800,
-        episodesPerDay: 2,
-        productionDays: [1, 2, 3, 4, 5],
-        preferredStartTime: "09:00",
-        timezone: "Asia/Kolkata",
-        enabled: true,
-      };
-      const sortedDays = [...sched.productionDays]
-        .sort((a, b) => a - b)
-        .map(dayName)
-        .join(", ");
+      const view = scheduleViews[agentId];
+      if (!view) {
+        setSchedulerFeedback(
+          "No backend schedule record exists for this Director yet; nothing can be previewed until one is saved."
+        );
+        return;
+      }
+      if (view.schedule.mainEpisodeDuration <= 0) {
+        setSchedulerFeedback(
+          "The stored schedule failed backend validation, so the planner cannot preview it."
+        );
+        return;
+      }
       setSchedulerFeedback(
-        `Plan Preview: ${sched.episodesPerDay} slots ready for production days ${
-          sortedDays || "None"
-        } starting at ${sched.preferredStartTime} (${
-          sched.timezone
-        }). Quota check: HEALTHY.`
+        `Persisted plan: ${view.schedule.episodesPerDay} slot(s)/day on production days ${
+          view.schedule.productionDays.join(", ") || "none"
+        } starting ${view.schedule.preferredStartTime} (${view.schedule.timezone}). ${
+          view.schedule.enabled ? "Schedule enabled." : "Schedule paused."
+        } Quota state is not exposed by any backend route.`
       );
     },
-    [state.schedules]
+    [scheduleViews]
   );
 
-  const runSchedulerNow = useCallback((agentId: string) => {
-    setState((prev) => {
-      const sched: DirectorSchedule = prev.schedules[agentId] ?? {
-        agentId,
-        mainEpisodeDuration: 1800,
-        episodesPerDay: 2,
-        productionDays: [1, 2, 3, 4, 5],
-        preferredStartTime: "09:00",
-        timezone: "Asia/Kolkata",
-        enabled: true,
-      };
-      const channel = prev.channels.find((c) => c.agentId === agentId);
-      const baseTitle = channel
-        ? `${channel.displayName} — Scheduled Release`
-        : "Episode Release";
-      const nextEpNumber =
-        prev.releases.filter((r) => r.channelId === channel?.id).length + 1;
-
-      const releaseId = createId();
-      const release: ProductionRelease = {
-        id: releaseId,
-        channelId: channel?.id ?? "chan-01",
-        channelName: channel?.displayName ?? `Director ${agentId}`,
-        title: `${baseTitle} #${nextEpNumber}`,
-        season: 1,
-        episode: nextEpNumber,
-        status: "in_production",
-        currentStage: "story",
-        stageProgress: 0.12,
-        createdAt: getCurrentTimestamp(),
-        executionLog: [
-          "[demo] Simulated scheduler tick recorded in the in-memory plan",
-          "[demo] No scheduler backend or provider work was executed",
-        ],
-      };
-
-      const newJob: ProductionJob = {
-        id: createId(),
-        agentId,
-        capability: "story_plan",
-        status: "running",
-        progressPercent: 12,
-        note: `Scheduled slot initiated for ${
-          channel?.displayName ?? agentId
-        } (#${nextEpNumber})`,
-        createdAt: "Just now",
-      };
-
-      const ev = makeEvidence(
-        "SCHEDULER_SLOT_TRIGGERED",
-        agentId,
-        channel?.slug ?? "unknown",
-        "story",
-        computeSha256(release.id + release.title),
-        `demo://scheduler/tick-simulated?duration=${sched.mainEpisodeDuration}s`
-      );
-
-      setSchedulerFeedback(
-        `[demo] Slot queued successfully in this in-memory scheduler for ${
-          channel?.displayName ?? agentId
-        }: 1 episode simulated (${Math.round(
-          sched.mainEpisodeDuration / 60
-        )}m duration, timezone: ${
-          sched.timezone
-        }). No backend scheduler was contacted.`
-      );
-
-      return {
-        ...prev,
-        releases: [release, ...prev.releases],
-        jobs: [newJob, ...prev.jobs],
-        evidenceEvents: [ev, ...prev.evidenceEvents],
-      };
-    });
-  }, []);
-
-  const sendDirectorMessage = useCallback(
-    (
-      agentId: string,
-      kind: MessageKind,
-      sender: MessageSender,
-      body: string
-    ) => {
-      const trimmed = body.trim();
-      if (!trimmed) return;
-
-      const clientMessageId = createId();
-      const ownerMsg: DirectorMessage = {
-        id: createId(),
-        agentId,
-        kind,
-        sender,
-        source: sender === "owner" ? "owner" : "director_ai",
-        clientMessageId,
-        body: trimmed,
-        timestamp: getCurrentTimeSimple(),
-      };
-
-      const ackId = createId();
-      const ackMsg: DirectorMessage | null =
-        sender === "owner"
-          ? {
-              id: ackId,
-              agentId,
-              kind: "conversation",
-              sender: "director",
-              source: "system_delivery_ack",
-              clientMessageId,
-              body: `[System Delivery Ack] Message received and routed to Director ${agentId}. Awaiting AI Director response...`,
-              timestamp: getCurrentTimeSimple(),
-            }
-          : null;
-
-      setState((prev) => {
-        const newMessages: DirectorMessage[] = ackMsg
-          ? [ownerMsg, ackMsg]
-          : [ownerMsg];
-
-        const newEvidence: EvidenceEvent[] = [
-          makeEvidence(
-            "COMMUNICATION_RECORDED",
-            agentId,
-            "studio",
-            kind,
-            computeSha256(ownerMsg.id + trimmed),
-            `comm://director/${agentId}?sender=${sender}&kind=${kind}`
-          ),
-        ];
-
-        return {
-          ...prev,
-          messages: [...prev.messages, ...newMessages],
-          evidenceEvents: [...newEvidence, ...prev.evidenceEvents],
-        };
+  const runSchedulerNow = useCallback(
+    async (agentId: string) => {
+      await withAction(async () => {
+        const result = await api.runDirectorSchedule(agentId);
+        const body =
+          result && typeof result === "object"
+            ? JSON.stringify(result).slice(0, 600)
+            : "The backend returned no body.";
+        setSchedulerFeedback(`Scheduler response for Director ${agentId}: ${body}`);
+        await Promise.all([refreshSchedule(), refreshProduction()]);
       });
-
-      if (sender !== "owner") return;
-
-      void (async () => {
-        try {
-          // The endpoint is an authenticated, CSRF-protected Owner route.
-          // Cookie sessions need the per-session token (double submit); the
-          // token is fetched only for the session holder that is already logged
-          // in. This never exposes a provider key to the browser.
-          const csrfToken = await getOwnerCsrfToken();
-          const res = await fetch(
-            `/api/director-comm/${encodeURIComponent(agentId)}/messages`,
-            {
-              method: "POST",
-              credentials: "same-origin",
-              headers: {
-                "Content-Type": "application/json",
-                ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
-              },
-              body: JSON.stringify({
-                body: trimmed,
-                kind,
-                clientMessageId,
-              }),
-            }
-          );
-
-          const data = await res.json().catch(() => null);
-          const reply: DirectorMessage =
-            data?.directorResponse ?? {
-              id: createId(),
-              agentId,
-              kind: "conversation",
-              sender: "director",
-              source: "system_error",
-              outcome:
-                res.status === 401 || res.status === 403
-                  ? "ROUTING_FAILED"
-                  : "PROVIDER_UNAVAILABLE",
-              clientMessageId,
-              body: describeCommFailure(res.status, data?.error),
-              timestamp: getCurrentTimeSimple(),
-            };
-
-          setState((prev) => ({
-            ...prev,
-            messages: [
-              ...prev.messages.filter((m) => m.id !== ackId),
-              {
-                ...reply,
-                timestamp: getCurrentTimeSimple(),
-              },
-            ],
-            evidenceEvents: [
-              makeEvidence(
-                reply.source === "director_ai"
-                  ? "DIRECTOR_AI_RESPONDED"
-                  : "DIRECTOR_PROVIDER_UNAVAILABLE",
-                agentId,
-                "studio",
-                reply.outcome ?? "PROVIDER_UNAVAILABLE",
-                computeSha256(reply.id + reply.body),
-                `comm://director/${agentId}/outcome/${reply.outcome ?? "PROVIDER_UNAVAILABLE"}`
-              ),
-              ...prev.evidenceEvents,
-            ],
-          }));
-        } catch (err) {
-          const errMsg: DirectorMessage = {
-            id: createId(),
-            agentId,
-            kind: "conversation",
-            sender: "director",
-            source: "system_error",
-            outcome: "PROVIDER_UNAVAILABLE",
-            clientMessageId,
-            body: `[Provider Unavailable] Could not reach the Director AI backend (${
-              err instanceof Error ? err.message : "network error"
-            }). No AI response was fabricated.`,
-            timestamp: getCurrentTimeSimple(),
-          };
-          setState((prev) => ({
-            ...prev,
-            messages: [
-              ...prev.messages.filter((m) => m.id !== ackId),
-              errMsg,
-            ],
-          }));
-        }
-      })();
     },
-    []
+    [api, refreshProduction, refreshSchedule, withAction]
   );
 
   const startProductionRelease = useCallback(
-    (channelId: string, title: string, season: number, episode: number) => {
-      const trimmed = title.trim();
+    async (channelId: string, title: string, season: number, episode: number) => {
+      await withAction(async () => {
+        await api.createProduction({ channelId, title: title.trim(), season, episode });
+        await refreshProduction();
+      });
+    },
+    [api, refreshProduction, withAction]
+  );
+
+  const advancePipelineStage = useCallback(
+    async (releaseId: string) => {
+      await withAction(async () => {
+        await api.runProduction(releaseId);
+        await refreshProduction();
+      });
+    },
+    [api, refreshProduction, withAction]
+  );
+
+  const sendDirectorMessage = useCallback(
+    async (agentId: string, kind: MessageKind, body: string) => {
+      const trimmed = body.trim();
       if (!trimmed) return;
-      setState((prev) => {
-        const channel = prev.channels.find((c) => c.id === channelId);
-        const releaseId = createId();
-        const release: ProductionRelease = {
-          id: releaseId,
-          channelId,
-          channelName: channel?.displayName ?? "Channel",
-          title: trimmed,
-          season,
-          episode,
-          status: "in_production",
-          currentStage: "story",
-          stageProgress: 0.12,
-          createdAt: getCurrentTimestamp(),
-          executionLog: [
-            "[demo] Release registered in the in-memory plan",
-            "[demo] No provider or pipeline work was executed",
-          ],
-        };
-
-        const job: ProductionJob = {
-          id: createId(),
-          agentId: channel?.agentId ?? "agent-01",
-          capability: "story_plan",
-          status: "running",
-          progressPercent: 12,
-          note: `Production run started for: ${trimmed}`,
-          createdAt: "Just now",
-        };
-
-        const ev = makeEvidence(
-          "PRODUCTION_RELEASE_STARTED",
-          channel?.agentId ?? "agent-01",
-          channel?.slug ?? "slug",
-          "story",
-          computeSha256(release.id + trimmed),
-          `demo://pipeline/start?season=${season}&episode=${episode}`
-        );
-
-        return {
-          ...prev,
-          releases: [release, ...prev.releases],
-          jobs: [job, ...prev.jobs],
-          evidenceEvents: [ev, ...prev.evidenceEvents],
-        };
-      });
-    },
-    []
-  );
-
-  const advancePipelineStage = useCallback((releaseId: string) => {
-    setState((prev) => {
-      const idx = prev.releases.findIndex((r) => r.id === releaseId);
-      if (idx === -1) return prev;
-      const rel = prev.releases[idx];
-      const stageIdx = PIPELINE_STAGES.findIndex(
-        (s) => s.key === rel.currentStage
-      );
-      if (stageIdx === -1 || stageIdx >= PIPELINE_STAGES.length - 1) {
-        return prev;
+      if (trimmed.length > 4000) {
+        setActionError("The backend accepts at most 4000 characters per Director message.");
+        return;
       }
-
-      const nextStage = PIPELINE_STAGES[stageIdx + 1].key;
-      const nextStatus: ReleaseStatus =
-        nextStage === "complete"
-          ? "published"
-          : nextStage === "qc"
-          ? "review"
-          : "in_production";
-      const progress = (stageIdx + 2) / PIPELINE_STAGES.length;
-      const newLogEntry = `[demo] Stage advanced to ${nextStage} in the in-memory plan; no render, QC gate or provider execution occurred.`;
-
-      const updatedReleases = [...prev.releases];
-      updatedReleases[idx] = {
-        ...rel,
-        currentStage: nextStage,
-        status: nextStatus,
-        stageProgress: progress,
-        executionLog: [...rel.executionLog, newLogEntry],
-      };
-
-      const stageHash = computeSha256(`${rel.id}${nextStage}${Date.now()}`);
-      const ev = makeEvidence(
-        "STAGE_ADVANCED",
-        "director",
-        rel.channelName,
-        nextStage,
-        stageHash,
-        `demo://pipeline/stage-advanced?stage=${nextStage}&status=${nextStatus}`
-      );
-
-      return {
-        ...prev,
-        releases: updatedReleases,
-        evidenceEvents: [ev, ...prev.evidenceEvents],
-      };
-    });
-  }, []);
-
-  const updateJobStatus = useCallback((jobId: string, newStatus: JobStatus) => {
-    setState((prev) => {
-      const idx = prev.jobs.findIndex((j) => j.id === jobId);
-      if (idx === -1) return prev;
-      const job = prev.jobs[idx];
-      const updatedJobs = [...prev.jobs];
-      updatedJobs[idx] = { ...job, status: newStatus };
-
-      const ev = makeEvidence(
-        "JOB_STATUS_UPDATED",
-        job.agentId,
-        "jobs",
-        job.capability,
-        computeSha256(job.id + newStatus),
-        `demo://job/${newStatus}?id=${jobId}`
-      );
-
-      return {
-        ...prev,
-        jobs: updatedJobs,
-        evidenceEvents: [ev, ...prev.evidenceEvents],
-      };
-    });
-  }, []);
-
-  const decideApproval = useCallback((approvalId: string, approved: boolean) => {
-    setState((prev) => {
-      const idx = prev.approvals.findIndex((a) => a.id === approvalId);
-      if (idx === -1) return prev;
-      const item = prev.approvals[idx];
-      const newStatus = approved ? "approved" : "rejected";
-      const updatedApprovals = [...prev.approvals];
-      updatedApprovals[idx] = { ...item, status: newStatus };
-
-      const ev = makeEvidence(
-        approved ? "OWNER_APPROVAL_GRANTED" : "OWNER_APPROVAL_REJECTED",
-        "owner",
-        item.channelName,
-        "publishing",
-        item.artifactHash,
-        `demo://approval/${newStatus}-on-demo-fixture?dest=${item.destination}`
-      );
-
-      return {
-        ...prev,
-        approvals: updatedApprovals,
-        evidenceEvents: [ev, ...prev.evidenceEvents],
-      };
-    });
-  }, []);
-
-  const updateConnectionSlot = useCallback(
-    (connectionId: string, status: ConnectionSlotStatus, locator: string) => {
-      const cleanLocator =
-        locator.trim() || "vault://stph-secrets/unconfigured";
-      setState((prev) => {
-        const idx = prev.platformConnections.findIndex(
-          (c) => c.id === connectionId
-        );
-        if (idx === -1) return prev;
-        const slot = prev.platformConnections[idx];
-        const updated = [...prev.platformConnections];
-        updated[idx] = {
-          ...slot,
-          status,
-          locator: cleanLocator,
-          lastVerified: getCurrentTimestamp(),
-        };
-
-        const ev = makeEvidence(
-          "CONNECTION_SLOT_CONFIGURED",
-          slot.agentId,
-          slot.platform,
-          "credentials",
-          computeSha256(connectionId + cleanLocator),
-          "demo://connections/locator_saved"
-        );
-
-        return {
-          ...prev,
-          platformConnections: updated,
-          evidenceEvents: [ev, ...prev.evidenceEvents],
-        };
+      const clientMessageId = createId();
+      await withAction(async () => {
+        let payload: any = null;
+        try {
+          payload = await api.sendMessage(agentId, { body: trimmed, kind, clientMessageId });
+        } finally {
+          // Re-read the durable conversation either way: no optimistic message can
+          // masquerade as a stored one, and a provider failure is visible.
+          await refreshConversation(agentId);
+        }
+        if (payload && typeof payload === "object" && payload.directorResponse) {
+          // The durable read above is authoritative; this only refreshes status.
+          setSource("communication", () => liveStatus());
+        }
       });
     },
-    []
+    [api, refreshConversation, setSource, withAction]
   );
 
-  const inspectArtifact = useCallback((slot: MediaSlot, channelSlug: string) => {
-    const computedHash =
-      slot.artifactHash ??
-      computeSha256(
-        `${slot.key}:${slot.artifactTitle}:${slot.durationSeconds}`
-      );
-    const ev: EvidenceEvent = {
-      id: createId(),
-      eventType: "ARTIFACT_INSPECTED",
-      agentId: "inspector",
-      channelSlug,
-      stage: "qc",
-      artifactHash: computedHash,
-      verificationReceipt:
-        "demo://inspection?note=in-memory demo slot; no FFprobe was executed",
-      timestamp: getCurrentTimestamp(),
-    };
-
-    setState((prev) => ({
-      ...prev,
-      evidenceEvents: [ev, ...prev.evidenceEvents],
-    }));
-
+  const inspectArtifact = useCallback((slot: MediaSlot) => {
     setInspectionData({
       title: slot.artifactTitle ?? slot.label,
       slotKey: slot.key,
@@ -856,244 +768,105 @@ export function useProductionStore() {
       aspectRatio: slot.aspectRatio,
       lufs: slot.lufsAudio,
       codec: slot.codec,
-      sha256: computedHash,
+      sha256: slot.artifactHash ?? "",
       isVerified: slot.verified,
     });
   }, []);
 
-  const dismissInspection = useCallback(() => {
-    setInspectionData(null);
-  }, []);
+  /* --------------------------------------------------------------- return */
 
-  const resetToCanonical = useCallback(() => {
-    const fresh = getDefaultPersistedState();
-    const ev = makeEvidence(
-      "SYSTEM_RESET_TO_CANONICAL",
-      "owner",
-      "system",
-      "catalog",
-      computeSha256(createId()),
-      "demo://system/reset_canonical"
-    );
-    setState((prev) => ({
-      ...fresh,
-      currentOwner: prev.currentOwner ?? INITIAL_OWNER,
-      evidenceEvents: [ev, ...fresh.evidenceEvents],
-    }));
-    setSchedulerFeedback(null);
-  }, []);
+  const schedules = useMemo(() => {
+    const out: Record<string, DirectorSchedule> = {};
+    for (const [agentId, view] of Object.entries(scheduleViews)) {
+      out[agentId] = view.schedule;
+    }
+    return out;
+  }, [scheduleViews]);
 
-  const setDefaultPublishingMode = useCallback((mode: PublishingMode) => {
-    setState((prev) => ({
-      ...prev,
-      defaultPublishingMode: mode,
-    }));
-  }, []);
-
-  const setOwnerAvailability = useCallback((availability: OwnerAvailability) => {
-    setState((prev) => {
-      if (prev.ownerAvailability === availability) return prev;
-      const ev = makeEvidence(
-        "OWNER_AVAILABILITY_UPDATED",
-        "owner",
-        "governance",
-        "delegation",
-        computeSha256(`availability:${availability}:${Date.now()}`),
-        `demo://hermes/owner-availability?state=${availability}`
-      );
-      return {
-        ...prev,
-        ownerAvailability: availability,
-        evidenceEvents: [ev, ...prev.evidenceEvents],
-      };
-    });
-  }, []);
-
-  const toggleDelegatedPolicy = useCallback((policyId: string) => {
-    setState((prev) => {
-      const idx = prev.delegationPolicies.findIndex((p) => p.id === policyId);
-      if (idx === -1) return prev;
-      const target = prev.delegationPolicies[idx];
-      if (target.lockedOwnerOnly) return prev;
-      const nextVal = !target.delegatedWhenUnavailable;
-      const updated = [...prev.delegationPolicies];
-      updated[idx] = { ...target, delegatedWhenUnavailable: nextVal };
-
-      const ev = makeEvidence(
-        "DELEGATION_POLICY_UPDATED",
-        "owner",
-        "governance",
-        "delegation",
-        computeSha256(`${policyId}:${nextVal}:${Date.now()}`),
-        `demo://hermes/delegation-policy?id=${policyId}&delegated=${nextVal}`
-      );
-
-      const dec: HermesDecision = {
-        id: createId(),
-        topic: `Delegation Rule: ${target.category}`,
-        decision: nextVal
-          ? "[demo] Explicit unavailability delegation enabled by Owner"
-          : "[demo] Unavailability delegation revoked — requires explicit Owner consent",
-        rationale:
-          "Owner availability policy updated inside the console. No response is never treated as consent.",
-        authorityTier: "Owner Governance",
-        timestamp: getCurrentTimeSimple(),
-      };
-
-      return {
-        ...prev,
-        delegationPolicies: updated,
-        hermesDecisions: [dec, ...prev.hermesDecisions],
-        evidenceEvents: [ev, ...prev.evidenceEvents],
-      };
-    });
-  }, []);
-
-  const evaluateHermesDelegation = useCallback(
-    (
-      policyId: string,
-      requestSummary: string,
-      approvalWindowExpired: boolean
-    ): { outcome: string; detail: string; allowed: boolean } => {
-      const cleanSummary =
-        requestSummary.trim() || "Simulated HERMES action request";
-      const policy = state.delegationPolicies.find((p) => p.id === policyId);
-      if (!policy) {
-        return {
-          outcome: "UNKNOWN_POLICY",
-          detail: "No matching delegation policy found.",
-          allowed: false,
-        };
-      }
-
-      let outcome = "";
-      let detail = "";
-      let allowed = false;
-      let tier = "Tier 2: Policy Governed";
-
-      if (policy.lockedOwnerOnly) {
-        outcome = "BLOCKED_OWNER_ONLY";
-        detail = `[demo] Refused: "${policy.category}" is strictly Owner-only. Even when the Owner is unavailable or an approval window expires, HERMES cannot self-authorize reserved actions.`;
-        tier = "Tier 3: Owner Required";
-      } else if (state.ownerAvailability === "available") {
-        if (policy.disposition === "explicit_policy_only") {
-          outcome = "AWAITING_OWNER_DECISION";
-          detail = `[demo] Owner is AVAILABLE: submitted "${cleanSummary}" to Owner approval queue. HERMES awaits direct Owner consent.`;
-          tier = "Tier 3: Owner Required";
-        } else {
-          outcome = "OWNER_PRECEDENCE_PREPARED";
-          detail = `[demo] Owner is AVAILABLE: HERMES prepared "${cleanSummary}" for routine execution under active Owner precedence.`;
-          allowed = true;
-          tier = "Tier 1: Autonomous";
-        }
-      } else {
-        // Owner unavailable
-        if (approvalWindowExpired && !policy.delegatedWhenUnavailable) {
-          outcome = "PAUSED_NO_ASSUMED_CONSENT";
-          detail = `[demo] Owner UNAVAILABLE + response window expired: No explicit delegation covers "${policy.category}". Silence is not consent — HERMES paused this action and continued unrelated safe work.`;
-          tier = "Paused · No Assumed Consent";
-        } else if (!policy.delegatedWhenUnavailable) {
-          outcome = "PAUSED_AWAITING_EXPLICIT_DELEGATION";
-          detail = `[demo] Owner UNAVAILABLE: "${policy.category}" is not delegated for automatic decision. Action remains paused until Owner responds or updates delegation policy.`;
-          tier = "Tier 3: Owner Required";
-        } else {
-          outcome = "EXECUTED_WITHIN_DELEGATION";
-          detail = `[demo] Owner UNAVAILABLE: "${policy.category}" is explicitly delegated. HERMES authorized "${cleanSummary}", logged reasoning, and queued Owner re-entry notification.`;
-          allowed = true;
-          tier = "Delegated Executive Authority";
-        }
-      }
-
-      const dec: HermesDecision = {
-        id: createId(),
-        topic: `${policy.category} (${outcome})`,
-        decision: `${cleanSummary} → ${outcome}`,
-        rationale: detail,
-        authorityTier: tier,
-        timestamp: getCurrentTimeSimple(),
-      };
-
-      const ev = makeEvidence(
-        "HERMES_DELEGATION_EVALUATED",
-        "hermes",
-        "governance",
-        outcome.toLowerCase(),
-        computeSha256(`${policyId}:${outcome}:${cleanSummary}:${Date.now()}`),
-        `demo://hermes/evaluate?policy=${policyId}&outcome=${outcome}`
-      );
-
-      setState((prev) => ({
-        ...prev,
-        hermesDecisions: [dec, ...prev.hermesDecisions],
-        evidenceEvents: [ev, ...prev.evidenceEvents],
-      }));
-
-      return { outcome, detail, allowed };
-    },
-    [state.delegationPolicies, state.ownerAvailability]
-  );
+  const ownerAvailability: OwnerAvailability | "unknown" = "unknown";
 
   return {
-    // Static metadata
-    agents: INITIAL_AGENTS,
-    storageMode: STORAGE_MODE,
-    storageStatus: STORAGE_STATUS,
-
-    // Persisted domain state
-    currentOwner: state.currentOwner,
-    channels: state.channels,
-    releases: state.releases,
-    schedules: state.schedules,
-    messages: state.messages,
-    charters: state.charters,
-    jobs: state.jobs,
-    providers: state.providers,
-    platformConnections: state.platformConnections,
-    approvals: state.approvals,
-    evidenceEvents: state.evidenceEvents,
-    hermesDecisions: state.hermesDecisions,
-    defaultPublishingMode: state.defaultPublishingMode,
-    ownerAvailability: state.ownerAvailability,
-    delegationPolicies: state.delegationPolicies,
-
-    // UI navigation & filter state
-    currentSection,
-    selectedAgentId,
-    schedulerFeedback,
-    channelSearchQuery,
-    jobStatusFilter,
-    evidenceFilter,
-    inspectionData,
-
-    // Actions
-    navigateTo: setCurrentSection,
-    selectAgent: setSelectedAgentId,
+    /* session */
+    sessionStatus,
+    currentOwner,
+    sessionError,
+    sessionExpired,
+    mfaRequired,
     login,
+    verifyMfa,
     logout,
+    restoreSession,
+    refreshAll,
+
+    /* live read models */
+    agents,
+    channels,
+    releases,
+    schedules,
+    scheduleViews,
+    approvals,
+    connections,
+    providers,
+    evidenceEvents,
+    hermesDecisions,
+    hermesOverview,
+    memoryEntries,
+    messages,
+    sessions,
+    metrics,
+    health,
+    ready,
+
+    /* data-source status */
+    sources,
+    backendGaps: BACKEND_GAPS,
+
+    /* runtime/storage facts */
+    storageMode: health?.storage ?? (health ? "unreachable" : "unknown"),
+    storageStatus: ready?.status ?? (health?.status ?? "unknown"),
+
+    /* preferences */
+    defaultPublishingMode: preferences.defaultPublishingMode,
+    setDefaultPublishingMode,
+    ownerAvailability,
+
+    /* UI state */
+    currentSection,
+    navigateTo: setCurrentSection,
+    selectedAgentId,
+    selectAgent: setSelectedAgentId,
+    schedulerFeedback,
+    clearSchedulerFeedback: () => setSchedulerFeedback(null),
+    channelSearchQuery,
+    setChannelSearchQuery,
+    jobStatusFilter,
+    setJobStatusFilter,
+    evidenceFilter,
+    setEvidenceFilter,
+    inspectionData,
+    dismissInspection: () => setInspectionData(null),
+    busy,
+    actionError,
+    dismissActionError: () => setActionError(null),
+
+    /* actions */
     addChannel,
     saveSchedule,
     previewSchedulePlan,
     runSchedulerNow,
-    clearSchedulerFeedback: () => setSchedulerFeedback(null),
     sendDirectorMessage,
-    refreshDirectorMessages,
     startProductionRelease,
     advancePipelineStage,
-    pauseJob: (id: string) => updateJobStatus(id, "paused"),
-    resumeJob: (id: string) => updateJobStatus(id, "running"),
-    cancelJob: (id: string) => updateJobStatus(id, "failed"),
-    setJobStatusFilter,
-    setEvidenceFilter,
-    setChannelSearchQuery,
-    approveItem: (id: string) => decideApproval(id, true),
-    rejectItem: (id: string) => decideApproval(id, false),
-    updateConnectionSlot,
     inspectArtifact,
-    dismissInspection,
-    resetToCanonical,
-    setDefaultPublishingMode,
-    setOwnerAvailability,
-    toggleDelegatedPolicy,
-    evaluateHermesDelegation,
+    refreshConnections,
+    refreshMemory,
+    refreshConversation,
+    refreshProduction,
+    refreshSchedule,
+    refreshApprovals,
+    refreshEvidence,
+    refreshHermes,
+    refreshProviders,
+    markJobsUnavailable,
   };
 }

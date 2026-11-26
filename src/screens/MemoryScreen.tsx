@@ -1,171 +1,167 @@
 import React from "react";
-import { Channel, CreativeCharter } from "../types/models";
+import type { Agent } from "../types/models";
+import type { MemoryEntryDto } from "../types/ownerApi";
+import type { DataSourceStatus } from "../types/dataState";
 import { MEMORY_HIERARCHY, MEMORY_TYPES } from "../data/architectureBlueprint";
-import { DirectorChannelTabs, StatusBadge } from "../components/StatusBadge";
+import { StatusBadge } from "../components/StatusBadge";
+import { DataSourceNotice, ScreenHeader } from "../components/DataSourceBadge";
 
 interface MemoryScreenProps {
-  channels: Channel[];
-  charters: Record<string, CreativeCharter>;
+  agents: Agent[];
+  entries: MemoryEntryDto[];
   selectedAgentId: string;
   onSelectAgent: (agentId: string) => void;
+  status: DataSourceStatus;
+  onRefresh: () => void;
 }
 
+/**
+ * Memory screen: durable per-Director memory categories plus the documented
+ * M0–M6 isolation blueprint.
+ *
+ * The blueprint is explicitly labelled as documentation. Creative-charter prose
+ * is NOT shown because it has no backend record — displaying seeded prose next
+ * to a real Director id would misrepresent the Director's actual instructions.
+ */
 export const MemoryScreen: React.FC<MemoryScreenProps> = ({
-  channels,
-  charters,
+  agents,
+  entries,
   selectedAgentId,
   onSelectAgent,
+  status,
+  onRefresh,
 }) => {
-  const currentCharter = charters[selectedAgentId];
+  const connected = status.state === "live" || status.state === "stale";
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-lg font-bold font-display text-[#E8EEF8]">
-          Memory Architecture &amp; Director Creative Charter
-        </h1>
-        <p className="text-xs text-[#8D9AB3] mt-0.5">
-          Memory is scoped across M0–M6 ownership layers. Director memory (M3) is
-          isolated by default; sensitive credentials belong in the secret vault,
-          never in AI memory.
-        </p>
-      </div>
+      <ScreenHeader
+        title="Memory &amp; Lore"
+        subtitle="Durable Director memory categories from PostgreSQL (M3 isolation), alongside the documented M0–M6 ownership model."
+        status={status}
+        onRefresh={onRefresh}
+      />
 
-      {/* M0–M6 Isolation Hierarchy */}
       <section className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-5 space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-bold font-display text-[#E8EEF8]">
             M0–M6 Memory Ownership Hierarchy
           </h2>
-          <StatusBadge label="Strict Tenant Isolation" tone="ok" />
+          <StatusBadge label="Blueprint (design reference)" tone="warn" />
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2.5">
-          {MEMORY_HIERARCHY.map((layer) => {
-            const isM3 = layer.code === "M3";
-            return (
-              <div
-                key={layer.code}
-                className={`rounded-lg border p-3 space-y-1 ${
-                  isM3
-                    ? "bg-[#4F8CFF]/10 border-[#4F8CFF]/50"
-                    : "bg-[#101A2B] border-[#1E2A40]"
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-xs font-bold text-[#22D3EE]">
-                    {layer.code}
-                  </span>
-                  <span className="text-[11px] font-mono text-[#8D9AB3]">
-                    {layer.isolation}
-                  </span>
-                </div>
-                <div className="text-xs font-semibold text-[#E8EEF8]">
-                  {layer.title}
-                </div>
-                <p className="text-[11px] text-[#8D9AB3] leading-relaxed">
-                  {layer.scope}
-                </p>
+          {MEMORY_HIERARCHY.map((layer) => (
+            <div
+              key={layer.code}
+              className={`rounded-lg border p-3 space-y-1 ${
+                layer.code === "M3"
+                  ? "bg-[#4F8CFF]/10 border-[#4F8CFF]/50"
+                  : "bg-[#101A2B] border-[#1E2A40]"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-mono text-xs font-bold text-[#22D3EE]">{layer.code}</span>
+                <span className="text-[11px] font-mono text-[#8D9AB3]">{layer.isolation}</span>
               </div>
-            );
-          })}
+              <div className="text-xs font-semibold text-[#E8EEF8]">{layer.title}</div>
+              <p className="text-[11px] text-[#8D9AB3] leading-relaxed">{layer.scope}</p>
+            </div>
+          ))}
         </div>
 
         <div className="pt-2 border-t border-[#1E2A40]">
           <div className="text-[11px] font-semibold text-[#8D9AB3] mb-1.5">
-            10 Governed Memory Classifications
+            Governed memory classifications
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {MEMORY_TYPES.map((mt) => (
+            {MEMORY_TYPES.map((type) => (
               <span
-                key={mt}
+                key={type}
                 className="text-[11px] px-2.5 py-1 rounded-md bg-[#101A2B] border border-[#1E2A40] text-[#E8EEF8]"
               >
-                {mt}
+                {type}
               </span>
             ))}
           </div>
         </div>
       </section>
 
-      <DirectorChannelTabs
-        channels={channels}
-        selectedAgentId={selectedAgentId}
-        onSelectAgent={onSelectAgent}
-      />
-
-      {currentCharter ? (
-        <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-          <div className="lg:col-span-3 bg-[#0D1420] border border-[#1E2A40] rounded-xl p-5 space-y-4">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-base font-bold font-display text-[#22D3EE]">
-                M3 · Universe Creative Charter
-              </h2>
-              <StatusBadge
-                label={`Director ${selectedAgentId} (Isolated)`}
-                tone="info"
-              />
-            </div>
-
-            <div className="space-y-4 divide-y divide-[#1E2A40]">
-              <CharterField title="Logline" content={currentCharter.logline} />
-              <CharterField
-                title="Premise & Setting"
-                content={currentCharter.premise}
-                padded
-              />
-              <CharterField
-                title="Visual Style & Palette"
-                content={currentCharter.visualStyle}
-                padded
-              />
-              <CharterField
-                title="Pacing & Rhythm"
-                content={currentCharter.pacing}
-                padded
-              />
-              <CharterField
-                title="Target Audience"
-                content={currentCharter.targetAudience}
-                padded
-              />
-            </div>
-          </div>
-
-          <div className="lg:col-span-2 bg-[#0D1420] border border-[#1E2A40] rounded-xl p-5 space-y-3 h-fit">
-            <h2 className="text-sm font-bold font-display text-[#E8EEF8]">
-              Character Continuity &amp; Non-Negotiable Rules
-            </h2>
-            <div className="space-y-2.5">
-              {currentCharter.continuityRules.map((rule) => (
+      <div className="space-y-2">
+        <div className="text-xs font-semibold text-[#8D9AB3]">Select Director</div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {agents.slice(0, 24).map((agent) => {
+            const selected = agent.id === selectedAgentId;
+            return (
+              <button
+                key={agent.id}
+                type="button"
+                onClick={() => onSelectAgent(agent.id)}
+                className={`px-3 py-2 rounded-lg border text-left transition-colors cursor-pointer ${
+                  selected
+                    ? "bg-[#4F8CFF]/15 border-[#4F8CFF]"
+                    : "bg-[#0D1420] border-[#1E2A40] hover:border-[#2C3D5E]"
+                }`}
+              >
                 <div
-                  key={rule}
-                  className="bg-[#101A2B] border border-[#1E2A40] rounded-lg p-3 text-xs text-[#E8EEF8] leading-relaxed"
+                  className={`text-xs font-semibold font-mono truncate ${
+                    selected ? "text-[#22D3EE]" : "text-[#E8EEF8]"
+                  }`}
                 >
-                  {rule}
+                  {agent.id}
                 </div>
-              ))}
-            </div>
-          </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {!connected ? (
+        <DataSourceNotice status={status} title={`memory for ${selectedAgentId}`} onRetry={onRefresh} />
+      ) : entries.length === 0 ? (
+        <div className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-8 text-center space-y-2">
+          <p className="text-sm text-[#E8EEF8]">
+            Director {selectedAgentId} has no persisted memory entries.
+          </p>
+          <p className="text-xs text-[#8D9AB3]">
+            Memory is only written by Director workflows; this console does not seed it.
+          </p>
         </div>
       ) : (
-        <div className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-8 text-center text-xs text-[#8D9AB3]">
-          No creative charter registered for Director {selectedAgentId}.
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          {entries.map((entry, index) => (
+            <div
+              key={entry.id ?? `${entry.category}-${index}`}
+              className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-4 space-y-2"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-bold text-[#22D3EE] font-mono break-all">
+                  {entry.category}
+                </h3>
+                <StatusBadge label="durable" tone="ok" />
+              </div>
+              <p className="text-sm text-[#E8EEF8] leading-relaxed whitespace-pre-wrap break-words">
+                {entry.content}
+              </p>
+              <div className="text-[11px] font-mono text-[#8D9AB3] tabular-nums">
+                Updated: {entry.updatedAt ?? "not reported"}
+              </div>
+            </div>
+          ))}
         </div>
       )}
+
+      <div className="bg-[#0D1420] border border-[#FBBF24]/35 rounded-xl p-4 space-y-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusBadge label="UNAVAILABLE" tone="bad" />
+          <span className="text-sm font-bold text-[#E8EEF8]">Creative charter</span>
+        </div>
+        <p className="text-xs text-[#8D9AB3] leading-relaxed">
+          Creative charters have no persistence route, so the console shows no charter prose for a real
+          Director id. The Director creative-identity documents in docs/directors remain the current
+          reference.
+        </p>
+      </div>
     </div>
   );
 };
-
-const CharterField: React.FC<{
-  title: string;
-  content: string;
-  padded?: boolean;
-}> = ({ title, content, padded }) => (
-  <div className={padded ? "pt-3 space-y-1" : "space-y-1"}>
-    <div className="text-[11px] font-semibold text-[#8D9AB3] tracking-wide">
-      {title}
-    </div>
-    <p className="text-sm text-[#E8EEF8] leading-relaxed">{content}</p>
-  </div>
-);

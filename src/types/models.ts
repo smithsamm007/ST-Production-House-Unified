@@ -122,7 +122,10 @@ export interface ProductionRelease {
   season: number;
   episode: number;
   status: ReleaseStatus;
-  currentStage: PipelineStageKey;
+  /** Backend status string exactly as returned (never rewritten for display). */
+  backendStatus?: string;
+  /** Empty string when the backend exposes no pipeline stage for this release. */
+  currentStage: PipelineStageKey | "";
   stageProgress: number;
   createdAt: string;
   executionLog: string[];
@@ -195,6 +198,8 @@ export interface ProductionJob {
   note: string;
   createdAt: string;
 }
+
+export type OwnerAvailabilityState = OwnerAvailability | "unknown";
 
 export type ProviderCategory = "Visual" | "Narration" | "Assembly" | "Publisher";
 export type ProviderHealthStatus = "healthy" | "cooldown" | "degraded";

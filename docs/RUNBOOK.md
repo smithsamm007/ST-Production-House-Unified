@@ -152,10 +152,15 @@ Perform these steps in order. Each step gates the next.
 2. **Migrations applied.** Run `npm run migrate`. It is idempotent; it prints
    `MIGRATIONS_COMPLETE` with `appliedCount`. Exit code 1 means a real failure
    (see §7 before touching anything).
-3. **API server started.** `npm start` (or `npm run dev` for development — both
-   execute `node server.js`). The server binds `0.0.0.0:3000`. It creates its
-   own Postgres adapter at import time; if the database is down the process
-   still boots but `/api/ready` will report `503 not_ready`.
+3. **API server started.** `npm start` executes `node server.js` and binds
+   `0.0.0.0:3000`. It serves the built React Owner Console from `dist/` and the
+   `/api` routes from the same origin (logged at boot as
+   `DASHBOARD_STATIC_ROOT`); with no build present it falls back to the legacy
+   `public/` dashboard. It creates its own Postgres adapter at import time; if
+   the database is down the process still boots but `/api/ready` will report
+   `503 not_ready`. For hot-reload development, run `npm run dev:api`
+   (control plane on `:3000`) and `npm run dev` (Vite on `:5173`, proxying
+   `/api/*` to `:3000`) together — never point the browser at a second origin.
 4. **Readiness verified.**
    - `GET /api/health` → liveness only (`{"status":"healthy"}`). No database.
    - `GET /api/ready` → executes `SELECT 1`; returns `{"status":"ready"}`
