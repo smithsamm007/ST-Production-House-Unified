@@ -59,11 +59,18 @@ test("Owner bootstrap safety refuses missing credentials and behaves predictably
   process.env.BOOTSTRAP_OWNER_PASSWORD = prevPwd;
 });
 
-test("API: GET / returns overview payload", async () => {
+test("API: GET / returns the active entrypoint (console HTML once built, else overview payload)", async () => {
   const res = await request(app)
     .get("/")
     .expect(200);
 
+  // One runtime, two roots: after `npm run build` the React Owner Console is
+  // served at /; a source checkout without a build keeps the JSON discovery
+  // payload. Both are real 200s — never a fabricated UI.
+  if (/text\/html/.test(res.headers["content-type"] || "")) {
+    assert.match(res.text, /<div id="root">/);
+    return;
+  }
   assert.equal(res.body.service, "ST Production House Unified");
   assert.equal(res.body.status, "healthy");
   assert.ok(res.body.endpoints);

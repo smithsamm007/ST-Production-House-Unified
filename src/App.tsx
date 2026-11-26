@@ -4,6 +4,19 @@ import { AppShell } from "./components/AppShell";
 import { InspectionModal } from "./components/InspectionModal";
 import { LoginScreen } from "./screens/LoginScreen";
 
+/**
+ * Route-level code splitting (main's architecture, preserved).
+ *
+ * The login screen and the shell stay in the initial chunk so authentication
+ * and navigation are immediately responsive; every console screen is loaded on
+ * first navigation. Named exports are adapted to the `default` shape React.lazy
+ * requires, and no new dependency is introduced.
+ *
+ * The wiring below is the Day 2 authenticated contract: each screen receives a
+ * `DataSourceStatus` (LIVE / STALE / OFFLINE / UNAVAILABLE …) plus explicit
+ * refresh callbacks, so a rendered screen can never imply a connection it does
+ * not have. The old demo-store props (`onApprove`, `releases`, `jobs`) are gone.
+ */
 const OverviewScreen = lazy(() =>
   import("./screens/OverviewScreen").then((m) => ({ default: m.OverviewScreen }))
 );
@@ -67,15 +80,54 @@ const SettingsScreen = lazy(() =>
   import("./screens/SettingsScreen").then((m) => ({ default: m.SettingsScreen }))
 );
 
+/** Accessible fallback while a screen chunk loads. */
+const ScreenFallback: React.FC = () => (
+  <div
+    role="status"
+    aria-live="polite"
+    className="min-h-[40vh] flex flex-col items-center justify-center gap-2"
+  >
+    <div className="w-6 h-6 rounded-full border-2 border-[#2C3D5E] border-t-[#22D3EE] animate-spin" />
+    <span className="text-xs text-[#8D9AB3]">Loading console module…</span>
+  </div>
+);
+
+const BootScreen: React.FC = () => (
+  <div
+    role="status"
+    aria-live="polite"
+    className="min-h-screen flex flex-col items-center justify-center gap-3 bg-[#070B12]"
+  >
+    <div className="w-8 h-8 rounded-full border-2 border-[#2C3D5E] border-t-[#22D3EE] animate-spin" />
+    <div className="text-sm text-[#E8EEF8] font-medium">Verifying Owner session…</div>
+    <div className="text-[11px] text-[#8D9AB3]">
+      Asking the backend who is signed in. No cached identity is trusted.
+    </div>
+  </div>
+);
+
 export const App: React.FC = () => {
   const store = useProductionStore();
 
-  if (!store.currentOwner) {
-    return <LoginScreen onLogin={store.login} />;
+  if (store.sessionStatus === "checking") {
+    return <BootScreen />;
+  }
+
+  if (!store.currentOwner || store.mfaRequired) {
+    return (
+      <LoginScreen
+        onLogin={store.login}
+        onVerifyTotp={store.verifyMfa}
+        mfaRequired={store.mfaRequired}
+        busy={store.busy}
+        sessionError={store.sessionError}
+        sessionExpired={store.sessionExpired}
+      />
+    );
   }
 
   const pendingApprovalsCount = store.approvals.filter(
-    (a) => a.status === "pending"
+    (approval) => approval.status.toUpperCase().includes("PENDING")
   ).length;
 
   return (
@@ -84,7 +136,7 @@ export const App: React.FC = () => {
         owner={store.currentOwner}
         currentSection={store.currentSection}
         onNavigate={store.navigateTo}
-        onLogout={store.logout}
+        onLogout={() => void store.logout()}
         storageMode={store.storageMode}
         storageStatus={store.storageStatus}
         agentCount={store.agents.length}
@@ -92,41 +144,60 @@ export const App: React.FC = () => {
         pendingApprovalsCount={pendingApprovalsCount}
         ownerAvailability={store.ownerAvailability}
       >
-        <Suspense
-          fallback={
-            <div className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-8 text-xs text-[#8D9AB3]">
-              Loading module...
-            </div>
-          }
-        >
+        {store.actionError && (
+          <div
+            role="alert"
+            className="mb-4 rounded-xl border border-[#F87171]/40 bg-[#F87171]/10 px-4 py-2.5 flex items-start justify-between gap-3"
+          >
+            <span className="text-xs text-[#F87171] leading-relaxed">{store.actionError}</span>
+            <button
+              type="button"
+              onClick={store.dismissActionError}
+              className="text-xs text-[#F87171] hover:text-[#E8EEF8] cursor-pointer whitespace-nowrap"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        <Suspense fallback={<ScreenFallback />}>
           {store.currentSection === "overview" && (
             <OverviewScreen
+              metrics={store.metrics}
+              health={store.health}
+              ready={store.ready}
+              agents={store.agents}
               channels={store.channels}
               releases={store.releases}
-              jobs={store.jobs}
-              agentCount={store.agents.length}
-              ownerAvailability={store.ownerAvailability}
+              approvals={store.approvals}
+              hermesOverview={store.hermesOverview}
+              overviewStatus={store.sources.overview}
+              productionStatus={store.sources.production}
+              approvalsStatus={store.sources.approvals}
               onNavigate={store.navigateTo}
-              onAdvanceRelease={store.advancePipelineStage}
-              onInspectSlot={store.inspectArtifact}
+              onRefresh={store.refreshAll}
+              busy={store.busy}
             />
           )}
 
           {store.currentSection === "directors" && (
             <DirectorsScreen
-              channels={store.channels}
               agents={store.agents}
+              channels={store.channels}
+              status={store.sources.directors}
               searchQuery={store.channelSearchQuery}
               onSearchQueryChange={store.setChannelSearchQuery}
               onAddChannel={store.addChannel}
-              onInspectSlot={store.inspectArtifact}
+              onRefresh={store.refreshAll}
+              busy={store.busy}
             />
           )}
 
           {store.currentSection === "schedule" && (
             <ScheduleScreen
-              channels={store.channels}
+              agents={store.agents}
               schedules={store.schedules}
+              scheduleViews={store.scheduleViews}
               selectedAgentId={store.selectedAgentId}
               onSelectAgent={store.selectAgent}
               onSaveSchedule={store.saveSchedule}
@@ -134,26 +205,34 @@ export const App: React.FC = () => {
               onRunSchedulerNow={store.runSchedulerNow}
               feedbackMessage={store.schedulerFeedback}
               onClearFeedback={store.clearSchedulerFeedback}
+              status={store.sources.schedule}
+              onRefresh={store.refreshSchedule}
+              busy={store.busy}
             />
           )}
 
           {store.currentSection === "communication" && (
             <CommunicationScreen
               channels={store.channels}
+              agents={store.agents}
               messages={store.messages}
               selectedAgentId={store.selectedAgentId}
               onSelectAgent={store.selectAgent}
               onSendMessage={store.sendDirectorMessage}
-              onRefreshMessages={store.refreshDirectorMessages}
+              status={store.sources.communication}
+              onRefresh={() => void store.refreshConversation(store.selectedAgentId)}
+              busy={store.busy}
             />
           )}
 
           {store.currentSection === "memory" && (
             <MemoryScreen
-              channels={store.channels}
-              charters={store.charters}
+              agents={store.agents}
+              entries={store.memoryEntries}
               selectedAgentId={store.selectedAgentId}
               onSelectAgent={store.selectAgent}
+              status={store.sources.memory}
+              onRefresh={() => void store.refreshMemory(store.selectedAgentId)}
             />
           )}
 
@@ -161,38 +240,44 @@ export const App: React.FC = () => {
             <ProductionScreen
               channels={store.channels}
               releases={store.releases}
+              status={store.sources.production}
               onStartProduction={store.startProductionRelease}
-              onAdvanceStage={store.advancePipelineStage}
+              onRunStage={store.advancePipelineStage}
+              onRefresh={store.refreshProduction}
+              busy={store.busy}
             />
           )}
 
           {store.currentSection === "jobs" && (
-            <JobsScreen
-              jobs={store.jobs}
-              currentFilter={store.jobStatusFilter}
-              onFilterChange={store.setJobStatusFilter}
-              onPauseJob={store.pauseJob}
-              onResumeJob={store.resumeJob}
-              onCancelJob={store.cancelJob}
-            />
+            <JobsScreen metrics={store.metrics} status={store.sources.jobs} />
           )}
 
           {store.currentSection === "providers" && (
-            <ProvidersQuotasScreen providers={store.providers} />
+            <ProvidersQuotasScreen
+              providers={store.providers}
+              status={store.sources.providers}
+              onRefresh={store.refreshProviders}
+            />
           )}
 
           {store.currentSection === "connections" && (
             <ConnectionsScreen
-              connections={store.platformConnections}
-              onUpdateSlot={store.updateConnectionSlot}
+              agents={store.agents}
+              connections={store.connections}
+              selectedAgentId={store.selectedAgentId}
+              onSelectAgent={store.selectAgent}
+              status={store.sources.connections}
+              onRefresh={() => void store.refreshConnections(store.selectedAgentId)}
+              backendGap={store.backendGaps.connectionWrite}
             />
           )}
 
           {store.currentSection === "approvals" && (
             <ApprovalsScreen
               approvals={store.approvals}
-              onApprove={store.approveItem}
-              onReject={store.rejectItem}
+              status={store.sources.approvals}
+              onRefresh={store.refreshApprovals}
+              decisionGap={store.backendGaps.approvalDecision}
             />
           )}
 
@@ -203,19 +288,21 @@ export const App: React.FC = () => {
           {store.currentSection === "evidence" && (
             <EvidenceScreen
               events={store.evidenceEvents}
+              status={store.sources.evidence}
               currentFilter={store.evidenceFilter}
               onFilterChange={store.setEvidenceFilter}
+              onRefresh={store.refreshEvidence}
             />
           )}
 
           {store.currentSection === "hermes" && (
             <HermesScreen
+              overview={store.hermesOverview}
               decisions={store.hermesDecisions}
-              ownerAvailability={store.ownerAvailability}
-              delegationPolicies={store.delegationPolicies}
-              onChangeOwnerAvailability={store.setOwnerAvailability}
-              onTogglePolicy={store.toggleDelegatedPolicy}
-              onEvaluateDelegation={store.evaluateHermesDelegation}
+              status={store.sources.hermes}
+              onRefresh={store.refreshHermes}
+              availabilityGap={store.backendGaps.ownerAvailability}
+              delegationGap={store.backendGaps.delegationPolicies}
             />
           )}
 
@@ -224,22 +311,22 @@ export const App: React.FC = () => {
           {store.currentSection === "settings" && (
             <SettingsScreen
               owner={store.currentOwner}
-              storageMode={store.storageMode}
-              storageStatus={store.storageStatus}
+              health={store.health}
+              ready={store.ready}
+              sessions={store.sessions}
+              status={store.sources.settings}
               defaultPublishingMode={store.defaultPublishingMode}
               onPublishingModeChange={store.setDefaultPublishingMode}
               onLogout={store.logout}
-              onResetToCanonical={store.resetToCanonical}
+              onRefresh={() => void store.restoreSession()}
+              busy={store.busy}
             />
           )}
         </Suspense>
       </AppShell>
 
       {store.inspectionData && (
-        <InspectionModal
-          data={store.inspectionData}
-          onDismiss={store.dismissInspection}
-        />
+        <InspectionModal data={store.inspectionData} onDismiss={store.dismissInspection} />
       )}
     </>
   );

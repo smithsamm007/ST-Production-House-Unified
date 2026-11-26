@@ -1,3 +1,4 @@
+import { OwnerApiClient, ApiError } from "../api/client";
 import React, { useCallback, useEffect, useState } from "react";
 
 /**
@@ -96,38 +97,30 @@ interface DeadLetter {
   priority: string | null;
 }
 
-let csrfToken: string | null = null;
-async function ownerCsrfToken(): Promise<string | null> {
-  if (csrfToken) return csrfToken;
+/** Inbox & reports use the SHARED Owner Console API client. */
+const inboxClient = new OwnerApiClient();
+
+async function ensureCsrf(): Promise<void> {
+  if (inboxClient.csrfToken) return;
   try {
-    const res = await fetch("/api/auth/me", { credentials: "same-origin" });
-    if (!res.ok) return null;
-    const data = await res.json().catch(() => null);
-    csrfToken = typeof data?.csrfToken === "string" ? data.csrfToken : null;
-    return csrfToken;
+    const me = await inboxClient.get("/api/auth/me");
+    inboxClient.setCsrfToken(me?.csrfToken ?? null);
   } catch {
-    return null;
+    // The mutation below fails honestly with its own status code.
   }
 }
 
 async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
-  const token = method === "GET" ? null : await ownerCsrfToken();
-  const res = await fetch(path, {
-    credentials: "same-origin",
-    ...init,
-    headers: {
-      ...(init.body ? { "Content-Type": "application/json" } : {}),
-      ...(token ? { "x-csrf-token": token } : {}),
-      ...(init.headers ?? {}),
-    },
-  });
-  const data = await res.json().catch(() => null);
-  if (!res.ok) {
-    const code = typeof data?.code === "string" ? data.code : `HTTP_${res.status}`;
-    throw new Error(code);
+  try {
+    if (method === "GET") return (await inboxClient.get(path)) as T;
+    await ensureCsrf();
+    const body = init.body ? JSON.parse(String(init.body)) : undefined;
+    return (await inboxClient.request(path, { method, body })) as T;
+  } catch (error) {
+    const apiError = error as ApiError;
+    throw new Error(apiError?.code ?? `HTTP_${apiError?.status ?? 0}`);
   }
-  return data as T;
 }
 
 const PRIORITY_CLASS: Record<string, string> = {

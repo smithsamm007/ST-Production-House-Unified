@@ -1,177 +1,94 @@
-import React, { useMemo } from "react";
-import { ProductionJob } from "../types/models";
-import { StatusBadge, StatusTone } from "../components/StatusBadge";
+import React from "react";
+import type { MetricsDto } from "../types/ownerApi";
+import type { DataSourceStatus } from "../types/dataState";
+import { MetricCard, StatusBadge, StatusTone } from "../components/StatusBadge";
+import { DataSourceNotice, ScreenHeader } from "../components/DataSourceBadge";
 
 interface JobsScreenProps {
-  jobs: ProductionJob[];
-  currentFilter: string;
-  onFilterChange: (filter: string) => void;
-  onPauseJob: (jobId: string) => void;
-  onResumeJob: (jobId: string) => void;
-  onCancelJob: (jobId: string) => void;
+  metrics: MetricsDto | null;
+  status: DataSourceStatus;
 }
 
-const JOB_FILTERS = [
-  "ALL",
-  "RUNNING",
-  "QUEUED",
-  "PAUSED",
-  "WAITING_FOR_QUOTA",
-  "WAITING_FOR_APPROVAL",
-  "SUCCEEDED",
-  "FAILED",
-];
+const TONES: Record<string, StatusTone> = {
+  running: "ok",
+  queued: "info",
+  succeeded: "ok",
+  failed: "bad",
+  waiting_for_quota: "warn",
+  waiting_for_approval: "warn",
+  paused: "warn",
+};
 
-export const JobsScreen: React.FC<JobsScreenProps> = ({
-  jobs,
-  currentFilter,
-  onFilterChange,
-  onPauseJob,
-  onResumeJob,
-  onCancelJob,
-}) => {
-  const filteredJobs = useMemo(() => {
-    if (currentFilter === "ALL") return jobs;
-    return jobs.filter(
-      (j) => j.status.toUpperCase() === currentFilter.toUpperCase()
-    );
-  }, [jobs, currentFilter]);
-
-  const getTone = (status: string): StatusTone => {
-    if (status === "running" || status === "waiting_for_quota") return "warn";
-    if (status === "succeeded") return "ok";
-    if (status === "failed") return "bad";
-    return "info";
-  };
+/**
+ * Job visibility, honestly limited.
+ *
+ * This repository mounts no job COLLECTION route, so the console shows the
+ * aggregate counts that /api/metrics really returns and states the missing
+ * capability instead of rendering a fabricated job list or fake controls.
+ */
+export const JobsScreen: React.FC<JobsScreenProps> = ({ metrics, status }) => {
+  const connected = status.state === "live" || status.state === "stale";
+  const jobsByStatus = metrics?.jobsByStatus ?? {};
+  const entries = Object.entries(jobsByStatus).sort(([a], [b]) => a.localeCompare(b));
+  const total = entries.reduce((sum, [, count]) => sum + Number(count), 0);
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-lg font-bold font-display text-[#E8EEF8]">
-          Active Production Jobs
-        </h1>
-        <p className="text-xs text-[#8D9AB3] mt-0.5">
-          Job lifecycle &amp; checkpoint control (sql/010 + sql/017). Queue
-          workers execute with durable leases, retry recovery, and quota limits.
-        </p>
-      </div>
+      <ScreenHeader
+        title="Production Jobs"
+        subtitle="Aggregate queue state read from PostgreSQL through /api/metrics. Per-job rows and job controls are not exposed by this backend yet."
+        status={status}
+      />
 
-      {/* Filter Bar */}
-      <div className="flex flex-wrap gap-1.5">
-        {JOB_FILTERS.map((filter) => {
-          const active = currentFilter === filter;
-          return (
-            <button
-              key={filter}
-              type="button"
-              onClick={() => onFilterChange(filter)}
-              className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
-                active
-                  ? "bg-[#4F8CFF]/20 border-[#4F8CFF] text-[#22D3EE]"
-                  : "bg-[#0D1420] border-[#1E2A40] text-[#8D9AB3] hover:text-[#E8EEF8]"
-              }`}
-            >
-              {filter.replace(/_/g, " ")}
-            </button>
-          );
-        })}
-      </div>
-
-      {filteredJobs.length === 0 ? (
-        <div className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-10 text-center space-y-3">
-          <p className="text-sm text-[#8D9AB3]">
-            No jobs matching status filter “{currentFilter.replace(/_/g, " ")}”.
-          </p>
-          <button
-            type="button"
-            onClick={() => onFilterChange("ALL")}
-            className="px-3.5 py-1.5 rounded-lg border border-[#2C3D5E] text-xs font-medium text-[#22D3EE] hover:bg-[#101A2B] cursor-pointer"
-          >
-            Show all jobs
-          </button>
-        </div>
+      {!connected ? (
+        <DataSourceNotice status={status} title="job counts" />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {filteredJobs.map((job) => (
-            <div
-              key={job.id}
-              className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-4 space-y-3 flex flex-col justify-between"
-            >
-              <div className="space-y-2.5">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <h2 className="text-sm font-bold text-[#E8EEF8] tracking-wide">
-                      {job.capability.replace(/_/g, " ").toUpperCase()}
-                    </h2>
-                    <p className="text-xs text-[#22D3EE] mt-0.5 tabular-nums">
-                      Director {job.agentId} · {job.createdAt}
-                    </p>
-                  </div>
-                  <StatusBadge
-                    label={job.status.replace(/_/g, " ")}
-                    tone={getTone(job.status)}
-                  />
-                </div>
+        <>
+          <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <MetricCard label="Total jobs" value={total} tone="info" />
+            <MetricCard
+              label="Running"
+              value={Number(jobsByStatus.running ?? 0)}
+              tone="ok"
+            />
+            <MetricCard label="Queued" value={Number(jobsByStatus.queued ?? 0)} tone="info" />
+            <MetricCard label="Failed" value={Number(jobsByStatus.failed ?? 0)} tone="bad" />
+          </section>
 
-                <p className="text-xs text-[#8D9AB3]">{job.note}</p>
-
-                {(job.status === "running" ||
-                  job.status === "waiting_for_quota") && (
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-[11px] font-mono text-[#8D9AB3] tabular-nums">
-                      <span>Progress</span>
-                      <span>{job.progressPercent}%</span>
-                    </div>
-                    <div className="w-full h-1.5 rounded-full bg-[#1E2A40] overflow-hidden">
-                      <div
-                        className="h-full bg-[#4F8CFF] rounded-full"
-                        style={{ width: `${job.progressPercent}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
+          <section className="bg-[#0D1420] border border-[#1E2A40] rounded-xl p-5 space-y-3">
+            <h2 className="text-sm font-bold font-display text-[#E8EEF8]">Counts by status</h2>
+            {entries.length === 0 ? (
+              <p className="text-xs text-[#8D9AB3]">The jobs table currently holds no rows.</p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {entries.map(([jobStatus, count]) => (
+                  <span
+                    key={jobStatus}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-[#1E2A40] bg-[#101A2B] text-[11px] text-[#E8EEF8]"
+                  >
+                    <StatusBadge label={jobStatus.replace(/_/g, " ")} tone={TONES[jobStatus] ?? "info"} />
+                    <span className="font-mono tabular-nums">{count}</span>
+                  </span>
+                ))}
               </div>
+            )}
+          </section>
 
-              <div className="flex items-center justify-between gap-2 pt-2 border-t border-[#1E2A40]">
-                <span className="text-[11px] font-mono text-[#8D9AB3] tabular-nums">
-                  ID: {job.id.slice(0, 8)}
-                </span>
-
-                <div className="flex items-center gap-2">
-                  {job.status === "running" && (
-                    <button
-                      type="button"
-                      onClick={() => onPauseJob(job.id)}
-                      className="px-2.5 py-1 rounded-md border border-[#2C3D5E] hover:border-[#4F8CFF] text-xs font-medium text-[#E8EEF8] cursor-pointer"
-                    >
-                      Pause
-                    </button>
-                  )}
-                  {job.status === "paused" && (
-                    <button
-                      type="button"
-                      onClick={() => onResumeJob(job.id)}
-                      className="px-2.5 py-1 rounded-md border border-[#34D399]/50 hover:bg-[#34D399]/10 text-xs font-medium text-[#34D399] cursor-pointer"
-                    >
-                      Resume
-                    </button>
-                  )}
-                  {(job.status === "running" ||
-                    job.status === "queued" ||
-                    job.status === "waiting_for_quota") && (
-                    <button
-                      type="button"
-                      onClick={() => onCancelJob(job.id)}
-                      className="px-2.5 py-1 rounded-md border border-[#F87171]/50 hover:bg-[#F87171]/10 text-xs font-medium text-[#F87171] cursor-pointer"
-                    >
-                      Cancel
-                    </button>
-                  )}
-                </div>
-              </div>
+          <section className="bg-[#0D1420] border border-[#FBBF24]/35 rounded-xl p-5 space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusBadge label="UNAVAILABLE" tone="bad" />
+              <h2 className="text-sm font-bold text-[#E8EEF8]">Job list &amp; job controls</h2>
             </div>
-          ))}
-        </div>
+            <p className="text-xs text-[#8D9AB3] leading-relaxed">
+              {status.detail ??
+                "No GET /api/jobs collection route exists, and queue control lives behind /api/control/*, which this console does not use."}
+            </p>
+            <p className="text-[11px] text-[#8D9AB3] leading-relaxed">
+              Pause, resume and cancel are therefore not rendered: a button that cannot reach a real
+              transition would be a simulated production action.
+            </p>
+          </section>
+        </>
       )}
     </div>
   );

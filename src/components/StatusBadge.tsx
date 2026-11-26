@@ -76,17 +76,16 @@ export const PipelineStageStrip: React.FC<PipelineStageStripProps> = ({
   currentStage,
   compact = false,
 }) => {
-  const currentIdx = Math.max(
-    0,
-    PIPELINE_STAGES.findIndex((s) => s.key === currentStage)
-  );
+  // An empty stage means the backend does not report one; no stage is marked
+  // current rather than defaulting to "story" and implying progress.
+  const currentIdx = PIPELINE_STAGES.findIndex((s) => s.key === currentStage);
 
   return (
     <div className="w-full overflow-x-auto pb-1">
       <div className="flex items-center gap-1.5 min-w-max">
         {PIPELINE_STAGES.map((stage, index) => {
-          const isCompleted = index < currentIdx;
-          const isCurrent = index === currentIdx;
+          const isCompleted = currentIdx >= 0 && index < currentIdx;
+          const isCurrent = currentIdx >= 0 && index === currentIdx;
 
           const containerClass = isCurrent
             ? "bg-[#4F8CFF]/15 border-[#4F8CFF] text-[#22D3EE]"

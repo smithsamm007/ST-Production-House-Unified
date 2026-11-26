@@ -40,7 +40,7 @@ interface AppShellProps {
   agentCount: number;
   channelCount: number;
   pendingApprovalsCount: number;
-  ownerAvailability: OwnerAvailability;
+  ownerAvailability: OwnerAvailability | "unknown";
   children: React.ReactNode;
 }
 
@@ -152,6 +152,8 @@ export const AppShell: React.FC<AppShellProps> = ({
               className={`font-mono font-semibold ${
                 ownerAvailability === "available"
                   ? "text-[#34D399]"
+                  : ownerAvailability === "unknown"
+                  ? "text-[#8D9AB3]"
                   : "text-[#FBBF24]"
               }`}
             >
@@ -225,12 +227,13 @@ export const AppShell: React.FC<AppShellProps> = ({
           </div>
         </div>
 
-        {/* Issue #247 Honesty Banner */}
-        <div className="bg-[#F87171]/10 border-t border-[#F87171]/35 px-4 lg:px-6 py-1.5 flex items-center gap-2 text-xs text-[#F87171]">
+        {/* Data-source contract banner (Day 2) */}
+        <div className="bg-[#22D3EE]/10 border-t border-[#22D3EE]/30 px-4 lg:px-6 py-1.5 flex items-center gap-2 text-xs text-[#22D3EE]">
           <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
           <span className="font-medium truncate">
-            DEMO DATA — browser-local fixtures only; nothing here is connected to
-            a live backend, provider or platform.
+            AUTHENTICATED CONTROL PLANE — every value comes from the PostgreSQL-backed
+            API. Each screen carries a LIVE / STALE / UNAVAILABLE badge; a missing
+            capability is labelled, never simulated.
           </span>
         </div>
       </header>

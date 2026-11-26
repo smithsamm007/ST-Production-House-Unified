@@ -54,6 +54,7 @@ import { DirectorWorkspaceRepository } from "../catalog/directorWorkspaceReposit
 import { evaluatePublishGate, runEpisodePipeline } from "../pipeline/episodePipeline.js";
 import { localMotionEnabled } from "../pipeline/motionStage.js";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateSanitizedWorkerContext } from "./creativeCharter.js";
@@ -910,8 +911,33 @@ function secureCookieHeader(name, value, maxAgeSeconds) {
 // ---------------------------------------------------------------------------
 // Public endpoints
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Static UI root resolution — one answer for the whole process.
+//
+// The React Owner Console is built by Vite into `dist/` (git-ignored);
+// `public/` holds the legacy static dashboard. A built console always wins so
+// `node server.js` serves the UI and the API from ONE origin (no /api 404s
+// behind a separate web server); a source checkout without a build keeps the
+// legacy dashboard, so the runtime never claims a build that does not exist.
+// The resolved root is logged once at boot as DASHBOARD_STATIC_ROOT.
+// ---------------------------------------------------------------------------
+const publicDir = fileURLToPath(new URL("../../public", import.meta.url));
+const builtConsoleDir = fileURLToPath(new URL("../../dist", import.meta.url));
+const builtConsoleIndex = path.join(builtConsoleDir, "index.html");
+const useBuiltConsole = existsSync(builtConsoleIndex);
+const dashboardDir = useBuiltConsole ? builtConsoleDir : publicDir;
+console.log(
+  JSON.stringify({
+    code: "DASHBOARD_STATIC_ROOT",
+    source: useBuiltConsole ? "dist" : "public",
+  })
+);
+
 app.get("/", (req, res) => {
-  res.json({
+  // Root is the console when it has been built; otherwise the documented JSON
+  // discovery payload that points at the legacy dashboard.
+  if (useBuiltConsole) return res.sendFile(builtConsoleIndex);
+  return res.json({
     service: "ST Production House Unified",
     status: storageMode === "unconfigured" ? "degraded" : "healthy",
     storage: storageMode,
@@ -2496,10 +2522,9 @@ app.use(
 // Static dashboard + SPA fallback
 // ---------------------------------------------------------------------------
 const dashboardRouter = express.Router();
-const publicDir = fileURLToPath(new URL("../../public", import.meta.url));
-dashboardRouter.use(express.static(publicDir, { index: "index.html", maxAge: "1h", setHeaders: (res, path) => { if (path.endsWith(".html")) res.setHeader("Cache-Control", "no-cache"); } }));
+dashboardRouter.use(express.static(dashboardDir, { index: "index.html", maxAge: "1h", setHeaders: (res, filePath) => { if (filePath.endsWith(".html")) res.setHeader("Cache-Control", "no-cache"); } }));
 dashboardRouter.get(/^\/(?!api\/).*/, (req, res) => {
-  res.sendFile(path.join(publicDir, "index.html"));
+  res.sendFile(path.join(dashboardDir, "index.html"));
 });
 app.use(dashboardRouter);
 

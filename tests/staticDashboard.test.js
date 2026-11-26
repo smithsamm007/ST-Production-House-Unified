@@ -17,6 +17,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -28,24 +29,43 @@ import {
   EPISODES_PER_DAY_OPTIONS,
 } from "../src/scheduling/directorSchedule.js";
 
-const publicDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "public");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const publicDir = path.join(repoRoot, "public");
 const indexHtml = await readFile(path.join(publicDir, "index.html"), "utf8");
 const dashboardJs = await readFile(path.join(publicDir, "dashboard.js"), "utf8");
 const stylesCss = await readFile(path.join(publicDir, "styles.css"), "utf8");
 
-test("API: GET / descriptor advertises the owner dashboard location", async () => {
+// One runtime, two roots. `npm run build` produces the React Owner Console in
+// dist/; a source checkout without a build keeps the legacy public/ dashboard.
+// These tests assert the ACTIVE root, so they hold in both states.
+const builtConsoleDir = path.join(repoRoot, "dist");
+const useBuiltConsole = existsSync(path.join(builtConsoleDir, "index.html"));
+const servedDir = useBuiltConsole ? builtConsoleDir : publicDir;
+const servedIndexHtml = await readFile(path.join(servedDir, "index.html"), "utf8");
+const builtAssetPath = (extension) => {
+  const match = new RegExp(`/assets/[^"']+\\.${extension}`).exec(servedIndexHtml);
+  assert.ok(match, `active console HTML must reference a built ${extension} asset`);
+  return match[0];
+};
+
+test("API: GET / serves the active UI root (built console, else JSON descriptor)", async () => {
   const res = await request(app).get("/").expect(200);
+  if (useBuiltConsole) {
+    assert.match(res.headers["content-type"], /text\/html/);
+    assert.equal(res.text, servedIndexHtml);
+    return;
+  }
   assert.equal(res.body.service, "ST Production House Unified");
   assert.equal(res.body.dashboard, "/index.html");
   assert.ok(res.body.endpoints);
 });
 
-test("Static: GET /index.html serves the owner dashboard HTML", async () => {
+test("Static: GET /index.html serves the active dashboard HTML", async () => {
   const res = await request(app)
     .get("/index.html")
     .expect(200)
     .expect("Content-Type", /text\/html/);
-  assert.ok(res.text.includes("ST Production House — Owner Console"));
+  assert.equal(res.text, servedIndexHtml);
   assert.match(res.headers["cache-control"], /no-cache/);
 });
 
@@ -65,35 +85,45 @@ test("Static: dashboard HTML wires the sidebar views and loads one external runt
   assert.ok(indexHtml.includes('<link rel="stylesheet" href="/styles.css" />'));
 });
 
-test("Static: GET /dashboard.js serves the dashboard runtime script", async () => {
+test("Static: the active dashboard's runtime script is served with a JS content type", async () => {
+  const assetPath = useBuiltConsole ? builtAssetPath("js") : "/dashboard.js";
   const res = await request(app)
-    .get("/dashboard.js")
+    .get(assetPath)
     .expect(200)
     .expect("Content-Type", /javascript/);
-  assert.ok(res.text.includes("ST Production House — dashboard runtime"));
+  if (!useBuiltConsole) assert.ok(res.text.includes("ST Production House — dashboard runtime"));
+  else assert.ok(res.text.length > 0, "built console bundle must not be empty");
 });
 
-test("Static: GET /styles.css serves the dashboard stylesheet", async () => {
+test("Static: the active dashboard's stylesheet is served with a CSS content type", async () => {
+  const assetPath = useBuiltConsole ? builtAssetPath("css") : "/styles.css";
   const res = await request(app)
-    .get("/styles.css")
+    .get(assetPath)
     .expect(200)
     .expect("Content-Type", /text\/css/);
-  assert.ok(res.text.includes("ST Production House — Owner Console styles"));
+  if (!useBuiltConsole) assert.ok(res.text.includes("ST Production House — Owner Console styles"));
 });
 
-test("Static: SPA fallback serves dashboard HTML for unknown non-API paths", async () => {
+test("Static: SPA fallback serves the active dashboard HTML for unknown non-API paths", async () => {
   const res = await request(app)
     .get("/some/unknown/route")
     .expect(200)
     .expect("Content-Type", /text\/html/);
-  assert.equal(res.text, indexHtml);
+  assert.equal(res.text, servedIndexHtml);
 });
 
 test("Static: served dashboard files match the on-disk sources", async () => {
   const html = await request(app).get("/index.html").expect(200);
+  assert.equal(html.text, servedIndexHtml);
+  if (useBuiltConsole) {
+    const js = await request(app).get(builtAssetPath("js")).expect(200);
+    const css = await request(app).get(builtAssetPath("css")).expect(200);
+    assert.equal(js.text, await readFile(path.join(builtConsoleDir, builtAssetPath("js")), "utf8"));
+    assert.equal(css.text, await readFile(path.join(builtConsoleDir, builtAssetPath("css")), "utf8"));
+    return;
+  }
   const js = await request(app).get("/dashboard.js").expect(200);
   const css = await request(app).get("/styles.css").expect(200);
-  assert.equal(html.text, indexHtml);
   assert.equal(js.text, dashboardJs);
   assert.equal(css.text, stylesCss);
 });
