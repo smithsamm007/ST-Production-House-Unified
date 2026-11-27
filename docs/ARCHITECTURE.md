@@ -1,5 +1,12 @@
 # ST Production House Architecture
 
+> **Scope.** The canonical product, business and organisational specification is
+> [`docs/MASTER_BLUEPRINT.md`](MASTER_BLUEPRINT.md). That document defines the
+> Owner/ECC/HERMES executive structure, authority, the Director model, the
+> production lifecycle, distribution, revenue and the roadmap phases. This file
+> describes the **engineering boundaries and their enforcement** only; it must not
+> restate, and must never contradict, the blueprint.
+
 ## The Governing Principle: One House, Many Independent Directors
 
 ST Production House is **one production house containing multiple independent
