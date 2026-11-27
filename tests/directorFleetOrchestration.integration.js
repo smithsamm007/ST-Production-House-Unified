@@ -54,6 +54,7 @@ import { HermesFleetManager } from "../src/fleet/hermesFleetManager.js";
 import { FleetHealthService } from "../src/fleet/fleetHealthService.js";
 import { createFleetRouter } from "../src/api/fleetRouter.js";
 import { collectForgeDailyReport, verifyReportEvidenceHash } from "../src/reporting/dailyReportGenerator.js";
+import { localDateString } from "../src/reporting/reportSchedule.js";
 
 const POSTGRES_URL = process.env.POSTGRES_TEST_URL || process.env.DATABASE_URL || "";
 const HASH = "b".repeat(64);
@@ -897,9 +898,13 @@ test(
       assert.ok(serialized.includes("vault://stph/jarvis/primary"));
 
       // --------------------------------------------------------------- Z
+      // The reporting window is one local (Asia/Kolkata) day, so the reporting
+      // date must be derived in that zone too. Deriving it from the UTC date
+      // makes the window end at 18:30 UTC, which drops every row written after
+      // midnight IST and zeroes the windowed counts.
       const report = await collectForgeDailyReport({
         pool,
-        reportDate: new Date().toISOString().slice(0, 10),
+        reportDate: localDateString(new Date(), "Asia/Kolkata"),
         timeZone: "Asia/Kolkata",
       });
       assert.equal(verifyReportEvidenceHash(report), true, "report evidence hash must verify");

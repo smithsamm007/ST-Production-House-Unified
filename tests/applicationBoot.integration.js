@@ -225,7 +225,7 @@ test(
       admin.on("error", () => {});
       try {
         const applied = await admin.query("SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1");
-        assert.equal(applied.rows[0].filename, "046_director_worker_runtime.sql");
+        assert.equal(applied.rows[0].filename, "047_five_platform_support.sql");
         const tables = await admin.query(
           "SELECT table_name FROM information_schema.tables WHERE table_name IN ('director_workers','director_task_checkpoints','director_lease_violations','director_worker_events')"
         );
