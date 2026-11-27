@@ -1,5 +1,11 @@
 # Continuous Development Roadmap
 
+> **Scope.** This file tracks **engineering task execution** (issues, lanes, merge
+> order). The product's phased roadmap, acceptance criteria and current
+> implementation status are canonical in
+> [`docs/MASTER_BLUEPRINT.md`](docs/MASTER_BLUEPRINT.md) §15–§16. Where the two
+> disagree, the blueprint governs product intent and this file governs task order.
+
 ## Goal
 Deliver the secure production control plane through small, isolated, evidence-backed changes that can be planned, implemented, verified, recovered, and merged by automation.
 

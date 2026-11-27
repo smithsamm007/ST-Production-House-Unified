@@ -2,6 +2,12 @@
 
 This repository is the verified secure foundation, not a claim that every live provider and platform is already connected.
 
+> **Scope.** This file records the delivered foundation increments and their evidence
+> in historical order. The product's phased roadmap, its acceptance criteria and its
+> current implementation status are canonical in
+> [`docs/MASTER_BLUEPRINT.md`](MASTER_BLUEPRINT.md) §15–§16. Phase numbering here is
+> historical and is not the product phase numbering.
+
 ## Phase 1 — Foundation (included)
 
 - Canonical 20-agent registry with 50-agent cap.
